@@ -1,0 +1,122 @@
+{
+	Tools = ordered() {
+		SubtitleDefault = MacroOperator {
+			Inputs = ordered() {
+				Input1 = InstanceInput {
+					SourceOp = "SubText",
+					Source = "StyledText",
+				},
+				Input2 = InstanceInput {
+					SourceOp = "SubText",
+					Source = "Size",
+					Default = 0.04,
+				}
+			},
+			Outputs = {
+				MainOutput1 = InstanceOutput {
+					SourceOp = "SubMerge",
+					Source = "Output",
+				}
+			},
+			ViewInfo = GroupInfo { Pos = { 0, 0 } },
+			Tools = ordered() {
+				SubText = TextPlus {
+					Inputs = {
+						Width = Input { Value = 1920, },
+						Height = Input { Value = 1080, },
+						UseFrameFormatSettings = Input { Value = 1, },
+						["Gamut.SLogVersion"] = Input { Value = FuID { "SLog2" }, },
+						Center = Input { Value = { 0.5, 0.12 }, },
+						Wrap = Input { Value = 1, },
+						LayoutRotation = Input { Value = 1, },
+						TransformRotation = Input { Value = 1, },
+						SelectElement = Input { Value = 1, },
+						Select = Input { Value = 1, },
+						Enabled2 = Input { Value = 1, },
+						Type1 = Input { Value = 2, },
+						Red1 = Input { Value = 1, },
+						Green1 = Input { Value = 0.84, },
+						Blue1 = Input { Value = 0, },
+						ShadingGradient1 = Input {
+							Value = Gradient {
+								Colors = {
+									[0] = { 1, 0.76, 0.05, 1 },
+									[0.5] = { 1, 0.92, 0.35, 1 },
+									[1] = { 1, 0.84, 0.0, 1 }
+								}
+							},
+						},
+						ShadingMappingAngle1 = Input { Value = 90, },
+						ShadingMappingSize1 = Input { Value = 2, },
+						Softness1 = Input { Value = 1, },
+						StyledText = Input { Value = "Subtitle Text", },
+						Font = Input { Value = "Arial", },
+						Style = Input { Value = "Bold", },
+						Size = Input { Value = 0.04, },
+						VerticalJustificationNew = Input { Value = 3, },
+						HorizontalJustificationNew = Input { Value = 3, },
+						Thickness2 = Input { Value = 0.06, },
+						Red2 = Input { Value = 0, },
+						Green2 = Input { Value = 0, },
+						Blue2 = Input { Value = 0, },
+						Softness2 = Input { Value = 1, },
+						SoftnessX2 = Input { Value = 0.008, },
+						SoftnessY2 = Input { Value = 0.008, },
+						Enabled4 = Input { Value = 1, },
+						Red4 = Input { Value = 0, },
+						Green4 = Input { Value = 0, },
+						Blue4 = Input { Value = 0, },
+						Opacity4 = Input { Value = 0.6, },
+						SoftnessX4 = Input { Value = 0.012, },
+						SoftnessY4 = Input { Value = 0.012, },
+						OffsetX4 = Input { Value = 0.003, },
+						OffsetY4 = Input { Value = -0.003, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 372, 96 } },
+				},
+				SubGlow = SoftGlow {
+					Inputs = {
+						Blend = Input { Value = 0.35, },
+						Filter = Input { Value = FuID { "Fast Gaussian" }, },
+						Threshold = Input { Value = 0.25, },
+						Gain = Input { Value = 1.2, },
+						XGlowSize = Input { Value = 8, },
+						Input = Input {
+							SourceOp = "SubText",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 540, 96 } },
+				},
+				SubMerge = Merge {
+					CtrlWZoom = false,
+					Inputs = {
+						Background = Input {
+							SourceOp = "SubGlow",
+							Source = "Output",
+						},
+						Foreground = Input {
+							SourceOp = "SubText",
+							Source = "Output",
+						},
+						PerformDepthMerge = Input { Value = 0, },
+						Blend = Input {
+							SourceOp = "SubFadeAnim",
+							Source = "Value",
+						},
+					},
+					ViewInfo = OperatorInfo { Pos = { 700, 52 } },
+				},
+				SubFadeAnim = BezierSpline {
+					SplineColor = { Red = 0, Green = 200, Blue = 255 },
+					NameSet = true,
+					KeyFrames = {
+						[0] = { 0, RH = { 2, 0.3333 }, Flags = { Linear = true } },
+						[5] = { 1, LH = { 3, 0.6667 }, Flags = { Linear = true } }
+					}
+				}
+			},
+		}
+	},
+	ActiveTool = "SubtitleDefault"
+}

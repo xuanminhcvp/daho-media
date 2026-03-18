@@ -1,0 +1,5 @@
+local resolve = Resolve()
+local projectManager = resolve:GetProjectManager()
+local project = projectManager:GetCurrentProject()
+local timeline = project:GetCurrentTimeline()
+print("Audio tracks: " .. timeline:GetTrackCount("audio"))

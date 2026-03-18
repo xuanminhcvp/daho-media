@@ -1,0 +1,57 @@
+#!/bin/bash
+# ============================================================
+# postinstall — Chạy sau khi .pkg cài xong
+# Tự động copy Lua script vào DaVinci Resolve Scripts folder
+# → User KHÔNG cần paste code vào Console nữa!
+# ============================================================
+
+# Đường dẫn app đã cài
+INSTALL_PATH="/Applications"
+APP_PATH="$INSTALL_PATH/AutoSubs_Media.app"
+RESOURCES_PATH="$APP_PATH/Contents/Resources/resources"
+
+# Đường dẫn DaVinci Resolve Scripts (user-level)
+UTILITY_PATH="$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility"
+
+# Đường dẫn Workflow Integration (system-level) 
+WORKFLOW_PATH="/Library/Application Support/Blackmagic Design/DaVinci Resolve/Workflow Integration Plugins"
+
+# Đường dẫn Templates (cho subtitle template)
+TITLES_PATH="$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Templates/Edit/Titles"
+
+# ===== 1. Tạo folder nếu chưa có =====
+mkdir -p "$UTILITY_PATH"
+mkdir -p "$TITLES_PATH/AutoSubs" 2>/dev/null || true
+
+# ===== 2. Copy Lua script vào DaVinci Scripts =====
+# → Khi mở DaVinci → Workspace > Scripts > AutoSubs sẽ tự hiện
+cp "$RESOURCES_PATH/AutoSubs.lua" "$UTILITY_PATH/"
+
+# Copy folder modules vào Scripts/Utility/AutoSubs/
+mkdir -p "$UTILITY_PATH/AutoSubs"
+cp -r "$RESOURCES_PATH/modules" "$UTILITY_PATH/AutoSubs/" 2>/dev/null || true
+
+# Ghi file install_path.txt (để Lua script biết app ở đâu)
+echo "$INSTALL_PATH" > "$UTILITY_PATH/AutoSubs/install_path.txt"
+
+# ===== 3. Copy vào Workflow Integration (để dễ truy cập) =====
+if [ -d "$WORKFLOW_PATH" ]; then
+    cp "$RESOURCES_PATH/AutoSubs.lua" "$WORKFLOW_PATH/" 2>/dev/null || true
+fi
+
+# ===== 4. Copy subtitle template nếu có =====
+if [ -d "$RESOURCES_PATH/Titles" ]; then
+    cp -r "$RESOURCES_PATH/Titles/"* "$TITLES_PATH/AutoSubs/" 2>/dev/null || true
+fi
+
+# ===== 5. Xóa quarantine flag =====
+xattr -cr "$APP_PATH" 2>/dev/null || true
+
+# ===== 6. Xóa bản script cũ (legacy) =====
+rm -f "$UTILITY_PATH/AutoSubs V2.lua" 2>/dev/null || true
+
+echo "[AutoSubs Media] ✅ Cài đặt hoàn tất!"
+echo "[AutoSubs Media] App: $APP_PATH"
+echo "[AutoSubs Media] DaVinci Script: $UTILITY_PATH/AutoSubs.lua"
+
+exit 0

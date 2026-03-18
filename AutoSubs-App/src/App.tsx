@@ -1,0 +1,86 @@
+// App.tsx
+import { ThemeProvider, useTheme } from "@/components/providers/theme-provider";
+import { Moon, Sun } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import React from "react"
+import { TranscriptionWorkspace } from "@/pages/transcription-workspace"
+import { useIsMobile } from "@/hooks/use-mobile"
+import { MobileSubtitleViewer } from "@/components/subtitles/mobile-subtitle-viewer"
+import { RightPanelTabs } from "@/components/layout/right-panel-tabs"
+import { LanguagePickerModal } from "@/components/dialogs/language-picker-modal"
+import { useTranslation } from "react-i18next"
+import { TooltipProvider } from "@/components/ui/tooltip"
+import { Titlebar } from "@/components/layout/titlebar"
+import { useResolve } from "@/contexts/ResolveContext"
+import { initAutoMediaStorage } from "@/services/auto-media-storage"
+
+export function ThemeToggle() {
+  const { setTheme, theme } = useTheme()
+  const { t } = useTranslation()
+
+  const handleToggle = () => {
+    setTheme(theme === "dark" ? "light" : "dark")
+  }
+
+  return (
+    <Button variant="ghost" size="icon" onClick={handleToggle} className="rounded-full">
+      <Sun className="rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0 h-5 w-5" />
+      <Moon className="absolute rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100 h-5 w-5" />
+      <span className="sr-only">{t("theme.toggle")}</span>
+    </Button>
+  )
+}
+
+function AppContent() {
+  const [showMobileSubtitles, setShowMobileSubtitles] = React.useState(false)
+  const isMobile = useIsMobile()
+  const { timelineInfo } = useResolve()
+
+  // Khởi tạo hệ thống storage Auto_media khi app mount
+  React.useEffect(() => {
+    initAutoMediaStorage().catch(err =>
+      console.error('[App] Lỗi khởi tạo Auto Media Storage:', err)
+    )
+  }, [])
+
+  return (
+    <TooltipProvider>
+      <LanguagePickerModal />
+      <div className="flex flex-col h-screen overflow-hidden">
+        {/* Use actual timeline info from Resolve context */}
+        <Titlebar timelineInfo={timelineInfo} />
+
+        {/* Main Content Area with Resizable Panels */}
+        <div className="flex-1 min-h-0 pb-0">
+          {isMobile ? (
+            // Mobile: Just show transcription settings
+            <div className="h-full overflow-hidden">
+              <TranscriptionWorkspace />
+            </div>
+          ) : (
+            // Desktop: Single panel — TranscriptionWorkspace nằm trong tab Subtitles
+            <RightPanelTabs />
+          )}
+        </div>
+
+        {/* Mobile Subtitles Viewer */}
+        {isMobile && (
+          <MobileSubtitleViewer
+            isOpen={showMobileSubtitles}
+            onClose={() => setShowMobileSubtitles(false)}
+          />
+        )}
+      </div>
+    </TooltipProvider>
+  )
+}
+
+function App() {
+  return (
+    <ThemeProvider defaultTheme="system" storageKey="vite-ui-theme">
+      <AppContent />
+    </ThemeProvider>
+  );
+}
+
+export default App;

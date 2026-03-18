@@ -1,0 +1,123 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.0.0",
+  "productName": "AutoSubs_Media",
+  "version": "3.0.10",
+  "identifier": "com.autosubs-media",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "titleBarStyle": "Overlay",
+        "decorations": true,
+        "trafficLightPosition": {
+          "x": 10,
+          "y": 20
+        },
+        "height": 700,
+        "width": 900,
+        "acceptFirstMouse": true,
+        "zoomHotkeysEnabled": true,
+        "title": ""
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$DESKTOP/**",
+          "$DOCUMENT/**",
+          "$DOWNLOAD/**",
+          "$RESOURCE/**",
+          "$HOME/**"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis",
+      "app",
+      "deb"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "resources/"
+    ],
+    "externalBin": [
+      "binaries/ffmpeg",
+      "binaries/ffprobe"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "13.3",
+      "frameworks": [
+        "binaries/ffmpeg-dylibs/libavdevice.62.dylib",
+        "binaries/ffmpeg-dylibs/libavfilter.11.dylib",
+        "binaries/ffmpeg-dylibs/libavformat.62.dylib",
+        "binaries/ffmpeg-dylibs/libavcodec.62.dylib",
+        "binaries/ffmpeg-dylibs/libswresample.6.dylib",
+        "binaries/ffmpeg-dylibs/libswscale.9.dylib",
+        "binaries/ffmpeg-dylibs/libavutil.60.dylib",
+        "binaries/ffmpeg-dylibs/libssl.3.dylib",
+        "binaries/ffmpeg-dylibs/libcrypto.3.dylib",
+        "binaries/ffmpeg-dylibs/libvpx.12.dylib",
+        "binaries/ffmpeg-dylibs/libdav1d.7.dylib",
+        "binaries/ffmpeg-dylibs/libmp3lame.0.dylib",
+        "binaries/ffmpeg-dylibs/libopus.0.dylib",
+        "binaries/ffmpeg-dylibs/libSvtAv1Enc.4.dylib",
+        "binaries/ffmpeg-dylibs/libx264.165.dylib",
+        "binaries/ffmpeg-dylibs/libx265.215.dylib"
+      ]
+    },
+    "linux": {
+      "deb": {
+        "files": {
+          "/opt/resolve/Fusion/Scripts/Utility/AutoSubs.lua": "resources/AutoSubs.lua",
+          "/opt/resolve/Fusion/Scripts/Utility/AutoSubs": "resources/AutoSubs/"
+        }
+      }
+    },
+    "windows": {
+      "nsis": {
+        "template": "./windows/custom_installer.nsi",
+        "installerHooks": "./windows/hooks.nsi",
+        "installerIcon": "icons/icon.ico"
+      },
+      "certificateThumbprint": "df6635960a607103e4882c0671c2f8d0ef2ace18",
+      "timestampUrl": "http://time.certum.pl",
+      "digestAlgorithm": "sha256",
+      "signCommand": {
+        "cmd": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "./windows/sign.ps1",
+          "%1"
+        ]
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFENjNBQjZFRkVCQTQxQTkKUldTcFFiciticXRqcmZtTlRWRzdnSHhBMFVNZkxvOGFRZThXdXFNQjFzakxqNDF0bUFyWkhwckUK",
+      "endpoints": [
+        "https://github.com/tmoroney/auto-subs/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}
