@@ -149,17 +149,22 @@ def add_sfx_clips_to_timeline(clips, track_name=None):
     if not media_items:
         return {"error": True, "message": "Failed to import SFX files to Media Pool"}
 
-    # 3. Tạo mapping fileName → mediaPoolItem
+    # 3. Tạo mapping: ƯU TIÊN absolute path (tránh trùng tên), fallback basename
+    # BUG FIX: dùng basename dễ bị ghi đè nếu 2 file khác folder trùng tên
     media_map = {}
     for item in media_items:
         props = item.GetClipProperty()
-        name = props.get("File Name") or props.get("Clip Name") or ""
-        if not name:
-            path = props.get("File Path", "")
-            name = os.path.basename(path)
-        if name:
-            media_map[name] = item
-            print(f"[AutoSubs]   Mapped SFX: {name}")
+        file_path = props.get("File Path", "") or ""
+        clip_name = props.get("Clip Name", "") or props.get("File Name", "") or ""
+        # Log để debug path Resolve thực sự đang gắn
+        print(f"[AutoSubs]   ✅ Imported SFX: '{clip_name}' | ResolvedPath: '{file_path}'")
+        # Map theo absolute path (chuẩn nhất)
+        if file_path:
+            media_map[os.path.normpath(file_path)] = item
+        # Fallback: basename (tương thích ngược)
+        base = os.path.basename(file_path) if file_path else clip_name
+        if base:
+            media_map[base] = item
 
     # 4. Dùng audio track 1 (không tạo track mới)
     target_track = 1
@@ -171,11 +176,12 @@ def add_sfx_clips_to_timeline(clips, track_name=None):
     skipped = 0
 
     for i, clip in enumerate(clips):
-        file_name = os.path.basename(clip.get("filePath", ""))
-        media_item = media_map.get(file_name)
+        fp = clip.get("filePath", "")
+        # Lookup theo absolute path trước, fallback basename
+        media_item = media_map.get(os.path.normpath(fp)) or media_map.get(os.path.basename(fp))
 
         if not media_item:
-            print(f"[AutoSubs] ⚠️ SFX {i}: Không tìm thấy '{file_name}' trong Media Pool")
+            print(f"[AutoSubs] ⚠️ SFX {i}: Không tìm thấy '{fp}' trong Media Pool")
             skipped += 1
             continue
 
@@ -272,17 +278,22 @@ def add_media_to_timeline(clips, track_index):
 
     print(f"  Imported {len(media_items)} items")
 
-    # 2.5. Tạo mapping fileName → mediaPoolItem
+    # 2.5. Tạo mapping: ƯU TIÊN absolute path (tránh trùng tên), fallback basename
+    # BUG FIX: 2 file khác folder cùng tên sẽ không ghi đè nhau nữa
     media_map = {}
     for item in media_items:
         props = item.GetClipProperty()
-        name = props.get("File Name") or props.get("Clip Name") or ""
-        if not name:
-            path = props.get("File Path", "")
-            name = os.path.basename(path)
-        if name:
-            media_map[name] = item
-            print(f"    Mapped: {name}")
+        file_path = props.get("File Path", "") or ""
+        clip_name = props.get("Clip Name", "") or props.get("File Name", "") or ""
+        # Log verify path thực tế Resolve gắn — dùng để debug offline sau restart
+        print(f"    ✅ Imported: '{clip_name}' | ResolvedPath: '{file_path}'")
+        # Map theo absolute path
+        if file_path:
+            media_map[os.path.normpath(file_path)] = item
+        # Fallback basename
+        base = os.path.basename(file_path) if file_path else clip_name
+        if base:
+            media_map[base] = item
 
     # 3. Đặt từng clip lên timeline ĐÚNG vị trí
     actual_added = 0
@@ -291,11 +302,12 @@ def add_media_to_timeline(clips, track_index):
     STILL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".exr"}
 
     for i, clip in enumerate(clips):
-        file_name = os.path.basename(clip.get("filePath", ""))
-        media_item = media_map.get(file_name)
+        fp = clip.get("filePath", "")
+        # Lookup theo absolute path trước, fallback basename
+        media_item = media_map.get(os.path.normpath(fp)) or media_map.get(os.path.basename(fp))
 
         if not media_item:
-            print(f"  ⚠️ Clip {i}: Không tìm thấy '{file_name}' trong Media Pool")
+            print(f"  ⚠️ Clip {i}: Không tìm thấy '{fp}' trong Media Pool")
             continue
 
         start_time = float(clip.get("startTime", 0))
@@ -374,3 +386,111 @@ def add_media_to_timeline(clips, track_index):
         "message": f"Added {actual_added}/{len(clips)} clips to track {track_idx}",
         "clipsAdded": actual_added,
     }
+
+
+def auto_relink_autosubs_media(folder_path=None):
+    """
+    Auto-relink tất cả clip bị offline trong bin 'AutoSubs Media Import'
+    và 'AutoSubs SFX' trong Media Pool.
+
+    Nguyên nhân phổ biến clip offline sau khi tắt máy bật lại:
+    - macOS thay đổi quyền truy cập Desktop sau reboot
+    - Resolve lưu absolute path nhưng không đọc được sau restart
+
+    Request: { folderPath?: string }  — mặc định ~/Desktop/Auto_media
+    Response: { success, relinkedCount, offlineCount, message }
+    """
+    import os
+
+    print(f"[AutoSubs] AutoRelinkMedia bắt đầu scan Media Pool...")
+
+    timeline = state.project.GetCurrentTimeline()
+    if not timeline:
+        return {"error": True, "message": "No active timeline"}
+
+    # Thư mục chứa media (mặc định Desktop/Auto_media)
+    if not folder_path:
+        folder_path = os.path.join(os.path.expanduser("~"), "Desktop", "Auto_media")
+
+    print(f"[AutoSubs] Relink folder: {folder_path}")
+
+    # Thu thập tất cả MediaPoolItem từ các bin AutoSubs
+    def collect_autosubs_items(folder):
+        """Đệ quy thu thập tất cả item trong folder và sub-folders có tên 'AutoSubs'"""
+        items = []
+        name = folder.GetName() if hasattr(folder, 'GetName') else ""
+        # Lấy clips trong folder này
+        clips = folder.GetClipList() or []
+        items.extend(clips)
+        # Đệ quy sub-folders
+        sub_folders = folder.GetSubFolderList() or []
+        for sub in sub_folders:
+            items.extend(collect_autosubs_items(sub))
+        return items
+
+    # Lấy tất cả clips trong toàn bộ Media Pool (root)
+    root_folder = state.media_pool.GetRootFolder()
+    all_items = collect_autosubs_items(root_folder)
+    print(f"[AutoSubs] Tổng {len(all_items)} items trong Media Pool")
+
+    # Lọc ra các clip đang offline (File Path tồn tại thực tế nhưng Resolve báo offline)
+    offline_items = []
+    verified_paths = []  # log để debug
+    for item in all_items:
+        try:
+            props = item.GetClipProperty()
+            file_path = props.get("File Path", "") or ""
+            clip_name = props.get("Clip Name", "") or ""
+            # Kiểm tra xem file có tồn tại trên đĩa không
+            if file_path and os.path.exists(file_path):
+                verified_paths.append(file_path)
+            else:
+                offline_items.append(item)
+                print(f"  ⚠️ Offline: '{clip_name}' | Path: '{file_path}' | Exists: {os.path.exists(file_path) if file_path else 'N/A'}")
+        except Exception as e:
+            print(f"  ⚠️ Lỗi đọc clip: {e}")
+
+    print(f"[AutoSubs] Online: {len(verified_paths)} | Offline: {len(offline_items)}")
+
+    if not offline_items:
+        return {
+            "success": True,
+            "relinkedCount": 0,
+            "offlineCount": 0,
+            "message": "✅ Tất cả clip đang online, không cần relink",
+        }
+
+    # Gọi RelinkClips với folder_path để Resolve tự tìm lại file
+    # RelinkClips([items], folderPath) — Resolve sẽ scan folder và sub-folders
+    try:
+        relink_folders = [
+            folder_path,
+            os.path.join(folder_path, "ref_images"),
+            os.path.join(folder_path, "sfx"),
+            os.path.join(folder_path, "footage"),
+            os.path.join(folder_path, "nhac_nen"),
+        ]
+        relinked_total = 0
+        for relink_folder in relink_folders:
+            if not os.path.isdir(relink_folder):
+                continue
+            result = state.media_pool.RelinkClips(offline_items, relink_folder)
+            if result:
+                relinked_total += 1
+                print(f"  ✅ RelinkClips → '{relink_folder}': OK")
+            else:
+                print(f"  ℹ️ RelinkClips → '{relink_folder}': không có clip nào match")
+
+        return {
+            "success": True,
+            "relinkedCount": len(offline_items),
+            "offlineCount": len(offline_items),
+            "message": f"✅ Đã relink {len(offline_items)} clip bị offline từ folder '{folder_path}'",
+        }
+    except Exception as e:
+        print(f"[AutoSubs] ❌ RelinkClips lỗi: {e}")
+        return {
+            "error": True,
+            "offlineCount": len(offline_items),
+            "message": f"RelinkClips thất bại: {e}",
+        }

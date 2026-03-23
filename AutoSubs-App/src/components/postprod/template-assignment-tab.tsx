@@ -1,9 +1,11 @@
 // template-assignment-tab.tsx
-// Tab giao diện để quản lý 5 Template hiệu ứng chữ và yêu cầu AI gán template cho từng câu
-// Gồm 3 phần chính:
-//   1. Chọn dự án kịch bản (matching.json) + file whisper words
-//   2. AI phân tích → gán template + rút gọn displayText + matchWords
-//   3. Matching whisper words timestamps → import vào DaVinci Resolve
+// Tab Text On Screen — gán Template hiệu ứng chữ vào phim tài liệu
+//
+// Flow MỚI (đơn giản hơn):
+//   1. Khi kết nối DaVinci → TỰ ĐỘNG đọc transcript hiện tại (timelineId.json)
+//      → Không cần chọn file, không cần autosubs_matching.json
+//   2. Bấm "AI Phân Tích" → AI đọc word timestamps → tìm ~22% cụm cần title
+//   3. Xem kết quả → Áp dụng vào DaVinci Resolve
 
 import * as React from "react"
 import { Button } from "@/components/ui/button"
@@ -18,594 +20,574 @@ import {
     CheckCircle2,
     AudioLines,
     Save,
+    RefreshCw,
+    Clock,
 } from "lucide-react"
 import { open } from "@tauri-apps/plugin-dialog"
+import { readTextFile } from "@tauri-apps/plugin-fs"
 import { desktopDir } from "@tauri-apps/api/path"
 import { useResolve } from "@/contexts/ResolveContext"
 import { useProject } from "@/contexts/ProjectContext"
-import { saveFolderPath } from "@/services/saved-folders-service"
-import { addTemplateSubtitlesToTimeline } from "@/api/resolve-api"
-import {
-    loadMatchingScript,
-    MatchingSentence,
-} from "@/services/audio-director-service"
+import { addTemplateSubtitlesToTimeline, getTimelineInfo } from "@/api/resolve-api"
+import { readTranscript, generateTranscriptFilename } from "@/utils/file-utils"
+import { extractWhisperWords } from "@/utils/media-matcher"
 import {
     TextTemplate,
-    TemplateAssignment,
-    AITemplateAssignmentResult,
     DEFAULT_TEMPLATES,
     loadTemplatesConfig,
-    analyzeScriptForTemplateAssignment,
+    analyzeWhisperWordsForTitles,
 } from "@/services/template-assignment-service"
-import {
-    WhisperWordsFile,
-    loadWhisperWordsFile,
-    batchMatchWordsToTimestamps,
-    type WordMatchResult,
-    type AssignmentToMatch,
-} from "@/utils/whisper-words-matcher"
+import { CreateMatchingSection } from "@/components/common/create-matching-section"
+
+// ======================== BADGE MÀU TEMPLATE ========================
+
+/** Badge màu nhỏ hiển thị tên template */
+function TemplateBadge({ template }: { template: TextTemplate }) {
+    return (
+        <span
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0"
+            style={{
+                backgroundColor: template.badgeColor + "30",
+                color: template.badgeColor,
+                border: `1px solid ${template.badgeColor}50`
+            }}
+        >
+            {template.displayName}
+        </span>
+    )
+}
+
+// ======================== FORMAT THỜI GIAN ========================
+
+/** Format giây → M:SS.s */
+function formatTime(sec: number): string {
+    const m = Math.floor(sec / 60)
+    const s = (sec % 60).toFixed(1)
+    return `${m}:${parseFloat(s) < 10 ? "0" : ""}${s}`
+}
+
+// ======================== MAIN COMPONENT ========================
 
 export function TemplateAssignmentTab() {
     // ======================== CONTEXTS ========================
-
-    // ProjectContext — dữ liệu persist (lưu session, chia sẻ giữa các tab)
+    const { timelineInfo } = useResolve()
     const { project, updateTemplateAssignment } = useProject()
-    // Destructure với giá trị mặc định — đề phòng session cũ không có field mới
+
+    // Đã kết nối DaVinci nếu timelineInfo có dữ liệu
+    const isConnected = !!(timelineInfo?.timelineId)
+
     const {
-        matchingFolder = '',
-        sentences = null,
-        assignmentResult = null,
-        whisperWordsPath = '',
-        wordMatchResults: wordMatchResultsArray = [],
-        selectedTrack = '2',
+        whisperWordsPath = "",
+        selectedTrack = "2",
+        titleCueResult = null,
     } = project.templateAssignment || {}
 
-    // Chuyển wordMatchResults từ Array (serializable) sang Map (để dùng nhanh)
-    const wordMatchResults = React.useMemo(
-        () => new Map<number, WordMatchResult>(wordMatchResultsArray),
-        [wordMatchResultsArray]
-    )
+    // ======================== LOCAL STATE ========================
 
-    // Resolve Context
-    const { timelineInfo } = useResolve()
+    const [templates, setTemplates] = React.useState<TextTemplate[]>(DEFAULT_TEMPLATES)
+    const [isAnalyzing, setIsAnalyzing] = React.useState(false)
+    const [isApplying, setIsApplying] = React.useState(false)
+    const [progress, setProgress] = React.useState<string>("")
+    const [error, setError] = React.useState<string>("")
+    const [showTemplateConfig, setShowTemplateConfig] = React.useState(false)
+    const [resolveTrackCount, setResolveTrackCount] = React.useState<number>(8)
+    const [loadingTracks, setLoadingTracks] = React.useState(false)
+    // Transcript đã được auto-detect và load sẵn (không cần chọn file)
+    const [autoTranscriptLoaded, setAutoTranscriptLoaded] = React.useState(false)
+    // Cache nội dung whisper words text (từ auto hoặc file thủ công)
+    const [wordsTextCache, setWordsTextCache] = React.useState<string>("")
+    // Tên hiển thị nguồn dữ liệu
+    const [sourceLabel, setSourceLabel] = React.useState<string>("")
 
-    // ======================== LOCAL STATE (chỉ UI transient) ========================
+    // ======================== EFFECTS ========================
 
-    // Cấu hình 5 template (load async từ settings.json)
-    const [templates, setTemplates] = React.useState<TextTemplate[]>(() => DEFAULT_TEMPLATES)
-
-    // Load templates config async khi mount
     React.useEffect(() => {
-        loadTemplatesConfig().then(t => setTemplates(t))
+        loadTemplatesConfig().then(setTemplates)
     }, [])
 
-    // Whisper words file in-memory (không serialize được — load lại từ path)
-    const [whisperWordsFile, setWhisperWordsFile] = React.useState<WhisperWordsFile | null>(null)
-
-    // Trạng thái UI nhất thời
-    const [isAnalyzing, setIsAnalyzing] = React.useState(false)
-    const [analyzeProgress, setAnalyzeProgress] = React.useState<string>("")
-    const [analyzeError, setAnalyzeError] = React.useState("")
-    const [resultExpanded, setResultExpanded] = React.useState(true)
-    const [isApplying, setIsApplying] = React.useState(false)
-    const [applySuccess, setApplySuccess] = React.useState(false)
-
-    // Trạng thái "đã lưu" — hiện tick xanh sau khi bấm Save
-    const [matchingFolderSaved, setMatchingFolderSaved] = React.useState(false)
-
-    // ======================== EFFECT: Tự động load lại whisper words file từ path (đã lưu) ========================
+    // Khi kết nối DaVinci → lấy số track thực và auto-detect transcript
     React.useEffect(() => {
-        if (whisperWordsPath && !whisperWordsFile) {
-            loadWhisperWordsFile(whisperWordsPath)
-                .then(loaded => {
-                    if (loaded) setWhisperWordsFile(loaded)
-                })
-                .catch(err => console.warn('[TemplateAssignment] Không load lại được whisper words:', err))
+        if (isConnected) {
+            loadTrackCountFromResolve()
+            autoLoadTranscript()
         }
-    }, [whisperWordsPath, whisperWordsFile])
-
-    // ======================== HELPER: setter cho ProjectContext ========================
-    // Gói gọn việc ghi dữ liệu vào ProjectContext
-    const setMatchingFolder = (folder: string) => updateTemplateAssignment({ matchingFolder: folder })
-    const setSentences = (s: MatchingSentence[] | null) => updateTemplateAssignment({ sentences: s })
-    const setAssignmentResult = (r: AITemplateAssignmentResult | null) => updateTemplateAssignment({ assignmentResult: r })
-    const setWhisperWordsPath = (p: string) => updateTemplateAssignment({ whisperWordsPath: p })
-    const setSelectedTrack = (t: string) => updateTemplateAssignment({ selectedTrack: t })
-    const setWordMatchResults = (map: Map<number, WordMatchResult>) => {
-        // Chuyển Map sang Array [để lưu IndexedDB]
-        updateTemplateAssignment({ wordMatchResults: Array.from(map.entries()) })
-    }
-
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isConnected])
 
     // ======================== HANDLERS ========================
 
-    /** Load kịch bản từ thư mục */
-    const handleLoadScript = async () => {
+    /** Lấy số track video hiện có trên DaVinci timeline */
+    const loadTrackCountFromResolve = async () => {
+        setLoadingTracks(true)
         try {
-            const desktop = await desktopDir()
-            const folder = await open({
-                directory: true,
-                title: "Chọn thư mục chứa autosubs_matching.json",
-                defaultPath: desktop,
-            })
-            if (!folder) return
-
-            setMatchingFolder(folder as string)
-            const loaded = await loadMatchingScript(folder as string)
-            if (loaded) {
-                setSentences(loaded.sentences)
-                // Load kết quả template assignment đã cache (nếu có)
-                const raw = loaded as any
-                setAssignmentResult(raw.templateAssignmentResult || null)
-            } else {
-                setSentences(null)
-                setAssignmentResult(null)
-            }
-            setAnalyzeError("")
-        } catch (error: any) {
-            setAnalyzeError("Lỗi đọc thư mục: " + String(error))
+            const info = await getTimelineInfo()
+            const count = info?.videoTrackCount ?? info?.trackCount ?? 8
+            setResolveTrackCount(Math.max(1, count))
+        } catch {
+            // Giữ mặc định 8 track nếu lỗi
+        } finally {
+            setLoadingTracks(false)
         }
     }
 
-    /** Load file whisper words (chọn file riêng) */
-    const handleLoadWhisperWords = async () => {
+    /**
+     * Tự động đọc transcript từ DaVinci timeline hiện tại
+     * File transcript nằm tại: ~/Desktop/Auto_media/data/transcripts/{timelineId}.json
+     * Chứa originalSegments với word-level timestamps từ Whisper
+     */
+    const autoLoadTranscript = async () => {
+        if (!timelineInfo?.timelineId) return
         try {
-            const desktop = await desktopDir()
-            const filePath = await open({
-                title: "Chọn file autosubs_whisper_words.txt hoặc .json",
-                defaultPath: desktop,
-                filters: [
-                    { name: "Whisper Words", extensions: ["txt", "json"] },
-                ],
-            })
-            if (!filePath) return
+            setProgress("🔍 Đang tự động tìm transcript từ DaVinci...")
 
-            const loaded = await loadWhisperWordsFile(filePath as string)
-            if (loaded) {
-                setWhisperWordsFile(loaded)
-                setWhisperWordsPath(filePath as string)
-            } else {
-                setAnalyzeError("File whisper words không hợp lệ")
+            // Đọc transcript file theo timelineId hiện tại
+            const filename = generateTranscriptFilename(false, null, timelineInfo.timelineId)
+            const transcript = await readTranscript(filename)
+
+            if (!transcript) {
+                setProgress("")
+                return // Không tìm thấy → im lặng, user tự chọn file
             }
-        } catch (error: any) {
-            setAnalyzeError("Lỗi đọc file whisper words: " + String(error))
+
+            // Trích xuất word-level data từ originalSegments
+            const whisperWords = extractWhisperWords(transcript)
+            if (whisperWords.length === 0) {
+                setProgress("")
+                return
+            }
+
+            // Format thành text "[time] word [time] word ..." để AI đọc
+            const wordsText = whisperWords
+                .map(w => `[${w.start.toFixed(2)}] ${w.rawWord}`)
+                .join(" ")
+
+            // Lưu vào cache
+            setWordsTextCache(wordsText)
+            setAutoTranscriptLoaded(true)
+            setSourceLabel(`Auto: ${filename} (${whisperWords.length} words)`)
+
+            // Lưu label vào context để persist sau khi đổi tab
+            updateTemplateAssignment({
+                whisperWordsPath: `[Auto] ${filename}`,
+            })
+
+            setProgress(`✅ Đã tìm thấy transcript: ${whisperWords.length} words`)
+            setTimeout(() => setProgress(""), 2500)
+        } catch (err) {
+            console.warn("[AddTitle] Auto-load transcript thất bại:", err)
+            setProgress("")
         }
     }
 
-    /** Gọi AI phân tích và gán template + sau đó matching whisper words */
+    /** Chọn file Whisper Words thủ công (.txt hoặc .json) */
+    const handleSelectWhisperFile = async () => {
+        const desktop = await desktopDir()
+        const file = await open({
+            title: "Chọn file Whisper Words (autosubs_whisper_words.txt / .json)",
+            defaultPath: desktop,
+            filters: [{ name: "Whisper Words", extensions: ["txt", "json"] }],
+        })
+        if (file) {
+            const text = await readTextFile(file as string)
+            setWordsTextCache(text)
+            setAutoTranscriptLoaded(false)
+            setSourceLabel(file as string)
+            updateTemplateAssignment({
+                whisperWordsPath: file as string,
+                titleCueResult: null,
+            })
+            setError("")
+        }
+    }
+
+    /** AI phân tích whisper words → tìm Title cues */
     const handleAnalyze = async () => {
-        if (!sentences || !matchingFolder) return
+        if (!wordsTextCache) {
+            setError("Chưa có dữ liệu Whisper Words. Hãy kết nối DaVinci hoặc chọn file thủ công.")
+            return
+        }
 
         setIsAnalyzing(true)
-        setAnalyzeError("")
-        setAssignmentResult(null)
-        setWordMatchResults(new Map())
+        setError("")
+        setProgress("AI đang phân tích transcript và xác định Title cues...")
 
         try {
-            const result = await analyzeScriptForTemplateAssignment(
-                matchingFolder,
-                sentences,
+            const result = await analyzeWhisperWordsForTitles(
+                wordsTextCache,
                 templates,
-                (msg: string) => setAnalyzeProgress(msg)
+                (msg) => setProgress(msg)
             )
-            setAssignmentResult(result)
-
-            // Sau khi AI xong → matching whisper words timestamps (nếu đã load file)
-            if (whisperWordsFile && result.assignments.length > 0) {
-                setAnalyzeProgress("Đang khớp whisper words timestamps...")
-                const assignmentsToMatch: AssignmentToMatch[] = result.assignments
-                    .filter((a) => a.matchWords && a.matchWords.trim().length > 0)
-                    .map((a) => {
-                        const s = sentences.find((x) => x.num === a.sentenceNum)
-                        return {
-                            sentenceNum: a.sentenceNum,
-                            matchWords: a.matchWords,
-                            sentenceStart: s?.start ?? 0,
-                            sentenceEnd: s?.end ?? 0,
-                        }
-                    })
-
-                const matchResults = batchMatchWordsToTimestamps(
-                    assignmentsToMatch,
-                    whisperWordsFile.words
-                )
-                setWordMatchResults(matchResults)
-            }
-        } catch (error: any) {
-            setAnalyzeError(String(error))
+            updateTemplateAssignment({ titleCueResult: result })
+            setProgress("")
+        } catch (err: any) {
+            setError(String(err))
+            setProgress("")
         } finally {
             setIsAnalyzing(false)
-            setAnalyzeProgress("")
         }
     }
 
-    /** Gửi kết quả sang DaVinci Resolve — dùng whisper timestamps + displayText */
+    /** Áp dụng Title cues vào DaVinci Resolve */
     const handleApplyToResolve = async () => {
-        if (!assignmentResult || !sentences) return
-        if (!timelineInfo?.timelineId) {
-            setAnalyzeError("Vui lòng mở một timeline trên DaVinci Resolve trước khi áp dụng.")
+        if (!titleCueResult?.cues?.length) {
+            setError("Chưa có Title cues. Hãy chạy AI phân tích trước.")
             return
         }
 
         setIsApplying(true)
-        setAnalyzeError("")
-        setApplySuccess(false)
+        setError("")
+        setProgress("Đang chuẩn bị clips...")
 
         try {
-            // Chuyển kết quả assignments thành clip array cho Resolve
-            const clipsToApply = assignmentResult.assignments.map(a => {
-                const s = sentences.find(x => x.num === a.sentenceNum)
-                const tpl = getTemplateById(a.templateId)
+            const trackNum = selectedTrack === "new"
+                ? resolveTrackCount + 1
+                : parseInt(selectedTrack) || 2
 
-                // ⭐ Ưu tiên timestamps từ whisper words matching
-                // Nếu không có → fallback về sentence start/end
-                const matchResult = wordMatchResults.get(a.sentenceNum)
-                const start = matchResult?.success ? matchResult.start : (s?.start ?? 0)
-                const end = matchResult?.success ? matchResult.end : (s?.end ?? 0)
-
-                // ⭐ Dùng displayText thay vì toàn bộ câu
-                const text = a.displayText || (s?.text ?? "")
-
-                // ⭐ Dùng resolveTemplateName ("Title 1", "Title 2"...) thay vì displayName
+            const clipsToApply = titleCueResult.cues.map(cue => {
+                const tpl = templates.find(t => t.id === cue.templateId)
                 const tplName = tpl?.resolveTemplateName || tpl?.displayName || "Title 2"
-
-                return { start, end, text, template: tplName }
+                return { start: cue.start, end: cue.end, text: cue.displayText, template: tplName }
             })
 
-            const res = await addTemplateSubtitlesToTimeline(clipsToApply, selectedTrack)
-            if (res.error) {
-                setAnalyzeError("Lỗi DaVinci Resolve: " + res.message)
-            } else {
-                setApplySuccess(true)
-                setTimeout(() => setApplySuccess(false), 3000)
+            setProgress(`Đang thêm ${clipsToApply.length} Title clips vào Video Track ${trackNum}...`)
+            await addTemplateSubtitlesToTimeline(clipsToApply, String(trackNum))
+            setProgress(`✅ Đã thêm ${clipsToApply.length} Titles vào Video Track ${trackNum}!`)
+
+            if (selectedTrack === "new") {
+                setResolveTrackCount(trackNum)
+                updateTemplateAssignment({ selectedTrack: String(trackNum) })
             }
-        } catch (error: any) {
-            setAnalyzeError("Không kết nối được với DaVinci Resolve: " + String(error))
+        } catch (err: any) {
+            setError(`Lỗi khi apply vào DaVinci: ${err}`)
+            setProgress("")
         } finally {
             setIsApplying(false)
         }
     }
 
-    // ======================== HELPERS ========================
+    // ======================== COMPUTED ========================
 
-
-
-    /** Tìm template theo ID */
-    const getTemplateById = (id: string): TextTemplate | undefined =>
-        templates.find((t) => t.id === id)
-
-    /** Đếm số câu theo từng template */
-    const getTemplateCounts = (): Record<string, number> => {
-        const counts: Record<string, number> = {}
-        templates.forEach((t) => (counts[t.id] = 0))
-        if (assignmentResult) {
-            assignmentResult.assignments.forEach((a) => {
-                if (counts[a.templateId] !== undefined) {
-                    counts[a.templateId]++
-                }
-            })
-        }
-        return counts
+    const getCountByTemplate = (): Record<string, number> => {
+        if (!titleCueResult?.cues) return {}
+        return titleCueResult.cues.reduce((acc, cue) => {
+            acc[cue.templateId] = (acc[cue.templateId] || 0) + 1
+            return acc
+        }, {} as Record<string, number>)
     }
 
-    // ======================== RENDER ========================
+    const counts = getCountByTemplate()
+    const basename = (path: string) => path.split(/[/\\]/).pop() || path
 
-    const counts = getTemplateCounts()
+    // ======================== RENDER ========================
 
     return (
         <ScrollArea className="flex-1 min-h-0 min-w-0 h-full w-full overflow-hidden">
             <div className="p-4 space-y-4 overflow-hidden">
 
-                {/* ===== SECTION 2: Load Kịch Bản ===== */}
-                <div className="space-y-2 pt-2 border-t">
-                    <label className="text-sm font-medium">📂 Chọn dự án kịch bản</label>
-                    <div className="flex gap-2">
-                        {/* Nút chọn thư mục matching */}
-                        <Button
-                            variant="outline"
-                            className="flex-1 justify-start gap-2 h-10 min-w-0"
-                            onClick={handleLoadScript}
-                        >
-                            <FileText className="h-4 w-4 shrink-0" />
-                            <span className="truncate">
-                                {matchingFolder
-                                    ? matchingFolder.split(/[/\\]/).pop()
-                                    : "Chọn thư mục chứa autosubs_matching.json"}
-                            </span>
-                        </Button>
+                {/* ===== SECTION 0: Tạo matching.json (utility) ===== */}
+                <CreateMatchingSection />
 
-                        {/* Nút Save matching folder */}
-                        {matchingFolder && (
-                            <Button
-                                variant={matchingFolderSaved ? "secondary" : "outline"}
-                                size="icon"
-                                className={`h-10 w-10 shrink-0 transition-all ${
-                                    matchingFolderSaved
-                                        ? "bg-green-500/20 border-green-500/40 text-green-400"
-                                        : "hover:border-green-500/40 hover:text-green-400"
-                                }`}
-                                onClick={() => {
-                                    saveFolderPath("matchingFolder", matchingFolder)
-                                    setMatchingFolderSaved(true)
-                                    setTimeout(() => setMatchingFolderSaved(false), 2000)
-                                }}
-                                title="Lưu thư mục matching để dùng lại lần sau"
+                {/* ===== SECTION 1: Trạng thái Whisper Words ===== */}
+                <div className="space-y-2 border-t pt-3">
+                    <label className="text-sm font-medium flex items-center gap-2">
+                        <AudioLines className="h-4 w-4 text-blue-400" />
+                        🎤 Whisper Words
+                    </label>
+
+                    {/* Auto-loaded thành công từ DaVinci */}
+                    {autoTranscriptLoaded ? (
+                        <div className="flex items-center gap-2 p-2.5 rounded bg-green-500/10 border border-green-500/20">
+                            <CheckCircle2 className="h-4 w-4 text-green-400 shrink-0" />
+                            <div className="flex-1 min-w-0">
+                                <p className="text-xs text-green-400 font-medium">
+                                    ✅ Tự động lấy từ DaVinci transcript
+                                </p>
+                                <p className="text-[10px] text-muted-foreground truncate" title={sourceLabel}>
+                                    {sourceLabel}
+                                </p>
+                            </div>
+                            <button
+                                className="flex items-center gap-1 text-[10px] text-blue-400 hover:text-blue-300 shrink-0 transition-colors"
+                                onClick={autoLoadTranscript}
+                                disabled={isAnalyzing}
+                                title="Tải lại từ DaVinci"
                             >
-                                {matchingFolderSaved ? (
-                                    <span className="text-sm">✓</span>
-                                ) : (
-                                    <Save className="h-4 w-4" />
-                                )}
+                                <RefreshCw className="h-3.5 w-3.5" />
+                            </button>
+                        </div>
+                    ) : wordsTextCache ? (
+                        /* File thủ công đã được chọn */
+                        <div className="flex items-center gap-2 p-2.5 rounded bg-blue-500/10 border border-blue-500/20">
+                            <FileText className="h-4 w-4 text-blue-400 shrink-0" />
+                            <div className="flex-1 min-w-0">
+                                <p className="text-xs text-blue-400 font-medium">File thủ công</p>
+                                <p className="text-[10px] text-muted-foreground truncate">
+                                    {basename(sourceLabel || whisperWordsPath)}
+                                </p>
+                            </div>
+                        </div>
+                    ) : (
+                        /* Chưa có dữ liệu */
+                        <div className="space-y-2">
+                            <div className="flex items-center gap-2 p-2.5 rounded bg-amber-500/10 border border-amber-500/20">
+                                <p className="text-xs text-amber-400">
+                                    ⚠️ Kết nối DaVinci để tự động lấy transcript, hoặc chọn file thủ công.
+                                </p>
+                            </div>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="w-full gap-2 justify-start"
+                                onClick={handleSelectWhisperFile}
+                            >
+                                <FileText className="h-3.5 w-3.5 text-blue-400" />
+                                Chọn file Whisper Words thủ công...
                             </Button>
-                        )}
-                    </div>
-
-                    {sentences !== null && (
-                        <p className="text-xs text-green-500">
-                            ✅ Đã load {sentences.length} câu từ kịch bản
-                        </p>
+                        </div>
                     )}
-                    {sentences === null && matchingFolder && (
-                        <p className="text-xs text-yellow-500">
-                            ⚠️ Không tìm thấy autosubs_matching.json
-                        </p>
+
+                    {/* Luôn có nút chọn file thủ công (fallback) khi đã auto-load */}
+                    {(autoTranscriptLoaded || wordsTextCache) && (
+                        <button
+                            className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                            onClick={handleSelectWhisperFile}
+                        >
+                            Chọn file khác thủ công →
+                        </button>
+                    )}
+
+                    {/* Progress auto-detect */}
+                    {!isAnalyzing && progress && !progress.startsWith("✅ Đã thêm") && (
+                        <p className="text-xs text-blue-400 animate-pulse">{progress}</p>
                     )}
                 </div>
 
-                {/* ===== SECTION: Whisper Words File ===== */}
-                <div className="space-y-2 pt-2 border-t">
-                    <label className="text-sm font-medium">🎤 Whisper Words Timestamps</label>
+                {/* ===== SECTION 2: Nút AI Phân Tích ===== */}
+                <div className="space-y-2">
                     <Button
-                        variant="outline"
-                        className="w-full justify-start gap-2 h-10"
-                        onClick={handleLoadWhisperWords}
+                        className="w-full gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white border-0 shadow-md h-11"
+                        onClick={handleAnalyze}
+                        disabled={!wordsTextCache || isAnalyzing}
                     >
-                        <AudioLines className="h-4 w-4" />
-                        {whisperWordsPath
-                            ? whisperWordsPath.split(/[/\\]/).pop()
-                            : "Chọn file autosubs_whisper_words.txt"}
+                        {isAnalyzing
+                            ? <Loader2 className="h-4 w-4 animate-spin" />
+                            : <Sparkles className="h-4 w-4" />
+                        }
+                        {isAnalyzing ? "AI đang phân tích..." : "AI Phân Tích → Tìm Title Cues"}
                     </Button>
 
-                    {whisperWordsFile && (
-                        <p className="text-xs text-green-500">
-                            ✅ Loaded {whisperWordsFile.totalWords} words ({whisperWordsFile.totalDuration.toFixed(0)}s)
+                    {/* Progress AI */}
+                    {isAnalyzing && progress && (
+                        <p className="text-xs text-purple-400 animate-pulse text-center leading-relaxed">
+                            {progress}
                         </p>
                     )}
-                    {!whisperWordsFile && (
-                        <p className="text-xs text-muted-foreground">
-                            💡 Cần file này để khớp chính xác thời gian hiển thị text
-                        </p>
+
+                    {/* Lỗi */}
+                    {error && (
+                        <div className="bg-red-500/10 border border-red-500/20 rounded p-2">
+                            <p className="text-xs text-red-400 leading-relaxed whitespace-pre-wrap">❌ {error}</p>
+                        </div>
                     )}
                 </div>
 
-                {/* ===== SECTION 3: Nút Phân Tích AI ===== */}
-                {sentences && sentences.length > 0 && (
-                    <div className="space-y-3 pt-2 border-t">
-                        <button
-                            className="flex items-center gap-1 text-sm font-medium w-full text-left hover:text-primary transition-colors"
-                            onClick={() => setResultExpanded(!resultExpanded)}
-                        >
-                            {resultExpanded ? (
-                                <ChevronDown className="h-3.5 w-3.5" />
-                            ) : (
-                                <ChevronRight className="h-3.5 w-3.5" />
-                            )}
-                            🎬 Kết quả Gán Template
-                            {assignmentResult && (
-                                <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-violet-500/20 text-violet-400 border border-violet-500/30">
-                                    {assignmentResult.assignments.length} câu
-                                </span>
-                            )}
-                        </button>
-
-                        {resultExpanded && (
-                            <div className="space-y-3 overflow-hidden">
-                                {/* Nút chạy AI và Áp dụng DaVinci */}
-                                <div className="flex flex-col gap-2 overflow-hidden">
-                                    <Button
-                                        variant="default"
-                                        className="w-full gap-2 bg-gradient-to-r from-violet-500 to-cyan-500 hover:from-violet-600 hover:to-cyan-600 shadow-md text-white border-0"
-                                        onClick={handleAnalyze}
-                                        disabled={isAnalyzing || isApplying}
+                {/* ===== SECTION 3: Kết Quả AI ===== */}
+                {titleCueResult && titleCueResult.cues.length > 0 && (
+                    <div className="space-y-3 border-t pt-3">
+                        {/* Header tổng kết */}
+                        <div className="flex items-center gap-2 flex-wrap">
+                            <CheckCircle2 className="h-4 w-4 text-green-400 shrink-0" />
+                            <span className="text-sm font-medium text-green-400">
+                                {titleCueResult.cues.length} Title Cues
+                            </span>
+                            {templates.filter(t => t.enabled).map(tpl => {
+                                const count = counts[tpl.id] || 0
+                                if (count === 0) return null
+                                return (
+                                    <span
+                                        key={tpl.id}
+                                        className="text-[10px] px-2 py-0.5 rounded-full font-medium"
+                                        style={{ backgroundColor: tpl.badgeColor + "25", color: tpl.badgeColor }}
                                     >
-                                        {isAnalyzing ? (
-                                            <Loader2 className="h-4 w-4 animate-spin" />
-                                        ) : (
-                                            <Sparkles className="h-4 w-4" />
-                                        )}
-                                        {isAnalyzing
-                                            ? "AI đang phân tích..."
-                                            : assignmentResult
-                                                ? "Phân tích lại"
-                                                : "Khởi tạo AI Assignment"
-                                        }
-                                    </Button>
+                                        {tpl.displayName}: {count}
+                                    </span>
+                                )
+                            })}
+                        </div>
 
-                                    {/* Nút Render sang DaVinci */}
-                                    {assignmentResult && (
-                                        <div className="flex flex-wrap items-center gap-2 w-full min-w-0">
-                                            {/* Track selector */}
-                                            <select
-                                                className="h-9 w-[80px] shrink-0 rounded-md border border-input bg-background px-2 text-xs ring-offset-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                value={selectedTrack}
-                                                onChange={(e) => setSelectedTrack(e.target.value)}
-                                                disabled={isApplying}
-                                                title="Chọn Track Video đích trên DaVinci"
-                                            >
-                                                <option value="1">V1</option>
-                                                <option value="2">V2</option>
-                                                <option value="3">V3</option>
-                                                <option value="4">V4</option>
-                                                <option value="5">V5</option>
-                                            </select>
-                                            <Button
-                                                variant="secondary"
-                                                className={`flex-1 min-w-0 gap-1.5 h-9 text-xs font-medium shadow border transition-colors truncate ${applySuccess ? 'bg-green-500/10 text-green-600 border-green-500/20 hover:bg-green-500/20' : 'hover:bg-accent'}`}
-                                                onClick={handleApplyToResolve}
-                                                disabled={isApplying}
-                                            >
-                                                {isApplying ? (
-                                                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-                                                ) : applySuccess ? (
-                                                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-                                                ) : (
-                                                    <Send className="h-3.5 w-3.5 shrink-0 text-blue-500" />
-                                                )}
-                                                <span className="truncate">{isApplying ? "Đang gửi..." : applySuccess ? "Đã áp dụng" : "Áp dụng DaVinci"}</span>
-                                            </Button>
-                                        </div>
-                                    )}
-                                </div>
-
-                                {/* Thanh tiến trình */}
-                                {isAnalyzing && analyzeProgress && (
-                                    <p className="text-xs text-violet-400 animate-pulse text-center">
-                                        {analyzeProgress}
-                                    </p>
-                                )}
-
-                                {/* Lỗi */}
-                                {analyzeError && (
-                                    <p className="text-xs text-red-500 bg-red-500/10 p-2 rounded border border-red-500/20">
-                                        ❌ Lỗi: {analyzeError}
-                                    </p>
-                                )}
-
-                                {/* ===== Thống kê phân bổ ===== */}
-                                {assignmentResult && assignmentResult.assignments.length > 0 && (
-                                    <div className="space-y-3">
-                                        {/* Thanh phân bổ trực quan */}
-                                        <div className="bg-card/40 border rounded-lg p-3 space-y-2 overflow-hidden">
-                                            <p className="text-xs font-medium text-muted-foreground">
-                                                📊 Phân bổ Template
+                        {/* Danh sách cues */}
+                        <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+                            {titleCueResult.cues.map((cue, idx) => {
+                                const tpl = templates.find(t => t.id === cue.templateId)
+                                return (
+                                    <div
+                                        key={idx}
+                                        className="flex items-start gap-2 p-2 rounded bg-muted/20 border border-border/40 hover:bg-muted/30 transition-colors"
+                                    >
+                                        {tpl && <TemplateBadge template={tpl} />}
+                                        <div className="flex-1 min-w-0">
+                                            <p className="text-xs font-semibold truncate" title={cue.displayText}>
+                                                {cue.displayText}
                                             </p>
-                                            {/* Thanh progress tổng */}
-                                            <div className="flex h-3 rounded-full overflow-hidden border border-border">
-                                                {templates
-                                                    .filter((t) => counts[t.id] > 0)
-                                                    .map((tpl) => (
-                                                        <div
-                                                            key={tpl.id}
-                                                            className="transition-all duration-500"
-                                                            style={{
-                                                                width: `${(counts[tpl.id] / assignmentResult.assignments.length) * 100}%`,
-                                                                backgroundColor: tpl.badgeColor,
-                                                            }}
-                                                            title={`${tpl.displayName}: ${counts[tpl.id]} câu`}
-                                                        />
-                                                    ))}
-                                            </div>
-                                            {/* Legend — wrap xuống dòng khi hẹp */}
-                                            <div className="flex flex-wrap gap-x-2 gap-y-1 min-w-0">
-                                                {templates
-                                                    .filter((t) => counts[t.id] > 0)
-                                                    .map((tpl) => (
-                                                        <div key={tpl.id} className="flex items-center gap-1 text-[10px]">
-                                                            <div
-                                                                className="w-2 h-2 rounded-full shrink-0"
-                                                                style={{ backgroundColor: tpl.badgeColor }}
-                                                            />
-                                                            <span className="text-muted-foreground whitespace-nowrap">
-                                                                {tpl.displayName}: <span className="font-medium text-foreground">{counts[tpl.id]}</span>
-                                                            </span>
-                                                        </div>
-                                                    ))}
-                                            </div>
+                                            <p className="text-[10px] text-muted-foreground truncate" title={cue.reason}>
+                                                {cue.reason}
+                                            </p>
                                         </div>
-
-                                        {/* Danh sách từng câu đã gán */}
-                                        <div className="space-y-1.5 min-w-0">
-                                            {assignmentResult.assignments.map((assignment, idx) => (
-                                                <TemplateAssignmentItem
-                                                    key={idx}
-                                                    assignment={assignment}
-                                                    template={getTemplateById(assignment.templateId)}
-                                                    sentence={sentences?.find(
-                                                        (s) => s.num === assignment.sentenceNum
-                                                    )}
-                                                    matchResult={wordMatchResults.get(assignment.sentenceNum)}
-                                                />
-                                            ))}
+                                        <div className="flex items-center gap-1 shrink-0 text-[10px] text-muted-foreground">
+                                            <Clock className="h-3 w-3" />
+                                            <span>{formatTime(cue.start)} – {formatTime(cue.end)}</span>
                                         </div>
                                     </div>
-                                )}
+                                )
+                            })}
+                        </div>
 
-                                {/* Không có kết quả */}
-                                {assignmentResult && assignmentResult.assignments.length === 0 && (
-                                    <p className="text-sm text-muted-foreground text-center py-4 italic">
-                                        AI không gán được template nào. Kiểm tra lại cấu hình templates.
-                                    </p>
-                                )}
+                        {/* Nút chạy lại */}
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            className="w-full gap-2 text-xs"
+                            onClick={handleAnalyze}
+                            disabled={isAnalyzing}
+                        >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                            Chạy lại AI
+                        </Button>
+                    </div>
+                )}
+
+                {/* ===== SECTION 4: Apply vào DaVinci ===== */}
+                {titleCueResult && titleCueResult.cues.length > 0 && (
+                    <div className="space-y-3 border-t pt-3">
+                        <label className="text-sm font-medium flex items-center gap-2">
+                            <Send className="h-4 w-4 text-orange-400" />
+                            Áp dụng vào DaVinci Resolve
+                        </label>
+
+                        {/* Chọn track — hiển thị track thực tế từ DaVinci */}
+                        <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                                <label className="text-xs text-muted-foreground shrink-0">Video Track:</label>
+                                <button
+                                    className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1 ml-auto"
+                                    onClick={loadTrackCountFromResolve}
+                                    disabled={loadingTracks || !isConnected}
+                                    title="Cập nhật số track từ DaVinci"
+                                >
+                                    <RefreshCw className={`h-3 w-3 ${loadingTracks ? "animate-spin" : ""}`} />
+                                    {loadingTracks ? "Đang tải..." : `${resolveTrackCount} tracks`}
+                                </button>
                             </div>
+
+                            <select
+                                className="w-full text-xs bg-background border border-input rounded px-2 py-1.5 h-9"
+                                value={selectedTrack}
+                                onChange={e => updateTemplateAssignment({ selectedTrack: e.target.value })}
+                                disabled={isApplying}
+                            >
+                                {Array.from({ length: resolveTrackCount }, (_, i) => i + 1).map(n => (
+                                    <option key={n} value={String(n)}>
+                                        Video Track {n}{n === resolveTrackCount ? " (track cuối)" : ""}
+                                    </option>
+                                ))}
+                                <option value="new">➕ Tạo track mới (V{resolveTrackCount + 1})</option>
+                            </select>
+
+                            <p className="text-[10px] text-muted-foreground pl-1">
+                                {selectedTrack === "new"
+                                    ? `DaVinci sẽ tạo Video Track ${resolveTrackCount + 1} mới`
+                                    : `Titles sẽ được thêm vào Video Track ${selectedTrack}`
+                                }
+                            </p>
+                        </div>
+
+                        {!isConnected && (
+                            <p className="text-xs text-amber-400">
+                                ⚠️ Chưa kết nối DaVinci Resolve. Mở DaVinci và bật AutoSubs script.
+                            </p>
+                        )}
+
+                        <Button
+                            className="w-full gap-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white border-0 shadow-md h-11"
+                            onClick={handleApplyToResolve}
+                            disabled={!isConnected || isApplying || !titleCueResult?.cues?.length}
+                        >
+                            {isApplying
+                                ? <Loader2 className="h-4 w-4 animate-spin" />
+                                : <Send className="h-4 w-4" />
+                            }
+                            {isApplying
+                                ? "Đang thêm vào DaVinci..."
+                                : `Thêm ${titleCueResult.cues.length} Titles vào Track ${selectedTrack}`
+                            }
+                        </Button>
+
+                        {!isApplying && progress.startsWith("✅ Đã thêm") && (
+                            <p className="text-xs text-green-400 text-center">{progress}</p>
+                        )}
+
+                        {isApplying && progress && (
+                            <p className="text-xs text-orange-400 animate-pulse text-center">{progress}</p>
                         )}
                     </div>
                 )}
+
+                {/* ===== SECTION 5: Cấu hình Templates ===== */}
+                <div className="border-t pt-3 space-y-2">
+                    <button
+                        className="w-full flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                        onClick={() => setShowTemplateConfig(!showTemplateConfig)}
+                    >
+                        <Save className="h-3.5 w-3.5" />
+                        <span className="flex-1 text-left">
+                            Cấu hình Template DaVinci ({templates.filter(t => t.enabled).length} đang bật)
+                        </span>
+                        {showTemplateConfig
+                            ? <ChevronDown className="h-3.5 w-3.5" />
+                            : <ChevronRight className="h-3.5 w-3.5" />
+                        }
+                    </button>
+
+                    {showTemplateConfig && (
+                        <div className="space-y-2">
+                            <p className="text-[10px] text-muted-foreground">
+                                Tên template trong DaVinci Media Pool. AI chọn đúng template tương ứng.
+                            </p>
+                            {templates.map(tpl => (
+                                <div
+                                    key={tpl.id}
+                                    className="flex items-center gap-2 p-2 rounded border border-border/40 bg-muted/10"
+                                >
+                                    <button
+                                        className={`w-7 h-4 rounded-full transition-colors relative shrink-0 ${tpl.enabled ? "bg-green-500" : "bg-muted"}`}
+                                        onClick={() => {
+                                            setTemplates(prev => prev.map(t =>
+                                                t.id === tpl.id ? { ...t, enabled: !t.enabled } : t
+                                            ))
+                                        }}
+                                    >
+                                        <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${tpl.enabled ? "left-3.5" : "left-0.5"}`} />
+                                    </button>
+                                    <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: tpl.badgeColor }} />
+                                    <span className="text-xs font-medium flex-1 truncate">{tpl.displayName}</span>
+                                    <input
+                                        type="text"
+                                        className="text-xs bg-background border border-input rounded px-2 py-0.5 w-24 h-6"
+                                        value={tpl.resolveTemplateName}
+                                        placeholder="Title 1"
+                                        onChange={e => {
+                                            setTemplates(prev => prev.map(t =>
+                                                t.id === tpl.id ? { ...t, resolveTemplateName: e.target.value } : t
+                                            ))
+                                        }}
+                                    />
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
             </div>
         </ScrollArea>
-    )
-}
-
-// ======================== SUB-COMPONENT: 1 dòng Assignment ========================
-
-function TemplateAssignmentItem({
-    assignment,
-    template,
-    sentence,
-    matchResult,
-}: {
-    assignment: TemplateAssignment
-    template: TextTemplate | undefined
-    sentence: MatchingSentence | undefined
-    matchResult?: WordMatchResult
-}) {
-    // Nếu không tìm thấy template (vd: user xóa), fallback
-    const tplName = template?.displayName || assignment.templateId
-    const tplColor = template?.badgeColor || "#64748b"
-
-    return (
-        <div className="bg-card/30 border rounded-md px-3 py-2 text-sm flex items-start gap-2 transition-all hover:bg-card/50 min-w-0">
-            {/* Số câu */}
-            <span className="font-mono text-[11px] text-muted-foreground bg-muted/50 px-1.5 py-0.5 rounded shrink-0 mt-0.5">
-                #{assignment.sentenceNum}
-            </span>
-
-            {/* Nội dung chính */}
-            <div className="min-w-0 flex-1 space-y-1">
-                {/* displayText — text hiển thị trên màn hình (rút gọn) */}
-                {assignment.displayText && (
-                    <p className="text-xs font-bold break-words text-foreground">
-                        📺 {assignment.displayText}
-                    </p>
-                )}
-                {/* Nội dung câu gốc (nếu có) — màu nhạt hơn */}
-                {sentence && (
-                    <p className="text-[11px] break-words text-foreground/50">
-                        {sentence.text}
-                    </p>
-                )}
-                {/* Whisper words timing (nếu match thành công) */}
-                {matchResult?.success && (
-                    <p className="text-[10px] text-green-500/80 font-mono">
-                        ⏱ {matchResult.start.toFixed(2)}s → {matchResult.end.toFixed(2)}s
-                    </p>
-                )}
-                {/* Lý do */}
-                <p className="text-[11px] text-muted-foreground italic">
-                    {assignment.reason}
-                </p>
-            </div>
-
-            {/* Badge template */}
-            <span
-                className="shrink-0 text-[10px] font-medium px-2 py-0.5 rounded-full border whitespace-nowrap mt-0.5"
-                style={{
-                    backgroundColor: tplColor + "20",
-                    color: tplColor,
-                    borderColor: tplColor + "40",
-                }}
-            >
-                {tplName}
-            </span>
-        </div>
     )
 }

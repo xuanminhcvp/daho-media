@@ -4,7 +4,7 @@
 // Nút Auto Media đã chuyển lên titlebar.tsx
 
 import * as React from "react"
-import { Music, Zap, Type, Layers, Subtitles, Clapperboard, Film, RefreshCw } from "lucide-react"
+import { Music, Zap, Type, Layers, Subtitles, Clapperboard, Film, ImageIcon, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { MusicLibraryTab } from "@/components/postprod/music-library-tab"
@@ -14,6 +14,7 @@ import { TemplateAssignmentTab } from "@/components/postprod/template-assignment
 import { SubtitleTab } from "@/components/postprod/subtitle-tab"
 import { EffectsTab } from "@/components/postprod/effects-tab"
 import { FootageTab } from "@/components/postprod/footage-tab"
+import { ReferenceImagesTab } from "@/components/postprod/reference-images-tab"
 import { PostProdTab } from "@/types/audio-types"
 import { useProject } from "@/contexts/ProjectContext"
 import { getSavedFolder } from "@/services/saved-folders-service"
@@ -210,6 +211,22 @@ export function PostProductionPanel() {
                     <TooltipContent side="bottom">AI gợi ý footage minh hoạ từ thư viện → import lên Track V2</TooltipContent>
                 </Tooltip>
 
+                {/* Tab Ref Images — ảnh tham khảo thực tế */}
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <Button
+                            variant={activeSubTab === "refImages" ? "secondary" : "ghost"}
+                            size="sm"
+                            className="h-7 px-2.5 gap-1 text-xs"
+                            onClick={() => setActiveSubTab("refImages")}
+                        >
+                            <ImageIcon className="h-3.5 w-3.5" />
+                            Ref Images
+                        </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">AI gợi ý ảnh thực tế minh hoạ → import lên Track V4</TooltipContent>
+                </Tooltip>
+
                 {/* Tab Ducking — TẠM ẨN (chưa dùng) */}
                 {/* <Tooltip>
                     <TooltipTrigger asChild>
@@ -236,6 +253,7 @@ export function PostProductionPanel() {
                 {activeSubTab === "subtitles" && <SubtitleTab />}
                 {activeSubTab === "effects" && <EffectsTab />}
                 {activeSubTab === "footage" && <FootageTab />}
+                {activeSubTab === "refImages" && <ReferenceImagesTab />}
                 {/* Ducking content — TẠM ẨN */}
             </div>
         </div>

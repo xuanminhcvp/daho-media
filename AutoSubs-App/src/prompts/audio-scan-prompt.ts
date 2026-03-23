@@ -1,6 +1,6 @@
 // audio-scan-prompt.ts
 // Prompt để Gemini nghe và phân tích từng bài nhạc/SFX
-// Tối ưu cho dòng Stories YouTube dài (50 phút - 1 tiếng)
+// Tối ưu cho dòng 3D Investigative Documentary (25-27 phút)
 // AI nghe audio thật → trả về metadata + timeline cảm xúc + beat timing + gợi ý cắt gọt
 
 /**
@@ -12,14 +12,14 @@
  * - Gợi ý cắt gọt tốt nhất — để FFmpeg trim trước khi import
  */
 export function buildAudioScanPrompt(): string {
-    return `Bạn là một Đạo diễn Âm nhạc (Music Supervisor) chuyên làm nhạc nền cho kênh YouTube Stories/Documentary dạng kể chuyện dài (50 phút - 1 tiếng).
+    return `Bạn là một Đạo diễn Âm nhạc (Music Supervisor) chuyên làm nhạc nền cho kênh YouTube 3D Investigative Documentary (25-27 phút).
 
 Hãy nghe sâu bản nhạc/SFX này và NHẬN DIỆN CHI TIẾT TIMELINE + BEAT TIMING. Tự ước lượng độ dài file dựa trên số giây.
 
 === BỐI CẢNH SỬ DỤNG ===
-Video dạng STORIES YOUTUBE kể chuyện dài, liên tục thay đổi nhịp cảm xúc:
-- Căng thẳng → Xung đột → Cao trào → Hả hê → Bi thương → Plot twist...
-- Nhạc nền cần đổi liên tục (mỗi đoạn 1-3 phút), cắt nhanh theo mạch chuyện.
+Video dạng 3D INVESTIGATIVE DOCUMENTARY, narrator kể lại câu chuyện có thật:
+- Điều tra → Căng thẳng → Hành động → Tiết lộ → Pháp lý → Twist → Trầm lắng...
+- Nhạc nền cần đổi liên tục (mỗi đoạn 1-2 phút), khớp nhịp kể chuyện.
 - SFX thường ngắn (1-10 giây), nhưng có thể có nhiều nhịp/hit bên trong.
 
 === YÊU CẦU ===
@@ -80,7 +80,7 @@ GHI CHÚ:
  * KHÔNG CẦN: timeline, beats, trimSuggestions (vì file đã sẵn, không cắt gọt).
  */
 export function buildSfxScanPrompt(): string {
-    return `Bạn là Sound Designer chuyên chọn SFX cho kênh YouTube Stories/Documentary dạng kể chuyện dài.
+    return `Bạn là Sound Designer chuyên chọn SFX cho kênh YouTube 3D Investigative Documentary.
 
 Hãy nghe file SFX này. Mỗi file CHỈ CÓ 1 ÂM THANH duy nhất (đã cắt gọt sẵn, không cần phân tích thời gian).
 

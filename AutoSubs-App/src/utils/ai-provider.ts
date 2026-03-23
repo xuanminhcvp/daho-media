@@ -29,7 +29,7 @@ const CLAUDE_CONFIG = {
 // API key lấy từ settings (user nhập trên giao diện)
 const GEMINI_CONFIG = {
     name: "Gemini",
-    model: "gemini-3-flash-preview",
+    model: "gemini-2.5-pro",
     maxTokens: 16000,
     timeoutMs: 900000,
 };
@@ -60,10 +60,8 @@ async function getGeminiApiKey(): Promise<string | null> {
 }
 
 /**
- * Chọn provider tự động (round-robin + rate limit awareness)
- * - Nếu cả 2 available → xen kẽ Claude/Gemini
- * - Nếu 1 bị rate limit → dùng provider còn lại
- * - Nếu không có Gemini API key → chỉ dùng Claude
+ * Chọn provider: ưu tiên Gemini trước (gemini-2.5-pro)
+ * Chỉ fallback sang Claude khi Gemini không có key hoặc bị rate limit
  */
 function pickProvider(hasGeminiKey: boolean): "claude" | "gemini" {
     const now = Date.now();
@@ -79,16 +77,11 @@ function pickProvider(hasGeminiKey: boolean): "claude" | "gemini" {
     // Không có Gemini key → chỉ Claude
     if (!hasGeminiKey) return "claude";
 
-    // Cả 2 bị rate limit → dùng Claude (có retry built-in)
-    if (claudeRateLimited && geminiRateLimited) return "claude";
-
-    // 1 bị rate limit → dùng cái còn lại
-    if (claudeRateLimited) return "gemini";
+    // Gemini bị rate limit → fallback Claude
     if (geminiRateLimited) return "claude";
 
-    // Cả 2 OK → round-robin
-    requestCounter++;
-    return requestCounter % 2 === 0 ? "claude" : "gemini";
+    // Mặc định luôn dùng Gemini 2.5 Pro
+    return "gemini";
 }
 
 // ======================== HÀM GỌI AI ========================

@@ -5,9 +5,13 @@
 // Giải pháp: convert ảnh → video trước, rồi import video vào timeline.
 //
 // Sử dụng ffmpeg qua Tauri plugin-shell (đã config trong capabilities)
+//
+// LưU Ý: File convert được lưu vào permanent folder (KHÔNG dùng /tmp/)
+// Vì macOS tự xóa /tmp/ khi restart → DaVinci mất file → "Media not found"
 
 import { Command } from "@tauri-apps/plugin-shell";
 import { getFFmpegPath } from "@/utils/ffmpeg-path";
+import { getAutoMediaRoot } from "@/services/auto-media-storage";
 
 // ======================== CẤU HÌNH ========================
 
@@ -205,22 +209,30 @@ export async function convertImagesToVideo(
     return results;
 }
 
-// ======================== THƯ MỤC TẠM ========================
-
-/** Thư mục lưu video tạm — macOS tự dọn /tmp/ khi restart */
-const TEMP_DIR = "/tmp/autosubs-convert";
+// ======================== THƯ MỤC LưU VIDEO CONVERT ========================
 
 /**
- * Tạo thư mục /tmp/autosubs-convert/ nếu chưa có
- * Nếu đã có nhưng không có quyền ghi (do user khác tạo) → xóa và tạo lại
+ * Lấy đường dẫn thư mục lưu video convert từ ảnh tĩnh
+ * Dùng folder PERMANENT (không phải /tmp/) để DaVinci không bị offline sau restart
+ * Đường dẫn: ~/Desktop/Auto_media/ref_images_converted/
+ */
+async function getConvertDir(): Promise<string> {
+    const root = await getAutoMediaRoot();
+    // join bằng "/" trực tiếp (không dùng @tauri-apps/api/path để tránh import thường xuyên)
+    return `${root}/ref_images_converted`;
+}
+
+/**
+ * Tạo thư mục ~/Desktop/Auto_media/ref_images_converted/ nếu chưa có
+ * Thư mục này KHÔNG bị xóa khi restart (khác /tmp/)
  * Gọi trước khi convert batch đầu tiên
  */
 export async function ensureTempDir(): Promise<void> {
     try {
-        // Bước 1: Kiểm tra folder đã tồn tại và có quyền ghi không
+        const convertDir = await getConvertDir();
         const checkCmd = Command.create("exec-sh", ["-c",
-            `if [ -d '${TEMP_DIR}' ]; then
-                if [ -w '${TEMP_DIR}' ]; then
+            `if [ -d '${convertDir}' ]; then
+                if [ -w '${convertDir}' ]; then
                     echo "OK"
                 else
                     echo "NO_WRITE"
@@ -233,35 +245,35 @@ export async function ensureTempDir(): Promise<void> {
         const status = checkResult.stdout.trim();
 
         if (status === "NO_WRITE") {
-            // Folder tồn tại nhưng không có quyền ghi (user khác tạo)
-            // → Xóa và tạo lại
-            console.warn("[ImageConverter] ⚠️ /tmp/autosubs-convert/ không có quyền ghi → tạo lại");
-            const rmCmd = Command.create("exec-sh", ["-c", `rm -rf '${TEMP_DIR}' && mkdir -p '${TEMP_DIR}'`]);
+            console.warn("[ImageConverter] ⚠️ ref_images_converted/ không có quyền ghi → tạo lại");
+            const rmCmd = Command.create("exec-sh", ["-c", `rm -rf '${convertDir}' && mkdir -p '${convertDir}'`]);
             await rmCmd.execute();
         } else if (status === "NOT_EXIST") {
-            // Folder chưa tồn tại → tạo mới
-            const mkCmd = Command.create("exec-sh", ["-c", `mkdir -p '${TEMP_DIR}'`]);
+            const mkCmd = Command.create("exec-sh", ["-c", `mkdir -p '${convertDir}'`]);
             await mkCmd.execute();
+            console.log(`[ImageConverter] ✅ Đã tạo: ${convertDir}`);
         }
-        // status === "OK" → folder đã có và có quyền ghi → không cần làm gì
+        // status === "OK" → folder đã có → không cần làm gì
     } catch (e) {
-        console.warn("[ImageConverter] ⚠️ Không tạo được thư mục temp:", e);
+        console.warn("[ImageConverter] ⚠️ Không tạo được thư mục convert:", e);
     }
 }
 
 // ======================== TẠO OUTPUT PATH ========================
 
 /**
- * Tạo đường dẫn output video (.mp4) trong thư mục /tmp/autosubs-convert/
- * Lấy tên file gốc, thêm suffix "_autosubs.mp4"
+ * Tạo đường dẫn output video (.mp4) trong thư mục permanent
  *
- * Ví dụ: /path/to/SCENE_01.jpg → /tmp/autosubs-convert/SCENE_01_autosubs.mp4
+ * Ví dụ: /path/to/SCENE_01.jpg → ~/Desktop/Auto_media/ref_images_converted/SCENE_01_autosubs.mp4
+ *
+ * Dùng thư mục PERMANENT (không phải /tmp) để DaVinci không bị offline sau restart.
  */
-export function getVideoOutputPath(imagePath: string): string {
+export async function getVideoOutputPath(imagePath: string): Promise<string> {
+    const convertDir = await getConvertDir();
     // Lấy tên file (không có folder)
     const fileName = imagePath.split("/").pop()?.split("\\").pop() || "image";
     // Bỏ extension gốc
     const lastDot = fileName.lastIndexOf(".");
     const baseName = lastDot > 0 ? fileName.substring(0, lastDot) : fileName;
-    return `${TEMP_DIR}/${baseName}_autosubs.mp4`;
+    return `${convertDir}/${baseName}_autosubs.mp4`;
 }

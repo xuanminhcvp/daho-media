@@ -182,6 +182,10 @@ function M.StartServer(state, helpers, timeline_info, audio_export, subtitle_ren
                             elseif data.func == "AddSfxClipsToTimeline" then
                                 local result = media_import.AddSfxClipsToTimeline(state, helpers, data.clips, data.trackName)
                                 body = helpers.safe_json(result, json)
+                            elseif data.func == "AddRefImagesToTimeline" then
+                                -- Import ảnh tham khảo thực tế V4 + SFX tự động + Ken Burns + Dissolve
+                                local result = media_import.AddRefImagesToTimeline(state, helpers, data.clips, data.sfxClips)
+                                body = helpers.safe_json(result, json)
                             elseif data.func == "AddTemplateSubtitles" then
                                 local result = subtitle_renderer.AddTemplateSubtitles(
                                     state, helpers, template_manager, data.clips, data.trackIndex)

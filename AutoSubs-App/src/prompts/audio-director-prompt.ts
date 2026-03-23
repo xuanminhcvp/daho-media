@@ -1,6 +1,6 @@
 // audio-director-prompt.ts
 // Prompt cho AI Đạo Diễn: phân tích kịch bản → gợi ý nhạc nền phù hợp từng scene
-// Tối ưu cho dòng Stories YouTube dài (50 phút - 1 tiếng)
+// Tối ưu cho dòng 3D Investigative Documentary (25-27 phút)
 // AI đọc text kịch bản + catalog nhạc → chọn bài + chọn đoạn nhạc chính xác
 
 import type { AudioLibraryItem } from "@/types/audio-types";
@@ -50,7 +50,7 @@ export function buildMusicCatalogText(musicItems: AudioLibraryItem[]): string {
 
 /**
  * Tạo prompt cho AI Đạo Diễn phân tích kịch bản và gợi ý nhạc nền
- * Tối ưu cho Stories YouTube dài 50p-1h: chia 30-60 scene, cảm xúc chuyên biệt
+ * Tối ưu cho 3D Investigative Documentary 25-27 phút: 12-20 scene, cảm xúc điều tra
  *
  * @param sentences - Danh sách câu từ matching.json
  * @param musicItems - Thư viện nhạc đã có metadata AI
@@ -73,23 +73,24 @@ export function buildDirectorPrompt(
         ? sentences[sentences.length - 1].end
         : 0;
     const videoDurationMin = Math.round(totalDuration / 60);
-    // Mỗi scene trung bình 1-2 phút → video 60p = 30-60 scenes
-    const minScenes = Math.max(15, Math.round(videoDurationMin / 2));
-    const maxScenes = Math.max(30, Math.round(videoDurationMin * 1.2));
+    // Documentary 25-27min: mỗi scene ~1-2 phút → 12-20 scenes
+    const minScenes = Math.max(8, Math.round(videoDurationMin / 2.5));
+    const maxScenes = Math.max(15, Math.round(videoDurationMin * 0.8));
 
-    return `Bạn là một Đạo diễn Âm thanh chuyên nghiệp cho kênh YouTube Stories/Documentary dạng KỂ CHUYỆN dài (${videoDurationMin} phút).
+    return `Bạn là một Đạo diễn Âm thanh chuyên nghiệp cho kênh YouTube 3D Investigative Documentary (${videoDurationMin} phút).
 
-=== THỂ LOẠI: STORIES YOUTUBE ===
-Video kể chuyện có mạch cảm xúc liên tục thay đổi:
+=== THỂ LOẠI: 3D INVESTIGATIVE DOCUMENTARY ===
+Video documentary điều tra với hình ảnh 3D, kể lại câu chuyện có thật:
+- 🔍 Điều tra / Investigative → dẫn dắt người xem vào vụ án, sự kiện
 - 😰 Căng thẳng / Suspense → trước khi tiết lộ twist
-- ⚔️ Xung đột / Conflict → đối đầu, mâu thuẫn
-- 🔥 Cao trào / Climax → đỉnh điểm kịch tính
-- 😌 Hả hê / Satisfaction → giải thoát, hậu quả xứng đáng
-- 💔 Bi thương / Tragic → mất mát, đau thương
-- 🎯 Bước ngoặt / Plot Twist → lật ngược tình thế, sốc
-- 🕵️ Hồi hộp / Thriller → rình rập, phát hiện bí mật
-- 🌅 Trầm lắng / Reflective → hồi tưởng, suy ngẫm
-- ⚡ Dồn dập / Escalation → tốc độ tăng dần, build-up
+- ⚡ Hành động / Action → đột kích, truy bắt, đối đầu
+- 📅 Chuyển thời gian / Time Jump → nhảy giữa các mốc thời gian quan trọng
+- 🎯 Tiết lộ / Revelation → tiết lộ bí mật, danh tính, sự thật
+- 🌐 Bối cảnh / Context → giải thích quy mô, ảnh hưởng toàn cầu
+- 💀 Đe dọa / Threatening → nguy hiểm, áp lực, đe dọa tính mạng
+- 🏛️ Pháp lý / Legal → phiên tòa, kết án, bản án
+- 🔄 Twist / Plot Reversal → lật ngược tình thế, bất ngờ
+- 🌅 Trầm lắng / Reflective → hậu quả, suy ngẫm, kết thúc
 
 === KỊCH BẢN VIDEO (với timecode) ===
 ${scriptText}
@@ -162,12 +163,12 @@ Trả về JSON (KHÔNG markdown, KHÔNG giải thích ngoài JSON):
 
 /**
  * Prompt cho AI Đạo Diễn — phiên bản BATCH
- * Chỉ gửi 1 phần script (VD: phút 0-10), nhưng gửi toàn bộ catalog nhạc
- * Giảm prompt size → tránh timeout
+ * Documentary 25-27min → mặc định gửi 1 batch duy nhất (toàn bộ video)
+ * Giữ lại batch logic để tương thích nếu cần chia nhỏ sau này
  *
  * @param sentences - Câu trong batch này
  * @param musicItems - TẤT CẢ thư viện nhạc (để AI coherence)
- * @param batchNum - Số thứ tự batch (1-5)
+ * @param batchNum - Số thứ tự batch (mặc định 1)
  * @param totalBatches - Tổng số batch
  * @param batchTimeStart - Thời gian bắt đầu batch (giây)
  * @param batchTimeEnd - Thời gian kết thúc batch (giây)
@@ -195,9 +196,11 @@ export function buildDirectorBatchPrompt(
     const videoDurationMin = Math.round(totalDuration / 60);
     const batchDurationMin = Math.round((batchTimeEnd - batchTimeStart) / 60);
 
-    // Ước lượng số scene cho batch này (mỗi scene ~1-2 phút)
-    const minScenes = Math.max(3, Math.round(batchDurationMin / 2));
-    const maxScenes = Math.max(6, Math.round(batchDurationMin * 1.2));
+    // Documentary 25-27min: 12-20 scene cho toàn video
+    // Nếu 1 batch = toàn video → 12-20 scene
+    // Nếu chia nhỏ → tính tỷ lệ
+    const minScenes = Math.max(8, Math.round(batchDurationMin / 2.5));
+    const maxScenes = Math.max(12, Math.round(batchDurationMin * 0.8));
 
     // Tóm tắt nhạc đã dùng ở batch trước (coherence)
     let previousContext = '';
@@ -209,7 +212,7 @@ ${last5.map(s => `Scene ${s.sceneId}: ${s.emotion} → "${s.assignedMusicFileNam
 `;
     }
 
-    return `Bạn là Đạo diễn Âm thanh. Video kể chuyện YouTube dài ${videoDurationMin} phút.
+    return `Bạn là Đạo diễn Âm thanh cho 3D Investigative Documentary (${videoDurationMin} phút).
 Đây là BATCH ${batchNum}/${totalBatches} (${batchTimeStart.toFixed(0)}s → ${batchTimeEnd.toFixed(0)}s, ~${batchDurationMin} phút).
 ${previousContext}
 === KỊCH BẢN BATCH ${batchNum} (${batchTimeStart.toFixed(0)}s - ${batchTimeEnd.toFixed(0)}s) ===

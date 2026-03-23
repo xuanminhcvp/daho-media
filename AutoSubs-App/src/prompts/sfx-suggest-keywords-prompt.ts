@@ -9,7 +9,7 @@
  * @param fullScript - Toàn bộ nội dung kịch bản (tất cả câu chất lượng high/medium)
  */
 export function buildSfxSuggestKeywordsPrompt(fullScript: string): string {
-  return `You are a professional Sound Designer for YouTube Storytelling Drama channels.
+  return `You are a professional Sound Designer for YouTube 3D Investigative Documentary channels.
 
 === TASK ===
 Based on the FULL script below, suggest EXACTLY 20 SFX (sound effects) keywords that the user should download to build their SFX library.

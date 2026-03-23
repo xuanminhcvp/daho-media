@@ -18,7 +18,7 @@ const AI_CONFIG = {
     baseUrl: "https://ezaiapi.com/v1",
     apiKey: "sk-570848c49fda787c748cd58f3a21a1d95f00afd87a5cba6e",
     model: "claude-sonnet-4-6",
-    batchCount: 12,       // Chia transcript 12 phần (nhỏ hơn → tránh Cloudflare 524 timeout)
+    batchCount: 6,        // Documentary 25-27min: 6 phần (ngắn hơn Stories → ít batch hơn)
     maxConcurrent: 5,     // Tối đa 5 request đồng thời (API giới hạn 6, chừa 1 buffer)
     timeoutMs: 900000,    // 15 phút timeout per request
     maxTokens: 8000,      // Batch nhỏ → cần ít token hơn

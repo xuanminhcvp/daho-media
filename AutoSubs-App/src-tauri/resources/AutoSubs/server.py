@@ -22,7 +22,7 @@ from .subtitle_renderer import (
 )
 from .template_subtitles import add_template_subtitles
 from .template_manager import create_template_set
-from .media_import import add_audio_to_timeline, add_sfx_clips_to_timeline, add_media_to_timeline
+from .media_import import add_audio_to_timeline, add_sfx_clips_to_timeline, add_media_to_timeline, auto_relink_autosubs_media
 from .preview_generator import generate_preview
 
 
@@ -134,6 +134,12 @@ def route_request(data):
     elif func == "CreateTemplateSet":
         print("[AutoSubs Server] Creating Template Set...")
         return create_template_set(data.get("templateNames", []))
+
+    elif func == "AutoRelinkMedia":
+        # Relink lại mọi clip offline trong Media Pool
+        # Gọi khi mở project lại mà bị 'Media not found'
+        print("[AutoSubs Server] Auto Relinking offline media...")
+        return auto_relink_autosubs_media(data.get("folderPath"))
 
     elif func == "Exit":
         state.quit_server = True

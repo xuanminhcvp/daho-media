@@ -426,7 +426,7 @@ export function FootageTab() {
 
                 {/* Danh sách gợi ý */}
                 {suggestions.length > 0 && (
-                    <div className="max-h-48 overflow-y-auto space-y-1">
+                    <div className="space-y-1">
                         {suggestions.map((s, idx) => (
                             <div
                                 key={idx}

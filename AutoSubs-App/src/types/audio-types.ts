@@ -181,4 +181,4 @@ export interface SubtitleLine {
 }
 
 /** Sub-tab đang active trong Post-Production Panel */
-export type PostProdTab = "music" | "sfx" | "highlight" | "templates" | "subtitles" | "effects" | "footage" | "ducking";
+export type PostProdTab = "music" | "sfx" | "highlight" | "templates" | "subtitles" | "effects" | "footage" | "refImages" | "ducking";

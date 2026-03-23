@@ -9,7 +9,7 @@
  * @param fullScript - Toàn bộ nội dung kịch bản (tất cả câu chất lượng high/medium)
  */
 export function buildMusicSuggestKeywordsPrompt(fullScript: string): string {
-  return `You are a professional Music Supervisor for YouTube Storytelling Drama channels.
+  return `You are a professional Music Supervisor for YouTube 3D Investigative Documentary channels.
 Your job is to write Suno AI prompts that generate cinematic background music.
 
 === TASK ===
@@ -17,8 +17,8 @@ Based on the FULL script below, generate EXACTLY 10 Suno AI music prompts.
 Each prompt creates 1 unique background music track suitable for different scenes in this video.
 
 === CONTEXT ===
-The video is a YouTube Stories/Drama — narrator tells an emotional story.
-The story shifts between tensions: tension → conflict → climax → relief → sadness → twist...
+The video is a 3D Investigative Documentary (25-27 minutes) — narrator tells a real investigative story with 3D-rendered visuals.
+The story shifts between: investigation → tension → action → revelation → legal/political → twist → reflection...
 User will use Suno AI to generate these tracks, then import them as BGM into the video.
 
 === SUNO AI PROMPT RULES ===
@@ -26,13 +26,13 @@ User will use Suno AI to generate these tracks, then import them as BGM into the
 2. Include: instrumentation, tempo, mood, style, and key sonic elements
 3. EVERY prompt MUST contain the words "instrumental" and "no vocals" — this is CRITICAL so Suno does NOT generate singing voices
 4. DO NOT include lyrics, song names, or artist names
-4. Cover a VARIETY of moods across 10 prompts:
-   - 2 prompts: Tense/Suspenseful (dark, thriller, building dread)
-   - 2 prompts: Emotional/Sad (melancholic, heartfelt, tear-jerking)
-   - 2 prompts: Dramatic Climax (epic, orchestral peak, powerful)
-   - 2 prompts: Calm/Reflective (gentle, peaceful, nostalgic)
-   - 1 prompt: Dark/Mystery (eerie, unsettling, investigative)
-   - 1 prompt: Hopeful/Uplifting (inspiring, warm, resolving)
+4. Cover a VARIETY of moods across 10 prompts (tailored for investigative documentary):
+   - 3 prompts: Investigative/Tension (dark, thriller, building dread, surveillance feel)
+   - 2 prompts: Dramatic Action (epic, orchestral peak, chase/raid energy)
+   - 2 prompts: Calm/Reflective (gentle, contemplative, aftermath, backstory)
+   - 1 prompt: Dark/Mystery (eerie, unsettling, conspiracy, hacking)
+   - 1 prompt: Legal/Political (courtroom gravity, formal, institutional weight)
+   - 1 prompt: Revelation/Twist (shocking reveal, dramatic turn, cinematic hit)
 5. Each prompt MUST start or end with: "instrumental, no vocals"
 
 === FULL SCRIPT ===

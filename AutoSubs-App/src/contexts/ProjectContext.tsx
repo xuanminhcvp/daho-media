@@ -19,7 +19,7 @@ import type { ScriptSentence } from '@/utils/media-matcher';
 import type { AudioLibraryItem, AIDirectorResult, SubtitleLine } from '@/types/audio-types';
 import type { PauseResult } from '@/services/voice-pacing-service';
 import type { ImageMatchResult } from '@/utils/image-matcher';
-import type { AITemplateAssignmentResult } from '@/services/template-assignment-service';
+import type { AITemplateAssignmentResult, AITitleCueResult } from '@/services/template-assignment-service';
 import type { WordMatchResult } from '@/utils/whisper-words-matcher';
 
 // ===== INTERFACE: DỮ LIỆU TỪNG TAB =====
@@ -91,6 +91,11 @@ export interface TemplateAssignmentData {
   wordMatchResults: [number, WordMatchResult][];
   /** Track video đích khi áp dụng lên DaVinci */
   selectedTrack: string;
+  /**
+   * Kết quả phân tích Whisper Words — flow mới (không cần matching.json)
+   * Từng cue có start/end chính xác từ word timestamps
+   */
+  titleCueResult: AITitleCueResult | null;
 }
 
 /** Tab Phụ Đề — phụ đề stories import lên timeline */
@@ -200,6 +205,7 @@ export const DEFAULT_PROJECT_DATA: ProjectData = {
     whisperWordsPath: '',
     wordMatchResults: [],
     selectedTrack: '2',
+    titleCueResult: null,
   },
 
   // Subtitle (Phụ Đề)

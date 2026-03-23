@@ -9,7 +9,7 @@
  * @param fullScript - Toàn bộ nội dung kịch bản (text)
  */
 export function buildFootageSuggestKeywordsPrompt(fullScript: string): string {
-  return `You are a professional Video Editor for YouTube Storytelling Drama channels.
+  return `You are a professional Video Editor for YouTube 3D Investigative Documentary channels.
 
 === TASK ===
 Based on the FULL script below, suggest EXACTLY 15 stock footage keywords that the user should download from Envato Elements, Pexels, or Pixabay to use as B-roll in their video.

@@ -121,9 +121,10 @@ export const INITIAL_AUTO_MEDIA_STATE: AutoMediaState = {
  */
 export const TRACK_LAYOUT = {
     // Video tracks
-    IMAGE_TRACK: '1',      // V1 — ảnh/media
-    FOOTAGE_TRACK: '2',    // V2 — footage minh hoạ
-    SUBTITLE_TRACK: '3',   // V3 — phụ đề
+    IMAGE_TRACK: '1',      // V1 — ảnh/media 3D
+    FOOTAGE_TRACK: '2',    // V2 — footage minh hoạ (B-roll)
+    SUBTITLE_TRACK: '3',   // V3 — phụ đề / text onscreen
+    REF_IMAGE_TRACK: '4',  // V4 — ảnh tham khảo thực tế (overlay)
 
     // Audio tracks (note: DaVinci xử lý audio track riêng)
     SFX_TRACK: '1',        // A1 — SFX

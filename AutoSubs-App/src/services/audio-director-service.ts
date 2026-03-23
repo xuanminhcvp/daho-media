@@ -205,12 +205,9 @@ export async function analyzeScriptForMusic(
         : 0;
     const totalMinutes = Math.round(totalDuration / 60);
 
-    // ========== BATCH 1 TUẦN TỰ → BATCH 2-5 SONG SONG (dùng coherence từ batch 1) ==========
-    // Chiến lược tối ưu tốc độ:
-    //   - Batch 1: chạy TUẦN TỰ trước để lấy coherence (phong cách nhạc, genre, nhạc cụ...)
-    //   - Batch 2-5: chạy SONG SONG, tất cả dùng chung coherence từ batch 1 làm tham chiếu
-    //   - Kết quả: thay vì 5 lần API nối tiếp → chỉ 2 lần (batch 1 + 4 batch cùng lúc)
-    const MUSIC_BATCH_COUNT = 5;
+    // Documentary 25-27min → gửi 1 batch duy nhất (toàn bộ video)
+    // → Nhạc đồng bộ, coherent, AI thấy toàn cảnh kịch bản
+    const MUSIC_BATCH_COUNT = 1;
     const batchDuration = totalDuration / MUSIC_BATCH_COUNT;
 
     console.log(`[AudioDirector] 🚀 Batch 1 tuần tự → Batch 2-${MUSIC_BATCH_COUNT} song song | Video: ${totalMinutes}min | ${sentences.length} câu`);
@@ -711,8 +708,8 @@ function fillMusicGaps(scenes: AudioScene[]): void {
 
 // ======================== AI GỢI Ý SFX (5 BATCH SONG SONG) ========================
 
-// Số batch song song: chia whisper words + sentences thành 5 phần
-const SFX_BATCH_COUNT = 5;
+// Documentary 25-27min → gửi 1 batch duy nhất (mặc định tắt trong automedia)
+const SFX_BATCH_COUNT = 1;
 
 /**
  * Gọi AI để phân tích kịch bản và gợi ý các điểm cần chèn SFX.

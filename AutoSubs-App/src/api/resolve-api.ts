@@ -325,3 +325,86 @@ export async function createTemplateSet(
   });
   return response.json();
 }
+
+/**
+ * Import ảnh tham khảo thực tế lên Track V4 trong DaVinci Resolve
+ * Kèm theo: Ken Burns nhẹ (zoom 100→108%) + Cross Dissolve transition
+ * Full-frame nếu priority=high + type portrait/headline/evidence
+ * Overlay (80% size, 90% opacity) nếu priority không phải high
+ * Đồng thời import SFX kèm (nếu có) lên Audio Track
+ *
+ * @param clips - Danh sách ảnh cần import: filePath, startTime, endTime, priority, imageType
+ * @param sfxClips - Danh sách SFX kèm theo (optional): filePath, startTime
+ */
+export async function addRefImagesToTimeline(
+  clips: Array<{
+    filePath: string;
+    startTime: number;
+    endTime: number;
+    priority: string;      // "high" | "medium" | "low"
+    imageType: string;     // "portrait" | "headline" | "evidence" | ...
+  }>,
+  sfxClips?: Array<{ filePath: string; startTime: number }>
+): Promise<{ success?: boolean; clipsAdded?: number; sfxAdded?: number; message?: string; error?: boolean }> {
+  const controller = new AbortController();
+  // 120 giây timeout — Fusion composition apply có thể chậm
+  const timeout = setTimeout(() => controller.abort(), 120000);
+  try {
+    const body: any = {
+      func: "AddRefImagesToTimeline",
+      clips,
+    };
+    // Chỉ gửi sfxClips khi có data (tránh gửi mảng rỗng)
+    if (sfxClips && sfxClips.length > 0) {
+      body.sfxClips = sfxClips;
+    }
+
+    const response = await fetch(resolveAPI, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    return response.json();
+  } catch (err: any) {
+    clearTimeout(timeout);
+    if (err.name === 'AbortError') {
+      return { error: true, message: "Timeout 120s — DaVinci Resolve không phản hồi." };
+    }
+    throw err;
+  }
+}
+
+/**
+ * Relink lại tất cả clip bị offline trong Media Pool
+ * Gọi khi mở project lại thấy "Media not found"
+ * Resolve sẽ scan folderPath và sub-folders để tìm lại file
+ *
+ * @param folderPath - Thư mục chứa media (mặc định ~/Desktop/Auto_media)
+ */
+export async function autoRelinkMedia(
+  folderPath?: string
+): Promise<{ success?: boolean; relinkedCount?: number; offlineCount?: number; message?: string; error?: boolean }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000); // 30s
+  try {
+    const response = await fetch(resolveAPI, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        func: "AutoRelinkMedia",
+        folderPath: folderPath || null,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    return response.json();
+  } catch (err: any) {
+    clearTimeout(timeout);
+    if (err.name === 'AbortError') {
+      return { error: true, message: "Timeout 30s — DaVinci không phản hồi." };
+    }
+    throw err;
+  }
+}

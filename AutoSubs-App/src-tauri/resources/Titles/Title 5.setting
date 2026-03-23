@@ -1,0 +1,172 @@
+{
+	Tools = ordered() {
+		Title5 = MacroOperator {
+			-- Main Title / Opening Title
+			-- Chữ trắng lớn Trajan Pro 3, fade-in chậm epic (12 frame ~0.5s)
+			-- Dùng duy nhất 1 lần ở đầu video
+			Inputs = ordered() {
+				-- Text content
+				Input1 = InstanceInput {
+					SourceOp = "Text1",
+					Source = "StyledText",
+				},
+				-- Text size (lớn hơn các template khác)
+				Input2 = InstanceInput {
+					SourceOp = "Text1",
+					Source = "Size",
+					Default = 0.14,
+				},
+				-- Glow soft
+				Input3 = InstanceInput {
+					SourceOp = "SoftGlow1",
+					Source = "GlowSize",
+					Default = 48,
+				},
+				-- Vignette opacity
+				Input4 = InstanceInput {
+					SourceOp = "BgVignette",
+					Source = "TopLeftAlpha",
+					Default = 1,
+				},
+			},
+			Outputs = {
+				MainOutput1 = InstanceOutput {
+					SourceOp = "VignetteMerge",
+					Source = "Output",
+				}
+			},
+			ViewInfo = GroupInfo { Pos = { 0, 0 } },
+			Tools = ordered() {
+
+				-- Text chính: Trajan Pro 3, trắng sáng, căn giữa, rất lớn
+				Text1 = TextPlus {
+					Inputs = {
+						Width = Input { Value = 1920, },
+						Height = Input { Value = 1080, },
+						UseFrameFormatSettings = Input { Value = 1, },
+						["Gamut.SLogVersion"] = Input { Value = FuID { "SLog2" }, },
+						Wrap = Input { Value = 1, },
+						LayoutRotation = Input { Value = 1, },
+						TransformRotation = Input { Value = 1, },
+						StyledText = Input { Value = "THE UNTOUCHABLE EMPIRE", },
+						Font = Input { Value = "Trajan Pro 3", },
+						Style = Input { Value = "Bold", },
+						Size = Input { Value = 0.14, },
+						-- Màu trắng tinh
+						Red1 = Input { Value = 1.0, },
+						Green1 = Input { Value = 0.98, },
+						Blue1 = Input { Value = 0.96, },
+						Alpha1 = Input { Value = 1, },
+						Softness1 = Input { Value = 0.001, },
+						VerticalJustificationNew = Input { Value = 3, },
+						HorizontalJustificationNew = Input { Value = 3, },
+						-- Letter spacing rộng hơn
+						Tracking1 = Input { Value = 0.12, },
+					},
+					ViewInfo = OperatorInfo { Pos = { 180, 150 } },
+				},
+
+				-- SoftGlow nhẹ — hào quang trắng tinh tế xung quanh chữ
+				SoftGlow1 = SoftGlow {
+					Inputs = {
+						Input = Input {
+							SourceOp = "Text1",
+							Source = "Output",
+						},
+						Gain = Input { Value = 0.8, },
+						GlowSize = Input { Value = 48, },
+						Threshold = Input { Value = 0.3, },
+						Blend = Input { Value = 0.7, },
+					},
+					ViewInfo = OperatorInfo { Pos = { 380, 150 } },
+				},
+
+				-- Merge text + glow với fade-in chậm epic (12 frame)
+				Merge2 = Merge {
+					CtrlWZoom = false,
+					Inputs = {
+						Background = Input {
+							SourceOp = "SoftGlow1",
+							Source = "Output",
+						},
+						Foreground = Input {
+							SourceOp = "Text1",
+							Source = "Output",
+						},
+						Blend = Input {
+							SourceOp = "EpicFadeAnim",
+							Source = "Value",
+						},
+						PerformDepthMerge = Input { Value = 0, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 580, 150 } },
+				},
+
+				-- Fade-in chậm 0→1 trong 12 frame (~0.5s @ 24fps) — cảm giác epic
+				EpicFadeAnim = BezierSpline {
+					SplineColor = { Red = 200, Green = 220, Blue = 255 },
+					NameSet = true,
+					KeyFrames = {
+						[0] = { 0, RH = { 4, 0.3333 }, Flags = { Linear = false } },
+						[12] = { 1, LH = { 8, 0.6667 }, Flags = { Linear = false } }
+					}
+				},
+
+				-- Vignette tối viền nhẹ
+				EllipseMask1 = EllipseMask {
+					Inputs = {
+						Width = Input { Value = 0.88, },
+						Height = Input { Value = 0.80, },
+						SoftEdge = Input { Value = 0.2, },
+						Invert = Input { Value = 1, },
+						Center = Input { Value = { 0.5, 0.5 }, },
+					},
+					ViewInfo = OperatorInfo { Pos = { 680, 300 } },
+				},
+				BlurMask1 = Blur {
+					Inputs = {
+						Filter = Input { Value = FuID { "Fast Gaussian" }, },
+						XBlurSize = Input { Value = 150, },
+						YBlurSize = Input { Value = 150, },
+						Input = Input {
+							SourceOp = "EllipseMask1",
+							Source = "Mask",
+						},
+					},
+					ViewInfo = OperatorInfo { Pos = { 760, 300 } },
+				},
+				BgVignette = Background {
+					Inputs = {
+						Width = Input { Value = 1920, },
+						Height = Input { Value = 1080, },
+						UseFrameFormatSettings = Input { Value = 1, },
+						TopLeftRed = Input { Value = 0, },
+						TopLeftGreen = Input { Value = 0, },
+						TopLeftBlue = Input { Value = 0, },
+						TopLeftAlpha = Input { Value = 1, },
+						EffectMask = Input {
+							SourceOp = "BlurMask1",
+							Source = "Output",
+						},
+					},
+					ViewInfo = OperatorInfo { Pos = { 840, 300 } },
+				},
+				VignetteMerge = Merge {
+					Inputs = {
+						Background = Input {
+							SourceOp = "BgVignette",
+							Source = "Output",
+						},
+						Foreground = Input {
+							SourceOp = "Merge2",
+							Source = "Output",
+						},
+						PerformDepthMerge = Input { Value = 0, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 980, 150 } },
+				}
+			},
+		}
+	},
+	ActiveTool = "Title5"
+}

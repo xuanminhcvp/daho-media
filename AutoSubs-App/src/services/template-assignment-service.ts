@@ -118,12 +118,53 @@ export const DEFAULT_TEMPLATES: TextTemplate[] = [
         badgeColor: "#8b5cf6", // violet
         resolveTemplateName: "Title 4",
     },
+    {
+        id: "template_5",
+        // 🎬 Main Title / Opening Title — Tên video chính, full screen cảnh đầu
+        displayName: "Main Title",
+        description: "Text trắng lớn Serif Bold, animation nổi bật full screen — dành cho tên video/đề phùng",
+        usageRule: "Dùng duy nhất 1 lần ở đầu video: câu đầu tiên narrator nói đẹn đạt tên phùng hoặc concept tổng quan của phùng (VD: 'This is the story of the most powerful cartel in history'), câu giới thiệu chủ đề chính của tòan bộ video.",
+        enabled: true,
+        badgeColor: "#ffffff", // white
+        resolveTemplateName: "Title 5",
+    },
+    {
+        id: "template_6",
+        // 🗂️ Chapter Title / Scene Title — Tiêu đề chương, chuyển cảnh lớn
+        displayName: "Chapter / Scene",
+        description: "Text lớn full/half screen có line divider — đánh dấu chuyển chương hoặc plot twist",
+        usageRule: "Dùng khi narrative rõ ràng chuyển sang giai đoạn mới: câu đầu của một chương ('Part 1: The Rise'), câu báo hiệu nhảy timeline ('6 months later', '3 days before', 'Meanwhile in'), plot twist lớn làm thầy đổi câu chuyện, hoặc câu đảo ngược bất ngờ (reveals)",
+        enabled: true,
+        badgeColor: "#10b981", // emerald
+        resolveTemplateName: "Title 6",
+    },
+    {
+        id: "template_7",
+        // 🏷️ Fact / Stat Card — Số liệu, thống kê, sự kiện chì a khóa
+        displayName: "Fact / Stat Card",
+        description: "Card nền đậm + chữ to highlight — số liệu kinh tế, thống kê, sự kiện chìa khóa",
+        usageRule: "Dùng khi câu chứa số liệu kinh tế (doanh thu, lợi nhuận), thống kê quan trọng (số lượng, tỷ lệ phần trăm, quốc gia, năm hoạt động), hoặc sự kiện lịch sử quan trọng không phải bạo lực cần được highlight riêng (khác với template_2 — template này focus vào sự kiện/fact, không phải địa điểm hay mốc thời gian)",
+        enabled: true,
+        badgeColor: "#f97316", // orange
+        resolveTemplateName: "Title 7",
+    },
+    {
+        id: "template_8",
+        // 🔥 Emphasis / Key Text — Câu nhấn mạnh, text nổi bật
+        displayName: "Emphasis / Key Text",
+        description: "Text lớn nổi bật giữa màn hình, highlight câu quan trọng nhất của cả đoạn",
+        usageRule: "Dùng khi câu là đỉnh điểm cảm xúc của đoạn: câu mà nếu cắt ra khỏi video vẫn hiểu được thông điệp chính nất, câu nhấn mạnh sự thật đau lòng / đột phá / khải tượng, hoặc câu mà được repeat nhiều trong video như một leitmotif. KHÔNG dùng cho câu kể chuyện bình thường.",
+        enabled: true,
+        badgeColor: "#ec4899", // pink
+        resolveTemplateName: "Title 8",
+    },
 ];
 
 // ======================== LƯU/ĐỌC CẤU HÌNH TEMPLATES ========================
 
 // Version templates — tăng khi thay đổi cấu trúc DEFAULT_TEMPLATES
-const TEMPLATES_CURRENT_VERSION = "3";
+// v4: thêm 4 template mới (Main Title, Chapter, Fact/Stat, Emphasis) → tổng 8 templates
+const TEMPLATES_CURRENT_VERSION = "4";
 
 import { readSettings, saveSettings } from '@/services/auto-media-storage'
 
@@ -334,5 +375,102 @@ Trả về ĐÚNG chuẩn JSON sau, KHÔNG giải thích gì thêm, KHÔNG dùng
         return result;
     } catch (error) {
         throw error;
+    }
+}
+
+// ======================== NEW: TITLE CUE TỪ WHISPER WORDS ========================
+
+/**
+ * 1 Title Cue được lấy trực tiếp từ Whisper Words (không cần matching.json)
+ * AI đọc word timestamps → trả về start/end chính xác ngay
+ */
+export interface TitleCue {
+    /** ID template: "template_1" ... "template_4" */
+    templateId: string;
+    /** Text hiển thị trên màn hình: "FEBRUARY 22, 2026" */
+    displayText: string;
+    /** Giây bắt đầu hiển thị — lấy từ timestamp từ đầu tiên */
+    start: number;
+    /** Giây kết thúc hiển thị — lấy từ timestamp từ cuối + 0.5s */
+    end: number;
+    /** Lý do AI chọn */
+    reason: string;
+}
+
+/** Kết quả tổng thể từ phân tích Whisper Words */
+export interface AITitleCueResult {
+    cues: TitleCue[];
+    analyzedAt: string;
+}
+
+/**
+ * Gọi AI phân tích file Whisper Words để tìm Title Cues
+ * Flow mới — không cần autosubs_matching.json, không bước matching riêng:
+ *   whisperWordsText → AI đọc hiểu + lấy timing → TitleCue[]
+ *
+ * @param whisperWordsText - Nội dung file whisper words (format: "[0.13] February [0.77] twenty ...")
+ * @param templates - Danh sách template đang dùng
+ * @param onProgress - Callback tiến trình
+ */
+export async function analyzeWhisperWordsForTitles(
+    whisperWordsText: string,
+    templates: TextTemplate[],
+    onProgress?: (msg: string) => void
+): Promise<AITitleCueResult> {
+    const { callAIMultiProvider } = await import("@/utils/ai-provider")
+    const { buildTitleFromWhisperPrompt } = await import("@/prompts/title-assignment-prompt")
+
+    const enabledTemplates = templates.filter(t => t.enabled)
+    if (enabledTemplates.length === 0) {
+        throw new Error("Chưa có template nào được bật.")
+    }
+
+    onProgress?.("AI đang đọc Whisper transcript và xác định Title cues...")
+
+    // Build prompt — gửi toàn bộ whisper words text
+    const prompt = buildTitleFromWhisperPrompt(whisperWordsText, enabledTemplates)
+
+    const content = await callAIMultiProvider(
+        prompt,
+        `AI Title Assignment từ Whisper Words (${enabledTemplates.length} templates)`,
+        "auto",
+        LOCAL_AI_CONFIG.timeoutMs
+    )
+
+    // Parse response
+    const cleaned = content.replace(/```(?:json)?\s*([\s\S]*?)```/, "$1")
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) {
+        throw new Error("AI không trả về JSON hợp lệ")
+    }
+
+    const parsed = JSON.parse(jsonMatch[0])
+    const validTemplateIds = new Set(templates.map(t => t.id))
+
+    // Lọc cue hợp lệ: có templateId đúng, có start/end là số
+    const cues: TitleCue[] = (Array.isArray(parsed.titles) ? parsed.titles : [])
+        .filter((c: any) =>
+            validTemplateIds.has(c.templateId) &&
+            typeof c.start === "number" &&
+            typeof c.end === "number" &&
+            typeof c.displayText === "string" &&
+            c.displayText.trim().length > 0
+        )
+        .map((c: any) => ({
+            templateId: c.templateId,
+            displayText: c.displayText.trim(),
+            start: Math.max(0, c.start),
+            end: Math.max(c.start + 0.1, c.end),
+            reason: c.reason || "",
+        }))
+
+    // Sort theo start time để hiển thị theo thứ tự
+    cues.sort((a, b) => a.start - b.start)
+
+    onProgress?.(`✅ Đã tìm được ${cues.length} Title cues`)
+
+    return {
+        cues,
+        analyzedAt: new Date().toISOString(),
     }
 }

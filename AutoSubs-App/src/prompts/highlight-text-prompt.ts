@@ -15,7 +15,7 @@ export function buildHighlightTextPrompt(sentences: MatchingSentence[]): string 
         .map((s) => `[Câu ${s.num}] (${s.start.toFixed(1)}s - ${s.end.toFixed(1)}s): ${s.text}`)
         .join("\n");
 
-    return `Bạn là một Video Editor chuyên nghiệp sản xuất phim Tài liệu/Youtube.
+    return `Bạn là một Video Editor chuyên nghiệp sản xuất 3D Investigative Documentary cho YouTube.
 Nhiệm vụ: đọc kịch bản và Lập danh sách Cues (điểm nhấn) để chèn Highlight Text / Call-out (Chữ Nổi Bật Trên Màn Hình).
 
 === MỤC TIÊU ===

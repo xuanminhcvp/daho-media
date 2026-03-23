@@ -35,7 +35,7 @@ def main():
     if DEV_MODE:
         resources_folder = os.path.join(
             os.path.expanduser("~"),
-            "Desktop", "auto", "auto-subs-main",
+            "Documents", "src_code", "autosubs_documentary",
             "AutoSubs-App", "src-tauri", "resources"
         )
     else:

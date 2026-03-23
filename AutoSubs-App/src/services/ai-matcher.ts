@@ -16,7 +16,7 @@ const AI_CONFIG = {
     baseUrl: "https://ezaiapi.com/v1",
     apiKey: "sk-570848c49fda787c748cd58f3a21a1d95f00afd87a5cba6e",
     model: "claude-sonnet-4-6",  // Sonnet — nhanh hơn Opus, vẫn chính xác tốt
-    batchCount: 8,       // Chia transcript 8 phần (~60 câu/batch, tránh Claude 524 timeout)
+    batchCount: 4,       // Chia transcript 4 phần (Documentary 25-27min ~200-350 câu → ~50-87 câu/batch)
     timeoutMs: 900000,   // 15 phút timeout per request
     maxTokens: 16000,    // Đủ cho output JSON
 };

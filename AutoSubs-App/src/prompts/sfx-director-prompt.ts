@@ -1,5 +1,5 @@
 // sfx-director-prompt.ts
-// Prompt cho AI Sound Designer: phân tích kịch bản YouTube Stories → gợi ý điểm chèn SFX
+// Prompt cho AI Sound Designer: phân tích kịch bản 3D Documentary → gợi ý điểm chèn SFX
 // ĐÃ nâng cấp: gửi kèm THƯ VIỆN SFX (metadata) + WHISPER WORDS (timing từng từ)
 // → AI chọn trực tiếp file SFX từ thư viện + gợi ý đoạn cắt (trim)
 // → Chia 5 batch song song để xử lý nhanh
@@ -162,10 +162,10 @@ export function buildSfxBatchPrompt(
 
     const totalMinutes = Math.round(totalDuration / 60);
 
-    return `Bạn là một Sound Designer chuyên nghiệp đang làm âm thanh cho kênh YouTube dạng Storytelling Drama (kể chuyện kịch tính).
+    return `Bạn là một Sound Designer chuyên nghiệp đang làm âm thanh cho kênh YouTube dạng 3D Investigative Documentary.
 
 === THỂ LOẠI NỘI DUNG ===
-Video này là dạng YouTube Stories — narrator kể câu chuyện drama/cảm xúc với hình ảnh AI generated.
+Video này là dạng 3D Documentary điều tra — narrator kể lại câu chuyện có thật với hình ảnh 3D.
 Video dài khoảng ${totalMinutes} phút (~${Math.round(totalDuration)}s).
 Bạn đang xử lý PHẦN ${batchNum}/${totalBatches} của video.
 
@@ -263,11 +263,11 @@ export function buildSfxDirectorPrompt(sentences: MatchingSentence[]): string {
         : 0;
     const totalMinutes = Math.round(totalDuration / 60);
 
-    return `Bạn là một Sound Designer chuyên nghiệp đang làm âm thanh cho kênh YouTube dạng Storytelling Drama (kể chuyện kịch tính).
+    return `Bạn là một Sound Designer chuyên nghiệp đang làm âm thanh cho kênh YouTube dạng 3D Investigative Documentary.
 
 === THỂ LOẠI NỘI DUNG ===
-Video này là dạng YouTube Stories — narrator kể một câu chuyện drama/cảm xúc với hình ảnh AI generated.
-Giọng kể chuyện liên tục, có build-up dần, có plot twist, có cao trào cảm xúc.
+Video này là dạng 3D Documentary điều tra — narrator kể lại câu chuyện có thật với hình ảnh 3D.
+Giọng kể chuyện liên tục, có build-up dần, có plot twist, có cao trào kịch tính.
 Video dài khoảng ${totalMinutes} phút (~${Math.round(totalDuration)}s).
 
 === MỤC TIÊU QUAN TRỌNG NHẤT ===
@@ -287,7 +287,7 @@ ${scriptText}
 1. Đọc TOÀN BỘ kịch bản. Hiểu cấu trúc drama: setup → build → twist → climax → resolution.
 2. Tìm ĐÚNG những khoảnh khắc "đắt giá" để chèn SFX cinema. 
    ⚠️ KHÔNG spam SFX. Chỉ chọn những moment thực sự bước ngoặt.
-3. GIỚI HẠN: Tối đa 15 SFX. Tần suất lý tưởng ~1 SFX mỗi 1-2 phút.
+3. GIỚI HẠN: Tối đa 12 SFX cho video 25-27 phút. Tần suất lý tưởng ~1 SFX mỗi 2-3 phút.
 4. triggerWord phải là CỤM TỪ CHÍNH XÁC xuất hiện trong câu.
 5. timeOffset: ước lượng giây từ đầu câu đến lúc triggerWord được nói ra.
 

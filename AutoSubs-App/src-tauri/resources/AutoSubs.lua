@@ -6,7 +6,7 @@
 -- Nhiệm vụ duy nhất: Lấy resolve object → gọi init.lua
 -- ============================================================
 
-local DEV_MODE = false
+local DEV_MODE = true
 
 -- ===== FILE LOGGER =====
 local LOG_PATH = os.getenv("HOME") .. "/Desktop/autosubs_resolve.log"
@@ -96,7 +96,7 @@ local function main()
     -- DEV_MODE override
     if DEV_MODE then
         resources_folder = os.getenv("HOME")
-            .. "/Desktop/auto/auto-subs-main/AutoSubs-App/src-tauri/resources"
+            .. "/Documents/src_code/autosubs_documentary/AutoSubs-App/src-tauri/resources"
     end
     log("[Step 2] resources_folder:", resources_folder)
 

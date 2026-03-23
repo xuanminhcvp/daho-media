@@ -21,8 +21,8 @@ import { readTextFile, writeTextFile, exists, mkdir } from '@tauri-apps/plugin-f
 /** Tên folder gốc trên Desktop */
 const AUTO_MEDIA_ROOT = 'Auto_media'
 
-/** Tên 3 sub-folder media cố định */
-const MEDIA_FOLDERS = ['nhac_nen', 'sfx', 'footage'] as const
+/** Tên 4 sub-folder media cố định */
+const MEDIA_FOLDERS = ['nhac_nen', 'sfx', 'footage', 'ref_images'] as const
 
 /** Tên folder data */
 const DATA_FOLDER = 'data'
@@ -98,6 +98,14 @@ export async function getSfxFolderPath(): Promise<string> {
 export async function getFootageFolderPath(): Promise<string> {
     const root = await getAutoMediaRoot()
     return join(root, 'footage')
+}
+
+/**
+ * Lấy đường dẫn folder ảnh tham khảo: ~/Desktop/Auto_media/ref_images/
+ */
+export async function getRefImagesFolderPath(): Promise<string> {
+    const root = await getAutoMediaRoot()
+    return join(root, 'ref_images')
 }
 
 // ======================== KHỞI TẠO FOLDER ========================
