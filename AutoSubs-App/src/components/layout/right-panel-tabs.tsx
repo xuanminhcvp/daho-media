@@ -17,6 +17,7 @@ import { MediaImportPanel } from "@/components/media/media-import-panel"
 import { ImageImportPanel } from "@/components/media/image-import-panel"
 import { VoicePacingPanel } from "@/components/voice/voice-pacing-panel"
 import { PostProductionPanel } from "@/components/postprod/post-production-panel"
+import { MasterSrtTab } from "@/components/postprod/master-srt-tab"
 import { DebugPanel } from "@/components/debug/debug-panel"
 import { useSessionManager } from "@/hooks/useSessionManager"
 import { SessionManagerDialog } from "@/components/dialogs/session-manager-dialog"
@@ -24,7 +25,7 @@ import { useProject } from "@/contexts/ProjectContext"
 import { useTranscript } from "@/contexts/TranscriptContext"
 
 // Các tab có sẵn trong panel bên phải
-type RightPanelTab = "subtitles" | "media-import" | "image-import" | "voice-pacing" | "post-production"
+type RightPanelTab = "subtitles" | "master-srt" | "media-import" | "image-import" | "voice-pacing" | "post-production"
 
 // ======================== LIVE DATA SUMMARY ========================
 // Hiển thị tổng quan dữ liệu hiện đang có trong app (lấy từ context live)
@@ -59,6 +60,16 @@ function LiveDataSummary({ sessionName, saveType, updatedAt }: LiveDataSummaryPr
             icon: '📝', label: 'Subtitles',
             hasData: subCount > 0,
             detail: subCount > 0 ? `${subCount} câu` : 'Chưa có',
+        })
+
+        // 1b. Master SRT
+        const msrtCount = project.masterSrt?.length || 0
+        lines.push({
+            icon: '🎯', label: 'Master SRT',
+            hasData: msrtCount > 0,
+            detail: msrtCount > 0
+                ? `${msrtCount} từ${project.masterSrtCreatedAt ? ' • ' + new Date(project.masterSrtCreatedAt).toLocaleTimeString('vi-VN') : ''}`
+                : 'Chưa có',
         })
 
         // 2. Speakers
@@ -261,6 +272,22 @@ export function RightPanelTabs() {
                     <TooltipContent side="bottom">Xem và chỉnh sửa subtitle</TooltipContent>
                 </Tooltip>
 
+                {/* Tab Master SRT */}
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <Button
+                            variant={activeTab === "master-srt" ? "secondary" : "ghost"}
+                            size="sm"
+                            className="h-8 px-3 gap-1.5 text-xs"
+                            onClick={() => setActiveTab("master-srt")}
+                        >
+                            <Subtitles className="h-3.5 w-3.5" />
+                            Master SRT
+                        </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">So khớp kịch bản → Whisper → Master SRT chuẩn</TooltipContent>
+                </Tooltip>
+
                 {/* Tab Media Import */}
                 <Tooltip>
                     <TooltipTrigger asChild>
@@ -405,6 +432,7 @@ export function RightPanelTabs() {
             {/* Tab content */}
             <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
                 {activeTab === "subtitles" && <TranscriptionWorkspace />}
+                {activeTab === "master-srt" && <MasterSrtTab />}
                 {activeTab === "media-import" && <MediaImportPanel />}
                 {activeTab === "image-import" && <ImageImportPanel />}
                 {activeTab === "voice-pacing" && <VoicePacingPanel />}

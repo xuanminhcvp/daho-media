@@ -52,6 +52,8 @@ export const TranscriptionWorkspace = () => {
     const [fileInput, setFileInput] = React.useState<string | null>(null)
     const [fileInputSelectionId, setFileInputSelectionId] = React.useState(0)
 
+
+
     const handleSelectedFileChange = React.useCallback((file: string | null) => {
         setFileInput(file)
         setFileInputSelectionId((v) => v + 1)
@@ -190,19 +192,19 @@ export const TranscriptionWorkspace = () => {
             enableDiarize: settings.enableDiarize,
         })
 
-        // Get audio path based on mode (triggers export polling in Resolve mode)
-        const audioInfo = await getSourceAudio(
-            settings.isStandaloneMode,
-            fileInput,
-            settings.selectedInputTracks
-        )
-        if (!audioInfo) {
-            console.error("Failed to get audio")
-            setIsProcessing(false)
-            return
-        }
-
         try {
+            // Get audio path based on mode (triggers export polling in Resolve mode)
+            const audioInfo = await getSourceAudio(
+                settings.isStandaloneMode,
+                fileInput,
+                settings.selectedInputTracks
+            )
+            if (!audioInfo) {
+                console.error("Failed to get audio")
+                setIsProcessing(false)
+                return
+            }
+
             // Create transcription options
             const options: TranscriptionOptions = {
                 audioPath: audioInfo.path,
@@ -221,16 +223,15 @@ export const TranscriptionWorkspace = () => {
 
             // Perform transcription
             const transcript = await invoke("transcribe_audio", { options })
-            console.log("Transcription successful:", transcript)
+            console.log("Transcription successful")
 
-            // Complete all remaining processing steps since transcription is finished
             completeAllProgressSteps()
 
             // Process results and get filename
             await processTranscriptionResults(
-                transcript as any, 
-                settings, 
-                fileInput, 
+                transcript as any,
+                settings,
+                fileInput,
                 timelineInfo.timelineId
             )
         } catch (error) {
@@ -329,7 +330,9 @@ export const TranscriptionWorkspace = () => {
                 />
                 </div>
 
-                {/* Footer */}
+
+
+                {/* Footer: ActionBar */}
                 <div className="flex-shrink-0">
                 <ActionBar
                     selectedFile={fileInput}

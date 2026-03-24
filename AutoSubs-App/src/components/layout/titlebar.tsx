@@ -42,6 +42,7 @@ import { ManageModelsDialog } from "@/components/settings/model-manager";
 import { pingResolve } from "@/api/resolve-api";
 import { useResolve } from "@/contexts/ResolveContext";
 import { AutoMediaPanel } from "@/components/postprod/auto-media-panel";
+import { ClaudeModelSelector } from "@/components/settings/claude-model-selector";
 
 interface TimelineInfo {
   timelineId?: string;
@@ -572,8 +573,11 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
             </Button>
           </div>
 
-          {/* Right side - Transcripts and Settings buttons */}
-          <div className="flex items-center w-24 justify-end">
+          {/* Right side - Model selector, Transcripts, Settings */}
+          <div className="flex items-center w-36 justify-end gap-0.5">
+            <div data-tauri-drag-region="false">
+              <ClaudeModelSelector />
+            </div>
             <div data-tauri-drag-region="false">
               <TranscriptsButton />
             </div>
@@ -585,8 +589,11 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
       ) : (
         // Windows/Linux layout: Settings on left, status in center, window buttons on right
         <>
-          {/* Left side - Transcripts and Settings */}
-          <div className="flex items-center">
+          {/* Left side - Model selector, Transcripts, Settings */}
+          <div className="flex items-center gap-0.5">
+            <div data-tauri-drag-region="false">
+              <ClaudeModelSelector />
+            </div>
             <div data-tauri-drag-region="false">
               <TranscriptsButton />
             </div>

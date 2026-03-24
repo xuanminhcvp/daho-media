@@ -43,11 +43,16 @@ local TEMPLATE_STYLES = {
 }
 
 -- Clip color cho Title .setting (đã có style sẵn, chỉ cần phân biệt bằng mắt)
+-- ✅ Fix: đủ Title 1–8
 local TITLE_CLIP_COLORS = {
-    ["Title 1"] = "Yellow",
-    ["Title 2"] = "Orange",
-    ["Title 3"] = "Red",
-    ["Title 4"] = "Purple",
+    ["Title 1"] = "Yellow",   -- Document / ID Card
+    ["Title 2"] = "Orange",   -- Location / Impact
+    ["Title 3"] = "Red",      -- Death / Violence
+    ["Title 4"] = "Purple",   -- Quote / Motif
+    ["Title 5"] = "Cream",    -- Main Title
+    ["Title 6"] = "Teal",     -- Chapter / Scene
+    ["Title 7"] = "Pink",     -- Fact / Stat Card
+    ["Title 8"] = "Lavender", -- Emphasis / Key Text
 }
 
 -- ===== SET CUSTOM COLORS =====
@@ -467,10 +472,15 @@ function M.AddSimpleSubtitles(state, helpers, template_manager, clips, templateN
     return { success = true, added = addedCount, total = #clips, trackIndex = trackIndex }
 end
 
--- ===== ADD TEMPLATE SUBTITLES =====
--- Thêm nhiều câu với nhiều template khác nhau cùng lúc
+-- ===== ADD TEMPLATE SUBTITLES (V2 — Fusion Compositions từ Power Bin) =====
+-- Flow mới:
+--   1. Tìm Fusion Composition theo tên trong Media Pool (bao gồm Power Bin)
+--   2. AppendToTimeline trực tiếp (không cần ImportFusionComp)
+--   3. Set text vào TextPlus trong Fusion comp
+--   4. Thêm Adjustment Clip ở track dưới (V8)
+--   5. Thêm SFX ở audio track (A10)
 function M.AddTemplateSubtitles(state, helpers, template_manager, clips, trackIndex)
-    print("[AutoSubs] Running AddTemplateSubtitles with " .. #clips .. " clips...")
+    print("[AutoSubs] Running AddTemplateSubtitles V2 with " .. #clips .. " clips...")
     if not clips or #clips == 0 then
         return { error = true, message = "No clips provided" }
     end
@@ -484,47 +494,99 @@ function M.AddTemplateSubtitles(state, helpers, template_manager, clips, trackIn
     local timelineStart = timeline:GetStartFrame()
     local rootFolder = state.mediaPool:GetRootFolder()
 
-    -- Cache map template
-    local templateCache = {}
-    local function GetCachedTpl(tplName)
-        if not tplName or tplName == "" then tplName = "Default Template" end
-        if not templateCache[tplName] then
-            local isTitleSetting = (tplName == "Title 1" or tplName == "Title 2"
-                                 or tplName == "Title 3" or tplName == "Title 4")
-            local t = nil
-            if isTitleSetting then
-                t = template_manager.ImportTitleFromFile(state, helpers, tplName)
-            else
-                t = template_manager.GetTemplateItemByFolder(helpers, rootFolder, tplName)
-                if not t then
-                    t = template_manager.ImportTitleFromFile(state, helpers, tplName)
-                end
+    -- ═══ TRACK CONFIG ═══
+    local titleTrackIdx = tonumber(trackIndex) or 9      -- Title clip (V9)
+    local adjustmentTrackIdx = titleTrackIdx - 1          -- Adjustment ngay dưới (V8)
+    local sfxTrackIdx = 10                                -- SFX audio (A10)
+
+    -- ═══ TÌM ASSET TRONG MEDIA POOL (đệ quy) ═══
+    -- Duyệt toàn bộ Media Pool bao gồm Power Bin items
+    local assetCache = {} -- cache theo tên
+    local function findAsset(name)
+        if assetCache[name] then return assetCache[name] end
+        local found = nil
+        helpers.walk_media_pool(rootFolder, function(clip)
+            if found then return end -- đã tìm thấy, bỏ qua
+            local clipName = clip:GetName() or ""
+            if clipName == name then
+                found = clip
             end
-            if not t then
-                t = template_manager.GetTemplateItem(helpers, rootFolder, "Default Template")
-                if not t then
-                    t = template_manager.ImportTitleFromFile(state, helpers, "Title 1")
-                end
-            end
-            templateCache[tplName] = t
+        end)
+        if found then
+            assetCache[name] = found
+            print("[AutoSubs] ✅ Asset cached: '" .. name .. "'")
         end
-        return templateCache[tplName]
+        return found
     end
 
+    -- ═══ CACHE ADJUSTMENT CLIP + SFX ═══
+    local adjustmentItem = findAsset("Adjustment Clip")
+    if adjustmentItem then
+        print("[AutoSubs] 📎 Adjustment Clip found: " .. tostring(adjustmentItem:GetName()))
+    else
+        print("[AutoSubs] ⚠ Adjustment Clip KHÔNG TÌM THẤY trong Media Pool")
+    end
+
+    -- Cache SFX items (3 loại: đập xuống, xuất hiện, đánh máy)
+    local sfxItems = {}
+    for _, sfxName in ipairs({"Cinematic Hit 3.mp3", "Click.mp3", "ComputerDesktop 6103_69_4.WAV"}) do
+        local item = findAsset(sfxName)
+        if item then
+            sfxItems[sfxName] = item
+            print("[AutoSubs] 🎵 SFX cached: '" .. sfxName .. "'")
+        else
+            print("[AutoSubs] ⚠ SFX '" .. sfxName .. "' KHÔNG TÌM THẤY")
+        end
+    end
+
+    -- ═══ CLIP COLOR MAP (phân biệt trên timeline) ═══
+    local CLIP_COLORS = {
+        ["xanh to xuất hiện"] = "Teal",
+        ["xanh to đập xuống"] = "Teal",
+        ["Xanh nhỏ xuất hiện"] = "Cyan",
+        ["Xanh nhỏ đánh máy"] = "Cyan",
+        ["vàng to xuất hiện"] = "Yellow",
+        ["vàng to đập xuống"] = "Orange",
+        ["Vàng nhỏ xuất hiện"] = "Yellow",
+        ["Vàng nhỏ đánh máy"] = "Cream",
+        ["đỏ to xuất hiện"] = "Red",
+        ["đỏ to đập xuống"] = "Red",
+    }
+
+    -- ═══ VÒNG LẶP CHÍNH — ADD TỪNG CLIP ═══
     local addedCount = 0
+    print(string.format("[AutoSubs] AddTemplateSubtitles V2: %d clips → Title V%d + Adj V%d + SFX A%d",
+        #clips, titleTrackIdx, adjustmentTrackIdx, sfxTrackIdx))
+
     for i, clipData in ipairs(clips) do
-        local tplItem = GetCachedTpl(clipData.template)
+        local tplName = clipData.template or ""
+        local subtitleText = clipData["text"] or ""
+        local sfxName = clipData["sfx"] or clipData["sfxName"] or ""
+
+        -- ═══ BƯỚC 1: Tìm Fusion Composition trong Media Pool ═══
+        local tplItem = findAsset(tplName)
         if not tplItem then
-            return { error = true, message = "Missing templates in Media Pool" }
+            -- Fallback: tìm "Default Template" nếu không tìm thấy
+            print(string.format("[AutoSubs] ⚠ [%d/%d] Template '%s' KHÔNG TÌM THẤY → thử Default Template", i, #clips, tplName))
+            tplItem = findAsset("Default Template")
+            if not tplItem then
+                tplItem = template_manager.GetTemplateItem(helpers, rootFolder, "Default Template")
+            end
         end
 
+        if not tplItem then
+            print(string.format("[AutoSubs] ❌ [%d/%d] SKIP — không có template", i, #clips))
+            goto continue
+        end
+
+        -- ═══ BƯỚC 2: Tính frames ═══
         local tpl_fps = tplItem:GetClipProperty()["FPS"] or frame_rate
         local start_frame = helpers.to_frames(clipData["start"], frame_rate)
         local end_frame = helpers.to_frames(clipData["end"], frame_rate)
         local timeline_pos = timelineStart + start_frame
         local clip_timeline_duration = end_frame - start_frame
 
-        -- Gap joining
+        -- Gap joining (giữ nguyên logic cũ)
         if i < #clips then
             local next_start = timelineStart + helpers.to_frames(clips[i + 1]["start"], frame_rate)
             local frames_between = next_start - (timeline_pos + clip_timeline_duration)
@@ -534,111 +596,106 @@ function M.AddTemplateSubtitles(state, helpers, template_manager, clips, trackIn
         end
 
         local duration = (clip_timeline_duration / frame_rate) * tpl_fps
+
+        -- ═══ BƯỚC 3: Append Title Clip (trực tiếp từ Fusion Composition) ═══
         local newClip = {
             mediaPoolItem = tplItem, mediaType = 1,
             startFrame = 0, endFrame = duration,
             recordFrame = timeline_pos,
-            trackIndex = tonumber(trackIndex) or 1
+            trackIndex = titleTrackIdx
         }
+
+        print(string.format("[AutoSubs] [%d/%d] Add: tpl='%s' start=%.2fs end=%.2fs text='%s'",
+            i, #clips, tplName, clipData["start"] or 0, clipData["end"] or 0,
+            (subtitleText):sub(1, 40)))
 
         local timelineItems = state.mediaPool:AppendToTimeline({ newClip })
         if timelineItems and #timelineItems > 0 then
             addedCount = addedCount + 1
             local timelineItem = timelineItems[1]
+
+            -- Đặt clip color
+            local clipColor = CLIP_COLORS[tplName] or "Green"
+            pcall(function() timelineItem:SetClipColor(clipColor) end)
+
+            -- ═══ BƯỚC 4: Set text vào TextPlus ═══
             pcall(function()
-                local subtitleText = clipData["text"]
-                local tplName = clipData.template or "Default Template"
-                if timelineItem:GetFusionCompCount() > 0 then
-                    local comp = timelineItem:GetFusionCompByIndex(1)
+                local compCount = timelineItem:GetFusionCompCount()
+                if compCount > 0 then
+                    local comp = timelineItem:GetFusionCompByIndex(compCount)
                     local tool = comp:FindToolByID("TextPlus")
                     if tool then
-                        -- Auto-resize cho text dài
-                        local textLen = #(subtitleText or "")
-                        local TITLE_SIZE_DEFAULTS = {
-                            ["Title 1"] = 0.05, ["Title 2"] = 0.18,
-                            ["Title 3"] = 0.18, ["Title 4"] = 0.05,
-                        }
-                        local baseSize = TITLE_SIZE_DEFAULTS[tplName]
-
-                        if baseSize and textLen > 0 then
-                            local newSize = baseSize
-                            local finalText = subtitleText
-
-                            if baseSize >= 0.15 then
-                                if textLen > 25 then
-                                    local mid = math.floor(textLen / 2)
-                                    local brk = mid
-                                    for j = mid, 1, -1 do
-                                        if finalText:sub(j, j) == " " then brk = j; break end
-                                    end
-                                    finalText = finalText:sub(1, brk - 1) .. "\n" .. finalText:sub(brk + 1)
-                                end
-                                if textLen > 20 then newSize = baseSize * 0.75
-                                elseif textLen > 15 then newSize = baseSize * 0.85 end
-                            else
-                                if textLen > 50 then
-                                    local mid = math.floor(textLen / 2)
-                                    local brk = mid
-                                    for j = mid, 1, -1 do
-                                        if finalText:sub(j, j) == " " then brk = j; break end
-                                    end
-                                    finalText = finalText:sub(1, brk - 1) .. "\n" .. finalText:sub(brk + 1)
-                                end
-                                if textLen > 40 then newSize = baseSize * 0.8
-                                elseif textLen > 30 then newSize = baseSize * 0.9 end
-                            end
-
-                            tool:SetInput("StyledText", finalText)
-                            if newSize ~= baseSize then
-                                pcall(function() tool:SetInput("Size", newSize) end)
-                            end
-                        else
-                            tool:SetInput("StyledText", subtitleText)
-                        end
+                        tool:SetInput("StyledText", subtitleText)
+                        print(string.format("[AutoSubs]   ✅ Text set: '%s'", subtitleText:sub(1, 50)))
+                    else
+                        print("[AutoSubs]   ⚠ TextPlus không tìm thấy trong comp")
                     end
                 end
             end)
-        end
-    end
 
-    -- SFX cho Title 2/3
-    local SFX_PATH = "/Users/may1/Desktop/hit-sfx.WAV"
-    local SFX_TEMPLATES = { ["Title 2"] = true, ["Title 3"] = true }
-    local sfxClips = {}
-    for i, cd in ipairs(clips) do
-        if SFX_TEMPLATES[cd.template] then
-            table.insert(sfxClips, { index = i, clipData = cd })
-        end
-    end
-
-    if #sfxClips > 0 then
-        local sfxItem = nil
-        helpers.walk_media_pool(rootFolder, function(clip)
-            local props = clip:GetClipProperty()
-            local clipName = props["File Name"] or props["Clip Name"] or ""
-            if clipName:lower():find("hit%-sfx") then sfxItem = clip end
-        end)
-        if not sfxItem then
-            local imp = state.mediaPool:ImportMedia({ SFX_PATH })
-            if imp and #imp > 0 then sfxItem = imp[1] end
-        end
-        if sfxItem then
-            local audioTrackIdx = math.max(1, (tonumber(trackIndex) or 1))
-            for _, entry in ipairs(sfxClips) do
-                local cd = entry.clipData
-                local timeline_pos = timelineStart + math.floor(helpers.to_frames(cd["start"], frame_rate))
-                local sfxClipData = {
-                    mediaPoolItem = sfxItem, mediaType = 2,
-                    startFrame = 0, endFrame = -1,
-                    recordFrame = timeline_pos, trackIndex = audioTrackIdx
-                }
-                state.mediaPool:AppendToTimeline({ sfxClipData })
+            -- ═══ BƯỚC 5: Append Adjustment Clip (V8) ═══
+            if adjustmentItem then
+                pcall(function()
+                    local adjClip = {
+                        mediaPoolItem = adjustmentItem, mediaType = 1,
+                        startFrame = 0, endFrame = duration,
+                        recordFrame = timeline_pos,
+                        trackIndex = adjustmentTrackIdx
+                    }
+                    local adjResult = state.mediaPool:AppendToTimeline({ adjClip })
+                    if adjResult and #adjResult > 0 then
+                        print("[AutoSubs]   📎 Adjustment added V" .. adjustmentTrackIdx)
+                    else
+                        print("[AutoSubs]   ⚠ Adjustment append FAILED")
+                    end
+                end)
             end
+
+            -- ═══ BƯỚC 6: Append SFX (A10) ═══
+            local sfxToUse = sfxName ~= "" and sfxItems[sfxName] or nil
+            -- Nếu frontend không gửi sfxName, tự chọn theo tên template
+            if not sfxToUse then
+                -- Auto-select SFX theo tên template:
+                -- "đập xuống" → Cinematic Hit (slam impact)
+                -- "đánh máy" → ComputerDesktop (typewriter sound)
+                -- còn lại → Click (xuất hiện)
+                if tplName:find("đập xuống") then
+                    sfxToUse = sfxItems["Cinematic Hit 3.mp3"]
+                elseif tplName:find("đánh máy") then
+                    sfxToUse = sfxItems["ComputerDesktop 6103_69_4.WAV"]
+                else
+                    sfxToUse = sfxItems["Click.mp3"]
+                end
+            end
+
+            if sfxToUse then
+                pcall(function()
+                    local sfxClipData = {
+                        mediaPoolItem = sfxToUse, mediaType = 2,
+                        startFrame = 0, endFrame = -1,
+                        recordFrame = timeline_pos,
+                        trackIndex = sfxTrackIdx
+                    }
+                    local sfxResult = state.mediaPool:AppendToTimeline({ sfxClipData })
+                    if sfxResult and #sfxResult > 0 then
+                        print("[AutoSubs]   🎵 SFX added A" .. sfxTrackIdx)
+                    else
+                        print("[AutoSubs]   ⚠ SFX append FAILED")
+                    end
+                end)
+            end
+
+            print(string.format("[AutoSubs]   ✅ Clip %d done: color=%s", i, clipColor))
+        else
+            print(string.format("[AutoSubs]   ❌ Clip %d AppendToTimeline FAILED: tpl='%s'", i, tplName))
         end
+
+        ::continue::
     end
 
     timeline:SetCurrentTimecode(timeline:GetCurrentTimecode())
-    return { success = true, added = addedCount }
+    print(string.format("[AutoSubs] AddTemplateSubtitles V2 DONE: %d/%d clips added", addedCount, #clips))
+    return { success = true, added = addedCount, total = #clips }
 end
 
 return M

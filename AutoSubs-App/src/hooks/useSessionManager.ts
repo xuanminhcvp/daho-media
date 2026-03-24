@@ -281,6 +281,8 @@ export function useSessionManager(callbacks?: SessionRestoreCallbacks) {
       p.matchingSentences?.length || 0,
       p.matchingFolder || '',
       p.scriptText?.length || 0,
+      p.masterSrt?.length || 0,           // ← Thêm: track khi Master SRT thay đổi
+      p.masterSrtCreatedAt || '',          // ← Thêm: track createdAt để detect lần tạo mới
       p.mediaImport?.matchedSentences?.length || 0,
       p.imageImport?.matchResults?.length || 0,
       p.musicLibrary?.musicItems?.length || 0,

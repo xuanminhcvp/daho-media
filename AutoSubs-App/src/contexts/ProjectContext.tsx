@@ -17,6 +17,7 @@ import React, { createContext, useContext, useState, useCallback } from 'react';
 import type { MatchingSentence, AISfxPlanResult, AIHighlightPlanResult } from '@/services/audio-director-service';
 import type { ScriptSentence } from '@/utils/media-matcher';
 import type { AudioLibraryItem, AIDirectorResult, SubtitleLine } from '@/types/audio-types';
+import type { MasterWord } from '@/services/master-srt-service';
 import type { PauseResult } from '@/services/voice-pacing-service';
 import type { ImageMatchResult } from '@/utils/image-matcher';
 import type { AITemplateAssignmentResult, AITitleCueResult } from '@/services/template-assignment-service';
@@ -128,6 +129,11 @@ export interface ProjectData {
   /** Script text (kịch bản đánh số) — dùng bởi MediaImport, VoicePacing */
   scriptText: string;
 
+  /** Master SRT — bản word-level SRT chuẩn toàn cục (timing Whisper + text kịch bản) */
+  masterSrt: MasterWord[];
+  /** Thời gian tạo Master SRT */
+  masterSrtCreatedAt: string;
+
   // === Dữ liệu riêng từng tab ===
   mediaImport: MediaImportData;
   imageImport: ImageImportData;
@@ -146,6 +152,8 @@ export const DEFAULT_PROJECT_DATA: ProjectData = {
   matchingFolder: '',
   matchingSentences: null,
   scriptText: '',
+  masterSrt: [],
+  masterSrtCreatedAt: '',
 
   // Media Import
   mediaImport: {
@@ -229,6 +237,7 @@ interface ProjectContextType {
   setMatchingFolder: (folder: string) => void;
   setMatchingSentences: (sentences: MatchingSentence[] | null) => void;
   setScriptText: (text: string) => void;
+  setMasterSrt: (words: MasterWord[], createdAt?: string) => void;
 
   // --- Setter cho từng tab section (merge partial) ---
   updateMediaImport: (partial: Partial<MediaImportData>) => void;
@@ -266,6 +275,14 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
 
   const setScriptText = useCallback((text: string) => {
     setProject(prev => ({ ...prev, scriptText: text }));
+  }, []);
+
+  const setMasterSrt = useCallback((words: MasterWord[], createdAt?: string) => {
+    setProject(prev => ({
+      ...prev,
+      masterSrt: words,
+      masterSrtCreatedAt: createdAt || new Date().toISOString(),
+    }));
   }, []);
 
   // --- Setter cho từng tab (merge partial data) ---
@@ -355,6 +372,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
       setMatchingFolder,
       setMatchingSentences,
       setScriptText,
+      setMasterSrt,
       updateMediaImport,
       updateImageImport,
       updateMusicLibrary,

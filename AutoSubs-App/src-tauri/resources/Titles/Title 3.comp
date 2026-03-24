@@ -1,0 +1,405 @@
+Composition {
+	CurrentTime = 0,
+	RenderRange = { 0, 119 },
+	GlobalRange = { 0, 119 },
+	CurrentID = 20,
+	HiQ = true,
+	PlaybackUpdateMode = 0,
+	StereoMode = false,
+	Version = "DaVinci Resolve 20.3.2.0009",
+	SavedOutputs = 0,
+	HeldTools = 0,
+	DisabledTools = 0,
+	LockedTools = 0,
+	AudioOffset = 0,
+	Resumable = true,
+	OutputClips = {
+	},
+	CustomData = {
+		TEMPLATE_ID = "Edit/Titles/AutoSubs2/Title 3"
+	},
+	Tools = {
+		Title3 = MacroOperator {
+			CustomData = {
+				Path = {
+					Map = {
+						["Setting:"] = "Templates:/Edit/Titles/AutoSubs2/"
+					}
+				},
+			},
+			Inputs = ordered() {
+				Input1 = InstanceInput {
+					SourceOp = "Blur1",
+					Source = "XBlurSize",
+					Default = 8,
+				},
+				Input2 = InstanceInput {
+					SourceOp = "Grain1",
+					Source = "Power",
+					Default = 5,
+				},
+				Input3 = InstanceInput {
+					SourceOp = "Sharpen1",
+					Source = "Amount",
+					Default = 80,
+				},
+				Input4 = InstanceInput {
+					SourceOp = "SoftGlow1",
+					Source = "Gain",
+					Default = 1.6,
+				},
+				Input5 = InstanceInput {
+					SourceOp = "SoftGlow1",
+					Source = "GlowSize",
+					Default = 18,
+				},
+				Input6 = InstanceInput {
+					SourceOp = "Text1",
+					Source = "StyledText",
+				},
+				Input7 = InstanceInput {
+					SourceOp = "Text1",
+					Source = "Size",
+					Default = 0.18,
+				},
+				Input8 = InstanceInput {
+					SourceOp = "BgVignette",
+					Source = "TopLeftAlpha",
+					Default = 1,
+				}
+			},
+			Outputs = {
+				MainOutput1 = InstanceOutput {
+					SourceOp = "VignetteMerge",
+					Source = "Output",
+				}
+			},
+			ViewInfo = GroupInfo { Pos = { 220, 49.5 } },
+			Tools = ordered() {
+				Text1 = TextPlus {
+					CtrlWShown = false,
+					Inputs = {
+						Tracking1 = Input {
+							Value = Number {
+								Value = 0.02
+							},
+						},
+						GlobalOut = Input { Value = 119, },
+						Width = Input { Value = 1920, },
+						Height = Input { Value = 1080, },
+						UseFrameFormatSettings = Input { Value = 1, },
+						["Gamut.SLogVersion"] = Input { Value = FuID { "SLog2" }, },
+						Wrap = Input { Value = 1, },
+						LayoutRotation = Input { Value = 1, },
+						TransformRotation = Input { Value = 1, },
+						Green1 = Input { Value = 0.06, },
+						Blue1 = Input { Value = 0.06, },
+						Softness1 = Input { Value = 1, },
+						StyledText = Input { Value = "HELLO WORLD", },
+						Font = Input { Value = "Impact", },
+						Style = Input { Value = "Regular", },
+						Size = Input { Value = 0.32, },
+						VerticalJustificationNew = Input { Value = 3, },
+						HorizontalJustificationNew = Input { Value = 3, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 200, 148 } },
+				},
+				Blur1 = Blur {
+					CtrlWShown = false,
+					Inputs = {
+						Filter = Input { Value = FuID { "Fast Gaussian" }, },
+						XBlurSize = Input { Value = 8, },
+						Input = Input {
+							SourceOp = "Text1",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 310, 148 } },
+				},
+				Grain1 = Grain {
+					CtrlWShown = false,
+					Inputs = {
+						Red = Input {
+							SourceOp = "Grain1Red",
+							Source = "Value",
+						},
+						Green = Input {
+							SourceOp = "Grain1Green",
+							Source = "Value",
+						},
+						Blue = Input {
+							SourceOp = "Grain1Blue",
+							Source = "Value",
+						},
+						Input = Input {
+							SourceOp = "Blur1",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 420, 148 } },
+				},
+				Sharpen1 = Sharpen {
+					CtrlWShown = false,
+					Inputs = {
+						Amount = Input {
+							Value = Number {
+								Value = 80
+							},
+						},
+						Blend = Input { Value = 0.2, },
+						Input = Input {
+							SourceOp = "Grain1",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 530, 148 } },
+				},
+				ColorCorrector1 = ColorCorrector {
+					CtrlWShown = false,
+					Inputs = {
+						Lift = Input {
+							Value = Number {
+								Value = -0.12
+							},
+						},
+						Saturation = Input {
+							Value = Number {
+								Value = 1.3
+							},
+						},
+						Contrast = Input {
+							Value = Number {
+								Value = 1.35
+							},
+						},
+						ColorRanges = Input {
+							Value = ColorCurves {
+								Curves = {
+									{
+										Points = {
+											{ 0, 1 },
+											{ 0.4, 0.2 },
+											{ 0.6, 0 },
+											{ 1, 0 }
+										}
+									},
+									{
+										Points = {
+											{ 0, 0 },
+											{ 0.4, 0 },
+											{ 0.6, 0.2 },
+											{ 1, 1 }
+										}
+									}
+								}
+							},
+						},
+						Input = Input {
+							SourceOp = "Sharpen1",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 640, 148 } },
+				},
+				SoftGlow1 = SoftGlow {
+					CtrlWShown = false,
+					Inputs = {
+						GlowSize = Input {
+							Value = Number {
+								Value = 18
+							},
+						},
+						Filter = Input { Value = FuID { "Gaussian" }, },
+						Threshold = Input { Value = 0.35, },
+						Gain = Input { Value = 1.6, },
+						Input = Input {
+							SourceOp = "ColorCorrector1",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 750, 148 } },
+				},
+				Merge2 = Merge {
+					CtrlWZoom = false,
+					CtrlWShown = false,
+					Inputs = {
+						Blend = Input {
+							SourceOp = "Merge2Blend",
+							Source = "Value",
+						},
+						Background = Input {
+							SourceOp = "SoftGlow1",
+							Source = "Output",
+						},
+						Foreground = Input {
+							SourceOp = "Text1",
+							Source = "Output",
+						},
+						PerformDepthMerge = Input { Value = 0, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 860, 100 } },
+				},
+				Merge2Blend = BezierSpline {
+					SplineColor = { Red = 0, Green = 200, Blue = 255 },
+					CtrlWZoom = false,
+					NameSet = true,
+					KeyFrames = {
+						[0] = { 0, RH = { 0.6, 0.7 } },
+						[2] = { 1, LH = { 1.4, 1 } }
+					}
+				},
+				TransformSlam = Transform {
+					CtrlWShown = false,
+					Inputs = {
+						Size = Input {
+							SourceOp = "TransformSlamSize",
+							Source = "Value",
+						},
+						Input = Input {
+							SourceOp = "Merge2",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 930, 100 } },
+				},
+				TransformSlamSize = BezierSpline {
+					SplineColor = { Red = 255, Green = 100, Blue = 0 },
+					CtrlWZoom = false,
+					NameSet = true,
+					KeyFrames = {
+						[0] = { 2, RH = { 1, 1.2 } },
+						[3] = { 1, LH = { 2, 1 } }
+					}
+				},
+				EllipseMask1 = EllipseMask {
+					CtrlWShown = false,
+					Inputs = {
+						SoftEdge = Input { Value = 0.15, },
+						Invert = Input { Value = 1, },
+						MaskWidth = Input { Value = 320, },
+						MaskHeight = Input { Value = 240, },
+						PixelAspect = Input { Value = { 1, 1 }, },
+						Width = Input { Value = 0.92, },
+						Height = Input { Value = 0.85, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 700, 280 } },
+				},
+				BlurMask1 = Blur {
+					CtrlWShown = false,
+					Inputs = {
+						Filter = Input { Value = FuID { "Fast Gaussian" }, },
+						XBlurSize = Input { Value = 120, },
+						YBlurSize = Input { Value = 120, },
+						Input = Input {
+							SourceOp = "EllipseMask1",
+							Source = "Mask",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 780, 280 } },
+				},
+				BgVignette = Background {
+					CtrlWShown = false,
+					Inputs = {
+						EffectMask = Input {
+							SourceOp = "BlurMask1",
+							Source = "Output",
+						},
+						GlobalOut = Input { Value = 119, },
+						Width = Input { Value = 1920, },
+						Height = Input { Value = 1080, },
+						UseFrameFormatSettings = Input { Value = 1, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 860, 280 } },
+				},
+				VignetteMerge = Merge {
+					CtrlWShown = false,
+					Inputs = {
+						Background = Input {
+							SourceOp = "BgVignette",
+							Source = "Output",
+						},
+						Foreground = Input {
+							SourceOp = "TransformSlam",
+							Source = "Output",
+						},
+						PerformDepthMerge = Input { Value = 0, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 1080, 148 } },
+				}
+			},
+		},
+		Grain1Red = LUTBezier {
+			KeyColorSplines = {
+				[0] = {
+					[0] = { 1, RH = { 0.3, 1 }, Flags = { Linear = true } },
+					[1] = { 1, LH = { 0.7, 1 }, Flags = { Linear = true } }
+				}
+			},
+			SplineColor = { Red = 0, Green = 0, Blue = 0 },
+			CtrlWZoom = false,
+			NameSet = true,
+		},
+		Grain1Green = LUTBezier {
+			KeyColorSplines = {
+				[0] = {
+					[0] = { 1, RH = { 0.3, 1 }, Flags = { Linear = true } },
+					[1] = { 1, LH = { 0.7, 1 }, Flags = { Linear = true } }
+				}
+			},
+			SplineColor = { Red = 0, Green = 0, Blue = 0 },
+			CtrlWZoom = false,
+			NameSet = true,
+		},
+		Grain1Blue = LUTBezier {
+			KeyColorSplines = {
+				[0] = {
+					[0] = { 1, RH = { 0.3, 1 }, Flags = { Linear = true } },
+					[1] = { 1, LH = { 0.7, 1 }, Flags = { Linear = true } }
+				}
+			},
+			SplineColor = { Red = 0, Green = 0, Blue = 0 },
+			CtrlWZoom = false,
+			NameSet = true,
+		},
+		MediaOut1 = Saver {
+			Inputs = {
+				Index = Input { Value = "0", },
+				Input = Input {
+					SourceOp = "VignetteMerge",
+					Source = "Output",
+				}
+			},
+			ViewInfo = OperatorInfo { Pos = { 440, 49.5 } },
+		}
+	},
+	Frames = {
+	},
+	Prefs = {
+		Comp = {
+			Interactive = {
+				Proxy = {
+					Scale = 1,
+				},
+			},
+			Views = {
+				View1 = {
+				},
+			},
+			Paths = {
+				Map = {
+					["ResolveCaches:"] = "/Users/may1/Movies/CacheClip/fb090391-e3f2-4657-b6b7-05613b98e3e7/a37b7302-c771-4f27-a05c-d46eacf7f718/502dfc56-e6fe-4259-81a3-664b3a825abd/Fusion",
+				},
+			},
+			FrameFormat = {
+				Rate = 24,
+				GuideRatio = 1.77777777777778,
+				DepthFull = 3,
+				DepthPreview = 3,
+				DepthInteractive = 3,
+			},
+			Unsorted = {
+				GlobalEnd = 119
+			},
+		}
+	},
+}

@@ -168,6 +168,12 @@ export interface AppSettings {
     templates?: any[]
     /** Version templates (để detect thay đổi) */
     templatesVersion?: string
+    /** Model Claude đang dùng (mặc định: "claude-sonnet-4-6") */
+    claudeModel?: string
+    /** Model Gemini đang dùng (mặc định: "gemini-2.5-pro") */
+    geminiModel?: string
+    /** Provider ưu tiên user đã chọn: "claude" | "gemini" | "auto" */
+    preferredProvider?: "claude" | "gemini" | "auto"
 }
 
 /**

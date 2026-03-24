@@ -103,6 +103,12 @@ export function ResolveProvider({ children }: { children: React.ReactNode }) {
           const progressResult = await getExportProgress();
           console.log("Export progress:", progressResult);
 
+          if (!progressResult) {
+            console.warn("Empty progress response, retrying...");
+            await new Promise(resolve => setTimeout(resolve, 500));
+            continue;
+          }
+
           // Update progress
           setExportProgress(progressResult.progress || 0);
 

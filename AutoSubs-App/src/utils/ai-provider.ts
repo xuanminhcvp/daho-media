@@ -15,28 +15,48 @@ import { addDebugLog, updateDebugLog, generateLogId } from "@/services/debug-log
 
 // ======================== CẤU HÌNH ========================
 
-/** Claude qua ezaiapi — dùng cho text analysis */
-const CLAUDE_CONFIG = {
+/** Model Claude mặc định */
+const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6";
+
+/** Danh sách models Claude khả dụng — hiển thị trên UI cho user chọn */
+export const AVAILABLE_CLAUDE_MODELS = [
+    { id: "claude-sonnet-4-6", label: "Sonnet 4.6 (mới nhất)" },
+    { id: "claude-sonnet-4-5", label: "Sonnet 4.5" },
+] as const;
+
+/** Danh sách models Gemini khả dụng */
+export const AVAILABLE_GEMINI_MODELS = [
+    { id: "gemini-2.5-pro", label: "2.5 Pro (mạnh nhất)" },
+    { id: "gemini-2.5-flash", label: "2.5 Flash (nhanh)" },
+    { id: "gemini-2.0-flash", label: "2.0 Flash" },
+] as const;
+
+/** Claude qua ezaiapi — dùng cho text analysis
+ *  model có thể thay đổi runtime qua setClaudeModel() */
+let CLAUDE_CONFIG = {
     name: "Claude",
     baseUrl: "https://ezaiapi.com/v1",
     apiKey: "sk-570848c49fda787c748cd58f3a21a1d95f00afd87a5cba6e",
-    model: "claude-sonnet-4-6",
-    maxTokens: 16000,
+    model: DEFAULT_CLAUDE_MODEL,
+    maxTokens: 65536, // Tăng từ 16K → 65K (Gemini 2.5 Pro cần chỗ cho thinking tokens)
     timeoutMs: 900000,  // 15 phút
 };
 
-/** Gemini — dùng cho cả text analysis và media scan */
-// API key lấy từ settings (user nhập trên giao diện)
-const GEMINI_CONFIG = {
+/** Gemini — dùng cho cả text analysis và media scan
+ *  model có thể thay đổi runtime qua setGeminiModel() */
+let GEMINI_CONFIG = {
     name: "Gemini",
     model: "gemini-2.5-pro",
-    maxTokens: 16000,
+    maxTokens: 65536, // Tăng từ 16K → 65K (2.5 Pro dùng ~16K thinking tokens nội bộ)
     timeoutMs: 900000,
 };
 
 // ======================== PROVIDER TYPE ========================
 
 export type AIProvider = "claude" | "gemini" | "auto";
+
+/** Provider user đã chọn trên UI ("auto" = logic tự động chọn) */
+let preferredProviderSetting: "claude" | "gemini" | "auto" = "auto";
 
 /** Bộ đếm round-robin (tự tăng mỗi lần gọi) */
 let requestCounter = 0;
@@ -60,28 +80,46 @@ async function getGeminiApiKey(): Promise<string | null> {
 }
 
 /**
- * Chọn provider: ưu tiên Gemini trước (gemini-2.5-pro)
- * Chỉ fallback sang Claude khi Gemini không có key hoặc bị rate limit
+ * Chọn provider dựa theo:
+ * 1. Nếu user đã chọn cụ thể (claude/gemini) → dùng đó, fallback khi rate limit
+ * 2. Nếu "auto" → round-robin — request chẵn Claude, lẻ Gemini
  */
 function pickProvider(hasGeminiKey: boolean): "claude" | "gemini" {
     const now = Date.now();
 
     // Reset rate limit flags sau 60s
-    if (claudeRateLimited && now > claudeRateLimitResetTime) {
-        claudeRateLimited = false;
-    }
-    if (geminiRateLimited && now > geminiRateLimitResetTime) {
-        geminiRateLimited = false;
-    }
+    if (claudeRateLimited && now > claudeRateLimitResetTime) claudeRateLimited = false;
+    if (geminiRateLimited && now > geminiRateLimitResetTime) geminiRateLimited = false;
 
-    // Không có Gemini key → chỉ Claude
+    // Không có Gemini key → bắt buộc dùng Claude
     if (!hasGeminiKey) return "claude";
 
-    // Gemini bị rate limit → fallback Claude
-    if (geminiRateLimited) return "claude";
+    // User đã chọn cụ thể trên UI
+    if (preferredProviderSetting === "claude") {
+        // Rate limit fallback: nếu Claude bị lock → tạm thời dùng Gemini
+        if (claudeRateLimited) {
+            console.warn("[AI Provider] Claude rate limited, tạm fallback Gemini");
+            return "gemini";
+        }
+        return "claude";
+    }
 
-    // Mặc định luôn dùng Gemini 2.5 Pro
-    return "gemini";
+    if (preferredProviderSetting === "gemini") {
+        // Rate limit fallback: nếu Gemini bị lock → tạm thời dùng Claude
+        if (geminiRateLimited) {
+            console.warn("[AI Provider] Gemini rate limited, tạm fallback Claude");
+            return "claude";
+        }
+        return "gemini";
+    }
+
+    // "auto": round-robin Claude/Gemini luân phiên
+    requestCounter++;
+    if (requestCounter % 2 === 0) {
+        return claudeRateLimited ? "gemini" : "claude";
+    } else {
+        return geminiRateLimited ? "claude" : "gemini";
+    }
 }
 
 // ======================== HÀM GỌI AI ========================
@@ -100,6 +138,7 @@ async function callClaude(
         model: CLAUDE_CONFIG.model,
         messages: [{ role: "user", content: prompt }],
         max_tokens: CLAUDE_CONFIG.maxTokens,
+        stream: false, // ← tauri-plugin-http không hỗ trợ ReadableStream → dùng non-stream
     });
 
     addDebugLog({
@@ -134,28 +173,57 @@ async function callClaude(
             signal: controller.signal,
         });
 
-        const duration = Date.now() - parseInt(logId);
-        const responseText = await response.text();
-
-        updateDebugLog(logId, {
-            status: response.status,
-            responseBody: responseText,
-            duration,
-            error: response.ok ? null : `HTTP ${response.status}`,
-        });
+        // Bắt lỗi 524 riêng — thông báo rõ ràng
+        if (response.status === 524) {
+            const duration = Date.now() - parseInt(logId);
+            updateDebugLog(logId, {
+                status: 524,
+                responseBody: "Cloudflare 524 timeout",
+                duration,
+                error: "HTTP 524",
+            });
+            throw new Error(
+                `Claude API bị Cloudflare 524 timeout. ` +
+                `Thử giảm số câu/batch hoặc giảm max_tokens.`
+            );
+        }
 
         if (response.status === 429 || response.status === 529) {
             claudeRateLimited = true;
-            claudeRateLimitResetTime = Date.now() + 60000; // Reset after 60s
+            claudeRateLimitResetTime = Date.now() + 60000;
             throw new Error(`Claude rate limited (${response.status})`);
         }
 
         if (!response.ok) {
-            throw new Error(`Claude API error ${response.status}: ${responseText}`);
+            const errorText = await response.text();
+            const duration = Date.now() - parseInt(logId);
+            updateDebugLog(logId, {
+                status: response.status,
+                responseBody: errorText,
+                duration,
+                error: `HTTP ${response.status}`,
+            });
+            throw new Error(`Claude API error ${response.status}: ${errorText}`);
         }
 
-        const data = JSON.parse(responseText);
-        return data.choices?.[0]?.message?.content || "";
+        // ═══ ĐỌC RESPONSE NON-STREAM ═══
+        // tauri-plugin-http không hỗ trợ ReadableStream đúng cách —
+        // reader.read() bị treo vĩnh viễn trong môi trường Tauri.
+        // Dùng response.json() — đơn giản, ổn định, không bị hang.
+        const data = await response.json() as {
+            choices?: Array<{ message?: { content?: string } }>
+        };
+        const fullText = data.choices?.[0]?.message?.content ?? "";
+
+        const duration = Date.now() - parseInt(logId);
+        updateDebugLog(logId, {
+            status: response.status,
+            responseBody: fullText.slice(0, 2000) + (fullText.length > 2000 ? "..." : ""),
+            duration,
+            error: null,
+        });
+
+        return fullText;
     } finally {
         clearTimeout(timeout);
     }
@@ -324,3 +392,94 @@ export function getClaudeConfig() {
 export function getGeminiConfig() {
     return { ...GEMINI_CONFIG };
 }
+
+// ======================== ĐỔI MODEL RUNTIME ========================
+
+/** Lấy model Claude đang dùng */
+export function getClaudeModel(): string {
+    return CLAUDE_CONFIG.model;
+}
+
+/** Lấy model Gemini đang dùng */
+export function getGeminiModel(): string {
+    return GEMINI_CONFIG.model;
+}
+
+/** Lấy preferred provider hiện tại */
+export function getPreferredProvider(): "claude" | "gemini" | "auto" {
+    return preferredProviderSetting;
+}
+
+/**
+ * User chọn provider ưu tiên trên UI:
+ * - "claude" → luôn gọi Claude (fallback Gemini khi rate limit)
+ * - "gemini" → luôn gọi Gemini (fallback Claude khi rate limit)
+ * - "auto"   → round-robin luân phiên
+ */
+export async function setPreferredProvider(provider: "claude" | "gemini" | "auto"): Promise<void> {
+    preferredProviderSetting = provider;
+    console.log(`[AI Provider] 🎯 Preferred provider → ${provider}`);
+    try {
+        const { saveSettings } = await import("@/services/auto-media-storage");
+        await saveSettings({ preferredProvider: provider });
+    } catch (err) {
+        console.warn("[AI Provider] Không lưu được preferredProvider:", err);
+    }
+}
+
+/**
+ * Đổi model Claude — cập nhật runtime + lưu vào settings
+ */
+export async function setClaudeModel(modelId: string): Promise<void> {
+    CLAUDE_CONFIG = { ...CLAUDE_CONFIG, model: modelId };
+    console.log(`[AI Provider] 🔄 Claude model → ${modelId}`);
+    try {
+        const { saveSettings } = await import("@/services/auto-media-storage");
+        await saveSettings({ claudeModel: modelId });
+    } catch (err) {
+        console.warn("[AI Provider] Không lưu được Claude model:", err);
+    }
+}
+
+/**
+ * Đổi model Gemini — cập nhật runtime + lưu vào settings
+ */
+export async function setGeminiModel(modelId: string): Promise<void> {
+    GEMINI_CONFIG = { ...GEMINI_CONFIG, model: modelId };
+    console.log(`[AI Provider] 🔄 Gemini model → ${modelId}`);
+    try {
+        const { saveSettings } = await import("@/services/auto-media-storage");
+        await saveSettings({ geminiModel: modelId });
+    } catch (err) {
+        console.warn("[AI Provider] Không lưu được Gemini model:", err);
+    }
+}
+
+/**
+ * Khởi tạo tất cả AI settings từ file (gọi khi app mount)
+ * Load: preferredProvider + claudeModel + geminiModel
+ */
+export async function initModelsFromSettings(): Promise<void> {
+    try {
+        const { readSettings } = await import("@/services/auto-media-storage");
+        const settings = await readSettings();
+
+        if (settings.preferredProvider) {
+            preferredProviderSetting = settings.preferredProvider;
+            console.log(`[AI Provider] 📦 Preferred provider từ settings: ${settings.preferredProvider}`);
+        }
+        if (settings.claudeModel) {
+            CLAUDE_CONFIG = { ...CLAUDE_CONFIG, model: settings.claudeModel };
+            console.log(`[AI Provider] 📦 Claude model từ settings: ${settings.claudeModel}`);
+        }
+        if (settings.geminiModel) {
+            GEMINI_CONFIG = { ...GEMINI_CONFIG, model: settings.geminiModel };
+            console.log(`[AI Provider] 📦 Gemini model từ settings: ${settings.geminiModel}`);
+        }
+    } catch (err) {
+        console.warn("[AI Provider] Không đọc được settings:", err);
+    }
+}
+
+// Backward compatibility
+export const initClaudeModelFromSettings = initModelsFromSettings;

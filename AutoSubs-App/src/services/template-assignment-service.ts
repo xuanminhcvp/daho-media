@@ -6,6 +6,10 @@
 import { readTextFile, exists } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { MatchingSentence } from "@/services/audio-director-service";
+// Import types vào scope nội bộ file để dùng trong function signatures
+import type { TextTemplate, TitleCue, AITitleCueResult } from "@/types/title-types";
+// Re-export để các component vẫn import được từ service như cũ
+export type { TextTemplate, TitleCue, AITitleCueResult } from "@/types/title-types";
 
 // ======================== CẤU HÌNH ========================
 
@@ -20,29 +24,8 @@ const LOCAL_AI_CONFIG = {
 const MATCHING_CACHE_FILE = "autosubs_matching.json";
 
 // ======================== TYPES ========================
-
-/**
- * Định nghĩa 1 Template hiệu ứng chữ
- * Người dùng sẽ cấu hình tối đa 5 template với tên + mô tả + quy tắc sử dụng
- */
-export interface TextTemplate {
-    /** ID duy nhất: "template_1" đến "template_5" */
-    id: string;
-    /** Tên hiển thị (do user đặt): "Title 1 Glow", "Typewriter", v.v. */
-    displayName: string;
-    /** Mô tả ngắn cho AI hiểu template này trông như thế nào */
-    description: string;
-    /** Quy tắc sử dụng: khi nào nên dùng template này */
-    usageRule: string;
-    /** Có bật/sử dụng template này không */
-    enabled: boolean;
-    /** Màu nhận diện trên giao diện (hex color) */
-    badgeColor: string;
-    /** Tên template THỰC TẾ trong DaVinci Resolve Media Pool
-     *  User chọn từ dropdown — đây là tên mà Lua sẽ tìm trong Media Pool
-     *  Nếu rỗng → fallback về "Default Template" */
-    resolveTemplateName: string;
-}
+// TextTemplate, TitleCue, AITitleCueResult đã được re-export từ @/types/title-types ở trên (dòng 11)
+// Dùng trực tiếp trong file này mà không cần import lại
 
 /**
  * Kết quả AI gán template cho 1 câu cụ thể
@@ -75,96 +58,130 @@ export interface AITemplateAssignmentResult {
 // ======================== DEFAULT TEMPLATES ========================
 
 /**
- * 4 Template mặc định — Map 1:1 với 4 Title .setting trong DaVinci
+ * 10 Template mặc định — Map 1:1 với Fusion Compositions trong Power Bin
+ * Quy tắc tên: [màu] [size] [animation]
+ * - Màu: xanh (blue/teal), vàng (yellow/gold), đỏ (red)
+ * - Size: to (large full-screen), nhỏ (small lower-third)
+ * - Animation: xuất hiện (appear/fade), đập xuống (slam down), đánh máy (typewriter)
  */
 export const DEFAULT_TEMPLATES: TextTemplate[] = [
     {
         id: "template_1",
-        // 🪪 Hồ sơ, danh tính, pháp lý → Title 1 (Trajan Pro 3 vàng gold fade)
-        displayName: "Document / ID Card",
-        description: "Text vàng gold Serif, fade-in chậm — phong cách hồ sơ trang trọng",
-        usageRule: "Dùng khi giới thiệu tên người + chức danh chính thức lần đầu (FBI agent, cartel leader), trích dẫn phán quyết tòa án, lệnh bắt giữ, văn bản pháp lý, hoặc thông tin tình báo mật",
+        // 🔵 Xanh to xuất hiện — Chapter, Location lớn, chuyển cảnh
+        displayName: "Xanh To Xuất Hiện",
+        description: "Text xanh lớn, fade-in mượt — cho chuyển cảnh, chapter, location quan trọng",
+        usageRule: "Dùng khi chuyển chapter lớn, mở đầu phần mới, hoặc giới thiệu location quan trọng một cách nhẹ nhàng",
         enabled: true,
         badgeColor: "#06b6d4", // cyan
-        resolveTemplateName: "Title 1",
+        resolveTemplateName: "xanh to xuất hiện",
+        sfxName: "Click.mp3",
     },
     {
         id: "template_2",
-        // 📍💰 Địa điểm + Số liệu Impact → Title 2 (vàng SLAM)
-        displayName: "Location / Impact",
-        description: "Text vàng lớn, SLAM animation — hiện địa điểm, mốc thời gian, hoặc số liệu gây ấn tượng",
-        usageRule: "Dùng khi: (1) kịch bản nêu địa điểm + thời gian cụ thể lần đầu (vd: 'Stockholm, 2006', 'February 22nd, 2026'), chuyển cảnh sang địa điểm mới; HOẶC (2) câu chứa số tiền ($15M, $50B), số thống kê lớn (40+ countries, 90% of cocaine), quy mô đế chế, con số quan trọng cần nhấn mạnh",
+        // 🔵 Xanh to đập xuống — Chapter SLAM, reveal bất ngờ
+        displayName: "Xanh To Đập Xuống",
+        description: "Text xanh lớn, SLAM xuống mạnh — cho reveal, twist, chapter impact",
+        usageRule: "Dùng khi có plot twist, reveal quan trọng, chapter mở đầu drama, hoặc cần impact mạnh cho chuyển cảnh",
         enabled: true,
-        badgeColor: "#f59e0b", // gold/amber
-        resolveTemplateName: "Title 2",
+        badgeColor: "#0891b2", // teal
+        resolveTemplateName: "xanh to đập xuống",
+        sfxName: "Cinematic Hit 3.mp3",
     },
     {
         id: "template_3",
-        // 💀 Bạo lực, chết chóc, cảnh báo → Title 3 (đỏ crimson SLAM)
-        displayName: "Death / Violence",
-        description: "Text đỏ crimson lớn, SLAM animation — cảnh báo nguy hiểm",
-        usageRule: "Dùng khi câu đề cập đến số người chết, thiệt hại bạo lực (9 dead, 15 officers killed, 252 blockades), vũ khí cụ thể được nêu tên, đòn tấn công hoặc thảm họa",
+        // 🔵 Xanh nhỏ xuất hiện — Location nhỏ, thời gian, địa điểm
+        displayName: "Xanh Nhỏ Xuất Hiện",
+        description: "Text xanh nhỏ, fade-in nhẹ — location card, thời gian, địa điểm cụ thể",
+        usageRule: "Dùng cho địa điểm + thời gian cụ thể (VD: 'GUADALAJARA — 2003', 'FEBRUARY 22, 2026'), chuyển cảnh sang location mới",
         enabled: true,
-        badgeColor: "#ef4444", // red
-        resolveTemplateName: "Title 3",
+        badgeColor: "#67e8f9", // light cyan
+        resolveTemplateName: "Xanh nhỏ xuất hiện",
+        sfxName: "Click.mp3",
     },
     {
         id: "template_4",
-        // 💬 Trích dẫn, câu kết biểu tượng → Title 4 (Georgia Italic trắng xanh lạnh)
-        displayName: "Quote / Motif",
-        description: "Text trắng xanh lạnh Serif Italic, flash nhanh — trích dẫn hoặc câu kết có sức nặng",
-        usageRule: "Dùng khi câu có trích dẫn trực tiếp đáng nhớ (có dấu ngoặc kép + nguồn), câu nhận định triết lý/khái quát có sức nặng, câu biểu tượng lặp đi lặp lại trong video, hoặc câu kết chương/video mang thông điệp chính",
+        // 🔵 Xanh nhỏ đánh máy — Document, pháp lý, hồ sơ
+        displayName: "Xanh Nhỏ Đánh Máy",
+        description: "Text xanh nhỏ, hiệu ứng đánh máy — hồ sơ, pháp lý, tài liệu chính thức",
+        usageRule: "Dùng cho văn bản pháp lý, phán quyết tòa, lệnh bắt giữ, thông tin tình báo, hồ sơ mật — kiểu typewriter tạo cảm giác tài liệu chính thức",
         enabled: true,
-        badgeColor: "#8b5cf6", // violet
-        resolveTemplateName: "Title 4",
+        badgeColor: "#22d3ee", // cyan light
+        resolveTemplateName: "Xanh nhỏ đánh máy",
+        sfxName: "ComputerDesktop 6103_69_4.WAV",
     },
     {
         id: "template_5",
-        // 🎬 Main Title / Opening Title — Tên video chính, full screen cảnh đầu
-        displayName: "Main Title",
-        description: "Text trắng lớn Serif Bold, animation nổi bật full screen — dành cho tên video/đề phùng",
-        usageRule: "Dùng duy nhất 1 lần ở đầu video: câu đầu tiên narrator nói đẹn đạt tên phùng hoặc concept tổng quan của phùng (VD: 'This is the story of the most powerful cartel in history'), câu giới thiệu chủ đề chính của tòan bộ video.",
+        // 🟡 Vàng to xuất hiện — Main title, emphasis lớn, khai mở
+        displayName: "Vàng To Xuất Hiện",
+        description: "Text vàng gold lớn, fade-in trang trọng — main title, câu emphasis lớn",
+        usageRule: "Dùng cho main title video (1 lần duy nhất ở đầu), hoặc câu emphasis trang trọng cần hiện full screen",
         enabled: true,
-        badgeColor: "#ffffff", // white
-        resolveTemplateName: "Title 5",
+        badgeColor: "#f59e0b", // amber
+        resolveTemplateName: "vàng to xuất hiện",
+        sfxName: "Click.mp3",
     },
     {
         id: "template_6",
-        // 🗂️ Chapter Title / Scene Title — Tiêu đề chương, chuyển cảnh lớn
-        displayName: "Chapter / Scene",
-        description: "Text lớn full/half screen có line divider — đánh dấu chuyển chương hoặc plot twist",
-        usageRule: "Dùng khi narrative rõ ràng chuyển sang giai đoạn mới: câu đầu của một chương ('Part 1: The Rise'), câu báo hiệu nhảy timeline ('6 months later', '3 days before', 'Meanwhile in'), plot twist lớn làm thầy đổi câu chuyện, hoặc câu đảo ngược bất ngờ (reveals)",
+        // 🟡 Vàng to đập xuống — Fact/stat impact, số liệu gây sốc
+        displayName: "Vàng To Đập Xuống",
+        description: "Text vàng gold lớn, SLAM xuống — số liệu kinh tế gây sốc, fact card impact",
+        usageRule: "Dùng khi câu chứa số liệu gây sốc ($50 BILLION, 90% OF COCAINE, 40+ COUNTRIES), con số lớn cần impact mạnh",
         enabled: true,
-        badgeColor: "#10b981", // emerald
-        resolveTemplateName: "Title 6",
+        badgeColor: "#d97706", // dark amber
+        resolveTemplateName: "vàng to đập xuống",
+        sfxName: "Cinematic Hit 3.mp3",
     },
     {
         id: "template_7",
-        // 🏷️ Fact / Stat Card — Số liệu, thống kê, sự kiện chì a khóa
-        displayName: "Fact / Stat Card",
-        description: "Card nền đậm + chữ to highlight — số liệu kinh tế, thống kê, sự kiện chìa khóa",
-        usageRule: "Dùng khi câu chứa số liệu kinh tế (doanh thu, lợi nhuận), thống kê quan trọng (số lượng, tỷ lệ phần trăm, quốc gia, năm hoạt động), hoặc sự kiện lịch sử quan trọng không phải bạo lực cần được highlight riêng (khác với template_2 — template này focus vào sự kiện/fact, không phải địa điểm hay mốc thời gian)",
+        // 🟡 Vàng nhỏ xuất hiện — Quote, motif, câu kết nhẹ nhàng
+        displayName: "Vàng Nhỏ Xuất Hiện",
+        description: "Text vàng nhỏ, fade-in — trích dẫn, quote, câu nhận định có sức nặng",
+        usageRule: "Dùng cho trích dẫn trực tiếp (có dấu ngoặc kép + nguồn), câu nhận định triết lý, câu kết chương nhẹ nhàng, motif lặp lại",
         enabled: true,
-        badgeColor: "#f97316", // orange
-        resolveTemplateName: "Title 7",
+        badgeColor: "#fbbf24", // yellow
+        resolveTemplateName: "Vàng nhỏ xuất hiện",
+        sfxName: "Click.mp3",
     },
     {
         id: "template_8",
-        // 🔥 Emphasis / Key Text — Câu nhấn mạnh, text nổi bật
-        displayName: "Emphasis / Key Text",
-        description: "Text lớn nổi bật giữa màn hình, highlight câu quan trọng nhất của cả đoạn",
-        usageRule: "Dùng khi câu là đỉnh điểm cảm xúc của đoạn: câu mà nếu cắt ra khỏi video vẫn hiểu được thông điệp chính nất, câu nhấn mạnh sự thật đau lòng / đột phá / khải tượng, hoặc câu mà được repeat nhiều trong video như một leitmotif. KHÔNG dùng cho câu kể chuyện bình thường.",
+        // 🟡 Vàng nhỏ đánh máy — ID card, thông tin, giới thiệu nhân vật
+        displayName: "Vàng Nhỏ Đánh Máy",
+        description: "Text vàng nhỏ, hiệu ứng đánh máy — giới thiệu danh tính, lower third",
+        usageRule: "Dùng khi giới thiệu tên người + chức danh lần đầu (VD: 'NEMESIO OSEGUERA CERVANTES — CJNG Cartel Leader'), thông tin nhân vật mới",
         enabled: true,
-        badgeColor: "#ec4899", // pink
-        resolveTemplateName: "Title 8",
+        badgeColor: "#fde68a", // light yellow
+        resolveTemplateName: "Vàng nhỏ đánh máy",
+        sfxName: "ComputerDesktop 6103_69_4.WAV",
+    },
+    {
+        id: "template_9",
+        // 🔴 Đỏ to xuất hiện — Death/violence cảnh báo, emphasis đỏ
+        displayName: "Đỏ To Xuất Hiện",
+        description: "Text đỏ lớn, fade-in — cảnh báo bạo lực, thiệt hại, emphasis đỏ nặng nề",
+        usageRule: "Dùng khi câu đề cập bạo lực kéo dài, thảm họa, cảnh báo nguy hiểm — tone nặng nề, đau thương hơn là bất ngờ",
+        enabled: true,
+        badgeColor: "#ef4444", // red
+        resolveTemplateName: "đỏ to xuất hiện",
+        sfxName: "Click.mp3",
+    },
+    {
+        id: "template_10",
+        // 🔴 Đỏ to đập xuống — Death SLAM, bạo lực bất ngờ, impact đỏ
+        displayName: "Đỏ To Đập Xuống",
+        description: "Text đỏ lớn, SLAM xuống — số người chết, bạo lực bất ngờ, đòn tấn công",
+        usageRule: "Dùng khi câu nêu số người chết cụ thể (9 DEAD, 15 OFFICERS KILLED), vũ khí, đòn tấn công bất ngờ, bạo lực impact mạnh",
+        enabled: true,
+        badgeColor: "#dc2626", // dark red
+        resolveTemplateName: "đỏ to đập xuống",
+        sfxName: "Cinematic Hit 3.mp3",
     },
 ];
 
 // ======================== LƯU/ĐỌC CẤU HÌNH TEMPLATES ========================
 
 // Version templates — tăng khi thay đổi cấu trúc DEFAULT_TEMPLATES
-// v4: thêm 4 template mới (Main Title, Chapter, Fact/Stat, Emphasis) → tổng 8 templates
-const TEMPLATES_CURRENT_VERSION = "4";
+// v5: chuyển từ Title 1-8 sang 10 Fusion Compositions Power Bin
+const TEMPLATES_CURRENT_VERSION = "5";
 
 import { readSettings, saveSettings } from '@/services/auto-media-storage'
 
@@ -378,43 +395,118 @@ Trả về ĐÚNG chuẩn JSON sau, KHÔNG giải thích gì thêm, KHÔNG dùng
     }
 }
 
-// ======================== NEW: TITLE CUE TỪ WHISPER WORDS ========================
+// Số batch mặc định — chạy song song để nhanh
+const TITLE_BATCH_COUNT = 5
+// Số từ overlap giữa các batch liền kề — tránh mất cue ở ranh giới
+const TITLE_BATCH_OVERLAP = 100
+// Số lần retry nếu batch lỗi
+const TITLE_RETRY_COUNT = 2
 
 /**
- * 1 Title Cue được lấy trực tiếp từ Whisper Words (không cần matching.json)
- * AI đọc word timestamps → trả về start/end chính xác ngay
+ * Chia whisper words text thành N batches đều nhau theo timestamp.
+ * Mỗi batch có overlap từ ở đầu/cuối để AI không bỏ sót cue ở ranh giới.
+ * Cắt ở ranh giới timestamp [xx.xx] để không bị cắt giữa từ.
  */
-export interface TitleCue {
-    /** ID template: "template_1" ... "template_4" */
-    templateId: string;
-    /** Text hiển thị trên màn hình: "FEBRUARY 22, 2026" */
-    displayText: string;
-    /** Giây bắt đầu hiển thị — lấy từ timestamp từ đầu tiên */
-    start: number;
-    /** Giây kết thúc hiển thị — lấy từ timestamp từ cuối + 0.5s */
-    end: number;
-    /** Lý do AI chọn */
-    reason: string;
+function splitWhisperIntoBatches(
+    whisperText: string,
+    batchCount: number,
+    overlapWords: number
+): { text: string; batchIndex: number }[] {
+    // Tách thành tokens (mỗi token là [time] hoặc word)
+    const tokens = whisperText.split(/\s+/)
+    if (tokens.length === 0) return [{ text: whisperText, batchIndex: 0 }]
+
+    // Đếm số từ thật (không phải timestamp)
+    const realWords = tokens.filter(t => !t.match(/^\[\d+\.?\d*\]$/))
+    const totalRealWords = realWords.length
+    const wordsPerBatch = Math.ceil(totalRealWords / batchCount)
+
+    if (totalRealWords <= wordsPerBatch) {
+        // Quá ít từ → không cần chia
+        return [{ text: whisperText, batchIndex: 0 }]
+    }
+
+    // Tìm vị trí cắt theo số từ thật
+    const batches: { text: string; batchIndex: number }[] = []
+    let tokenIdx = 0
+
+    for (let b = 0; b < batchCount; b++) {
+        const startTokenIdx = tokenIdx
+        // Lùi lại overlap tokens cho batch sau batch đầu
+        const overlapStart = b > 0 ? Math.max(0, findOverlapStartIndex(tokens, startTokenIdx, overlapWords)) : startTokenIdx
+
+        // Đếm wordsPerBatch từ thật từ vị trí hiện tại
+        let batchEndTokenIdx = startTokenIdx
+        let batchWordCount = 0
+        for (let i = startTokenIdx; i < tokens.length; i++) {
+            batchEndTokenIdx = i + 1
+            if (!tokens[i].match(/^\[\d+\.?\d*\]$/)) {
+                batchWordCount++
+            }
+            if (batchWordCount >= wordsPerBatch && b < batchCount - 1) {
+                // Cắt ở timestamp tiếp theo cho sạch
+                for (let j = i + 1; j < tokens.length; j++) {
+                    if (tokens[j].match(/^\[\d+\.?\d*\]$/)) {
+                        batchEndTokenIdx = j
+                        break
+                    }
+                }
+                break
+            }
+        }
+
+        // Thêm overlap cuối cho batch (trừ batch cuối)
+        let endWithOverlap = batchEndTokenIdx
+        if (b < batchCount - 1) {
+            let overlapCount = 0
+            for (let i = batchEndTokenIdx; i < tokens.length && overlapCount < overlapWords; i++) {
+                endWithOverlap = i + 1
+                if (!tokens[i].match(/^\[\d+\.?\d*\]$/)) overlapCount++
+            }
+        }
+
+        const batchTokens = tokens.slice(overlapStart, endWithOverlap)
+        if (batchTokens.length > 0) {
+            batches.push({ text: batchTokens.join(" "), batchIndex: b })
+        }
+
+        // Di chuyển con trỏ tới vị trí cắt (không overlap)
+        tokenIdx = batchEndTokenIdx
+        if (tokenIdx >= tokens.length) break
+    }
+
+    return batches
 }
 
-/** Kết quả tổng thể từ phân tích Whisper Words */
-export interface AITitleCueResult {
-    cues: TitleCue[];
-    analyzedAt: string;
+/** Tìm vị trí bắt đầu overlap — lùi lại N từ thật từ vị trí hiện tại */
+function findOverlapStartIndex(tokens: string[], fromIdx: number, overlapWords: number): number {
+    let count = 0
+    for (let i = fromIdx - 1; i >= 0; i--) {
+        if (!tokens[i].match(/^\[\d+\.?\d*\]$/)) count++
+        if (count >= overlapWords) {
+            // Tìm timestamp gần nhất phía trước để cắt sạch
+            for (let j = i; j >= 0; j--) {
+                if (tokens[j].match(/^\[\d+\.?\d*\]$/)) return j
+            }
+            return i
+        }
+    }
+    return 0
 }
 
 /**
- * Gọi AI phân tích file Whisper Words để tìm Title Cues
- * Flow mới — không cần autosubs_matching.json, không bước matching riêng:
- *   whisperWordsText → AI đọc hiểu + lấy timing → TitleCue[]
+ * Gọi AI phân tích Master SRT / Whisper Words để tìm Title Cues
+ * V4: 5 batch song song, retry, overlap ranh giới, dedup, 20-25%
  *
- * @param whisperWordsText - Nội dung file whisper words (format: "[0.13] February [0.77] twenty ...")
+ * @param whisperWordsText - "[time] word [time] word ..." (từ Master SRT hoặc Whisper thô)
  * @param templates - Danh sách template đang dùng
+ * @param scriptText - Kịch bản gốc (optional) để AI so khớp text chính xác
  * @param onProgress - Callback tiến trình
  */
 export async function analyzeWhisperWordsForTitles(
     whisperWordsText: string,
     templates: TextTemplate[],
+    scriptText?: string,
     onProgress?: (msg: string) => void
 ): Promise<AITitleCueResult> {
     const { callAIMultiProvider } = await import("@/utils/ai-provider")
@@ -425,52 +517,143 @@ export async function analyzeWhisperWordsForTitles(
         throw new Error("Chưa có template nào được bật.")
     }
 
-    onProgress?.("AI đang đọc Whisper transcript và xác định Title cues...")
+    // ═══ CHIA BATCH (5 batch, overlap 100 từ) ═══
+    const batches = splitWhisperIntoBatches(whisperWordsText, TITLE_BATCH_COUNT, TITLE_BATCH_OVERLAP)
+    onProgress?.(`Chia transcript → ${batches.length} batch (overlap ${TITLE_BATCH_OVERLAP} từ)`)
+    console.log(`[AddTitle] ${batches.length} batches, overlap ${TITLE_BATCH_OVERLAP}`)
 
-    // Build prompt — gửi toàn bộ whisper words text
-    const prompt = buildTitleFromWhisperPrompt(whisperWordsText, enabledTemplates)
-
-    const content = await callAIMultiProvider(
-        prompt,
-        `AI Title Assignment từ Whisper Words (${enabledTemplates.length} templates)`,
-        "auto",
-        LOCAL_AI_CONFIG.timeoutMs
-    )
-
-    // Parse response
-    const cleaned = content.replace(/```(?:json)?\s*([\s\S]*?)```/, "$1")
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) {
-        throw new Error("AI không trả về JSON hợp lệ")
-    }
-
-    const parsed = JSON.parse(jsonMatch[0])
     const validTemplateIds = new Set(templates.map(t => t.id))
 
-    // Lọc cue hợp lệ: có templateId đúng, có start/end là số
-    const cues: TitleCue[] = (Array.isArray(parsed.titles) ? parsed.titles : [])
-        .filter((c: any) =>
-            validTemplateIds.has(c.templateId) &&
-            typeof c.start === "number" &&
-            typeof c.end === "number" &&
-            typeof c.displayText === "string" &&
-            c.displayText.trim().length > 0
-        )
-        .map((c: any) => ({
-            templateId: c.templateId,
-            displayText: c.displayText.trim(),
-            start: Math.max(0, c.start),
-            end: Math.max(c.start + 0.1, c.end),
-            reason: c.reason || "",
-        }))
+    // ═══ TẠO TASKS SONG SONG ═══
+    const batchTasks = batches.map((batch) => async (): Promise<TitleCue[]> => {
+        const batchLabel = `batch ${batch.batchIndex + 1}/${batches.length}`
 
-    // Sort theo start time để hiển thị theo thứ tự
-    cues.sort((a, b) => a.start - b.start)
+        // Build prompt — truyền kịch bản gốc nếu có
+        const prompt = buildTitleFromWhisperPrompt(batch.text, enabledTemplates, scriptText)
 
-    onProgress?.(`✅ Đã tìm được ${cues.length} Title cues`)
+        // Retry logic
+        for (let attempt = 0; attempt <= TITLE_RETRY_COUNT; attempt++) {
+            try {
+                if (attempt > 0) {
+                    console.log(`[AddTitle] ${batchLabel} retry #${attempt}`)
+                    onProgress?.(`🔄 Retry ${batchLabel} (lần ${attempt + 1})...`)
+                }
+
+                const content = await callAIMultiProvider(
+                    prompt,
+                    `AI Title ${batchLabel} (${enabledTemplates.length} templates)`,
+                    "auto",
+                    LOCAL_AI_CONFIG.timeoutMs
+                )
+
+                // Parse response
+                const cleaned = content.replace(/```(?:json)?\s*([\s\S]*?)```/, "$1")
+                
+                // Parse an toàn: tìm '[' hoặc '{' đầu tiên để lấy Array hoặc Object
+                const firstBrace = cleaned.indexOf('{')
+                const firstBracket = cleaned.indexOf('[')
+                const lastBrace = cleaned.lastIndexOf('}')
+                const lastBracket = cleaned.lastIndexOf(']')
+
+                let jsonObjString = ''
+                // Ưu tiên theo first index hợp lệ (không phải -1) và nhỏ hơn
+                const isArrayFirst = firstBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace)
+
+                if (isArrayFirst && lastBracket !== -1 && lastBracket >= firstBracket) {
+                    jsonObjString = cleaned.slice(firstBracket, lastBracket + 1)
+                } else if (!isArrayFirst && firstBrace !== -1 && lastBrace !== -1 && lastBrace >= firstBrace) {
+                    jsonObjString = cleaned.slice(firstBrace, lastBrace + 1)
+                } else {
+                    console.error(`[AddTitle] ❌ AI không trả về Array hoặc Object:`, cleaned.substring(0, 100))
+                    throw new Error(`AI không trả về JSON hợp lệ — response ${content.length} chars`)
+                }
+                
+                let parsed: any;
+                try {
+                    parsed = JSON.parse(jsonObjString)
+                } catch (e) {
+                    console.error(`[AddTitle] ❌ Lỗi parse JSON raw string:`, jsonObjString.substring(0, 100) + '...')
+                    throw new Error(`JSON Parse error: ${e}`)
+                }
+
+                // AI có thể trả về Array trực tiếp [...] hoặc Object { titles: [...] }
+                let rawTitles = []
+                if (Array.isArray(parsed)) {
+                    rawTitles = parsed
+                } else if (parsed && Array.isArray(parsed.titles)) {
+                    rawTitles = parsed.titles
+                }
+
+                // Lọc cue hợp lệ
+                const batchCues: TitleCue[] = rawTitles
+                    .filter((c: any) =>
+                        validTemplateIds.has(c.templateId) &&
+                        typeof c.start === "number" &&
+                        typeof c.end === "number" &&
+                        typeof c.displayText === "string" &&
+                        c.displayText.trim().length > 0
+                    )
+                    .map((c: any) => ({
+                        templateId: c.templateId,
+                        displayText: c.displayText.trim(),
+                        start: Math.max(0, c.start),
+                        end: Math.max(c.start + 0.1, c.end),
+                        reason: c.reason || "",
+                    }))
+
+                console.log(`[AddTitle] ✅ ${batchLabel}: ${batchCues.length} cues`)
+                return batchCues
+
+            } catch (err) {
+                console.error(`[AddTitle] ❌ ${batchLabel} attempt ${attempt}:`, err)
+                if (attempt >= TITLE_RETRY_COUNT) {
+                    // Hết retry → trả về mảng rỗng cho batch này
+                    onProgress?.(`⚠ ${batchLabel} lỗi sau ${TITLE_RETRY_COUNT + 1} lần thử`)
+                    return []
+                }
+                // Đợi 2 giây trước khi retry
+                await new Promise(r => setTimeout(r, 2000))
+            }
+        }
+        return [] // fallback — không bao giờ đến đây
+    })
+
+    // ═══ CHẠY SONG SONG 5 BATCH ═══
+    onProgress?.(`Gửi ${batches.length} batch song song...`)
+    let completedCount = 0
+    const results = await Promise.all(
+        batchTasks.map(async (task, idx) => {
+            const cues = await task()
+            completedCount++
+            onProgress?.(`✓ ${completedCount}/${batches.length} batch xong (batch ${idx + 1}: ${cues.length} cues)`)
+            return cues
+        })
+    )
+
+    // ═══ GOM + DEDUP OVERLAP ═══
+    const allCues = results.flat()
+
+    // Loại bỏ duplicate — cue ở vùng overlap sẽ trùng start time (±1 giây)
+    // Giữ cue có displayText dài hơn (chất lượng tốt hơn)
+    allCues.sort((a, b) => a.start - b.start)
+    const uniqueCues: TitleCue[] = []
+    for (const cue of allCues) {
+        const existing = uniqueCues.find(c => Math.abs(c.start - cue.start) < 1.0)
+        if (!existing) {
+            uniqueCues.push(cue)
+        } else if (cue.displayText.length > existing.displayText.length) {
+            // Thay thế bằng cue có displayText tốt hơn
+            const idx = uniqueCues.indexOf(existing)
+            uniqueCues[idx] = cue
+        }
+    }
+
+    onProgress?.(`✅ Tổng cộng ${uniqueCues.length} Title cues (dedup từ ${allCues.length})`)
+    console.log(`[AddTitle] Final: ${uniqueCues.length} unique cues (raw: ${allCues.length})`)
 
     return {
-        cues,
+        cues: uniqueCues,
         analyzedAt: new Date().toISOString(),
     }
 }
+

@@ -43,18 +43,50 @@ end
 
 -- ===== IMPORT TITLE FROM FILE =====
 -- Import .setting file từ hệ thống vào Media Pool (xóa cache cũ trước)
+-- ⭐ Debug chi tiết để bắt lỗi import
 function M.ImportTitleFromFile(state, helpers, templateName)
     local filePath = TITLES_FOLDER_PATH .. "/" .. templateName .. ".setting"
-    print("[AutoSubs] Trying to import title from: " .. filePath)
+    print("[AutoSubs] ═══════════════════════════════════════")
+    print("[AutoSubs] 📁 ImportTitleFromFile: '" .. templateName .. "'")
+    print("[AutoSubs]   Path: " .. filePath)
 
+    -- ① Kiểm tra file tồn tại + đọc size + header
     local f = io.open(filePath, "r")
     if not f then
-        print("[AutoSubs] ⚠ File not found: " .. filePath)
+        print("[AutoSubs]   ❌ FILE NOT FOUND — io.open() trả về nil")
+        print("[AutoSubs]   💡 Kiểm tra: ls \"" .. TITLES_FOLDER_PATH .. "/\"")
         return nil
     end
-    f:close()
 
-    -- Xóa clip cũ cùng tên (cache DaVinci)
+    -- Đọc file size
+    local content = f:read("*a")
+    f:close()
+    local fileSize = #content
+    print("[AutoSubs]   📏 File size: " .. fileSize .. " bytes")
+
+    if fileSize == 0 then
+        print("[AutoSubs]   ❌ FILE RỖNG (0 bytes) — file bị corrupt!")
+        return nil
+    end
+
+    -- Log header (100 ký tự đầu) để kiểm tra format
+    local header = content:sub(1, 100):gsub("\n", "\\n"):gsub("\r", "\\r")
+    print("[AutoSubs]   📄 Header(100): " .. header)
+
+    -- Kiểm tra format .setting hợp lệ (phải chứa "Composition" hoặc "MediaIn")
+    if not content:find("Composition") and not content:find("MediaIn") and not content:find("TextPlus") then
+        print("[AutoSubs]   ⚠️ File KHÔNG chứa 'Composition'/'MediaIn'/'TextPlus' — có thể sai format!")
+    else
+        print("[AutoSubs]   ✅ Format check OK — tìm thấy keyword Fusion hợp lệ")
+    end
+
+    -- ② Log trạng thái DaVinci
+    local drVersion = state.resolve:GetVersion()
+    if drVersion then
+        print("[AutoSubs]   🎬 DaVinci version: " .. tostring(drVersion[1]) .. "." .. tostring(drVersion[2]) .. "." .. tostring(drVersion[3]))
+    end
+
+    -- ③ Xóa clip cũ cùng tên (cache DaVinci)
     local rootFolder = state.mediaPool:GetRootFolder()
     local oldClips = {}
     helpers.walk_media_pool(rootFolder, function(clip)
@@ -64,20 +96,60 @@ function M.ImportTitleFromFile(state, helpers, templateName)
         end
     end)
     if #oldClips > 0 then
-        print("[AutoSubs] 🗑 Deleting " .. #oldClips .. " old cached clip(s)...")
-        state.mediaPool:DeleteClips(oldClips)
+        print("[AutoSubs]   🗑 Xóa " .. #oldClips .. " clip cũ trùng tên '" .. templateName .. "'...")
+        local delOK = state.mediaPool:DeleteClips(oldClips)
+        print("[AutoSubs]   🗑 DeleteClips result: " .. tostring(delOK))
+    else
+        print("[AutoSubs]   (Không có clip cũ trùng tên)")
     end
 
-    -- Import fresh
-    state.mediaPool:SetCurrentFolder(rootFolder)
-    local imported = state.mediaPool:ImportMedia({ filePath })
-    if not imported or #imported == 0 then
-        print("[AutoSubs] ❌ ImportMedia failed for: " .. filePath)
+    -- ④ Set current folder = root trước khi import
+    local setFolderOK = state.mediaPool:SetCurrentFolder(rootFolder)
+    print("[AutoSubs]   📂 SetCurrentFolder(root): " .. tostring(setFolderOK))
+    print("[AutoSubs]   📂 Current folder: " .. tostring(rootFolder:GetName()))
+
+    -- ⑤ Import .setting file
+    print("[AutoSubs]   🔄 Gọi mediaPool:ImportMedia({'" .. filePath .. "'})...")
+    local importOK, imported = pcall(function()
+        return state.mediaPool:ImportMedia({ filePath })
+    end)
+
+    -- Log kết quả chi tiết
+    if not importOK then
+        print("[AutoSubs]   ❌ ImportMedia EXCEPTION: " .. tostring(imported))
         return nil
     end
 
+    if imported == nil then
+        print("[AutoSubs]   ❌ ImportMedia trả về nil (không rõ lý do)")
+        print("[AutoSubs]   💡 Có thể: file format không compatible với DaVinci version này")
+        print("[AutoSubs]   💡 Thử: mở file bằng Fusion → File → Save As → lưu lại")
+        return nil
+    end
+
+    if type(imported) ~= "table" then
+        print("[AutoSubs]   ❌ ImportMedia trả về type='" .. type(imported) .. "' thay vì table")
+        print("[AutoSubs]   Giá trị: " .. tostring(imported))
+        return nil
+    end
+
+    if #imported == 0 then
+        print("[AutoSubs]   ❌ ImportMedia trả về table RỖNG (#imported == 0)")
+        print("[AutoSubs]   💡 DaVinci nhận file nhưng từ chối import — có thể:")
+        print("[AutoSubs]   💡   1. File .setting tạo từ DaVinci version khác (incompatible)")
+        print("[AutoSubs]   💡   2. File bị corrupt hoặc thiếu node Composition")
+        print("[AutoSubs]   💡   3. MediaPool đang bị lock bởi process khác")
+        return nil
+    end
+
+    -- ⑥ Thành công! Log clip properties
     local item = imported[1]
-    print("[AutoSubs] ✅ Imported FRESH title: '" .. (item:GetClipProperty()["Clip Name"] or "?") .. "'")
+    local props = item:GetClipProperty()
+    print("[AutoSubs]   ✅ IMPORT THÀNH CÔNG!")
+    print("[AutoSubs]   ✅ Clip Name: " .. tostring(props["Clip Name"]))
+    print("[AutoSubs]   ✅ Type: " .. tostring(props["Type"]))
+    print("[AutoSubs]   ✅ FPS: " .. tostring(props["FPS"]))
+    print("[AutoSubs] ═══════════════════════════════════════")
     return item
 end
 
@@ -184,6 +256,116 @@ function M.CreateTemplateSet(state, helpers, templateNames)
 
     if currentFolder then state.mediaPool:SetCurrentFolder(currentFolder) end
     return { success = true, results = results }
+end
+
+-- ===== APPLY CUSTOM TEMPLATE TO TIMELINE ITEM =====
+-- Strategy (theo ChatGPT analysis):
+--   ImportFusionComp() CHỈ hỗ trợ file .comp (Fusion Composition)
+--   KHÔNG hỗ trợ file .setting (MacroOperator template)
+--
+-- Flow:
+--   1. Tìm file .comp trước (đã convert từ .setting bằng convert_settings_to_comp.lua)
+--   2. Nếu có .comp → dùng ImportFusionComp() (đường chính, đúng format)
+--   3. Nếu không có .comp → báo fail, dùng programmatic style ở caller
+--
+-- Return: true nếu apply thành công, false nếu fail
+function M.ApplySettingToTimelineItem(state, timelineItem, templateName)
+    print("[AutoSubs] 🎨 ApplySettingToTimelineItem: '" .. templateName .. "'")
+
+    -- ═══ TÌM FILE .comp (ưu tiên — format đúng cho ImportFusionComp) ═══
+    local compPath = TITLES_FOLDER_PATH .. "/" .. templateName .. ".comp"
+    local settingPath = TITLES_FOLDER_PATH .. "/" .. templateName .. ".setting"
+
+    -- Kiểm tra .comp trước
+    local compFile = io.open(compPath, "r")
+    if compFile then
+        local compContent = compFile:read("*a")
+        compFile:close()
+        print("[AutoSubs]   📄 Tìm thấy file .comp: " .. #compContent .. " bytes")
+
+        -- Debug: comp count TRƯỚC import
+        local countBefore = timelineItem:GetFusionCompCount()
+        print("[AutoSubs]   📊 Comp count TRƯỚC import: " .. tostring(countBefore))
+
+        -- Dùng ImportFusionComp với file .comp (format đúng)
+        print("[AutoSubs]   🔧 ImportFusionComp (.comp)...")
+        local ok, err = pcall(function()
+            local result = timelineItem:ImportFusionComp(compPath)
+            print("[AutoSubs]   📋 Return type: " .. type(result) .. " = " .. tostring(result))
+            if result then
+                return true
+            end
+            return false
+        end)
+
+        -- Debug: comp count SAU import
+        local countAfter = timelineItem:GetFusionCompCount()
+        print("[AutoSubs]   📊 Comp count SAU import: " .. tostring(countAfter))
+
+        if ok and err then
+            if countAfter > countBefore then
+                print("[AutoSubs]   ✅ Comp count TĂNG " .. countBefore .. " → " .. countAfter .. " (THÀNH CÔNG!)")
+            else
+                print("[AutoSubs]   ⚠ Comp count KHÔNG TĂNG — có thể .comp cũng không đúng format")
+            end
+
+            -- Debug: dump tool list của comp cuối cùng
+            local comp = timelineItem:GetFusionCompByIndex(countAfter)
+            if comp then
+                local tools = comp:GetToolList(false) or {}
+                local toolCount = 0
+                for _ in pairs(tools) do toolCount = toolCount + 1 end
+                print("[AutoSubs]   🔧 Tools trong comp (index " .. countAfter .. "): " .. toolCount)
+                for _, tool in pairs(tools) do
+                    local attrs = tool:GetAttrs() or {}
+                    print("[AutoSubs]     → " .. tostring(attrs.TOOLS_Name) .. " [" .. tostring(attrs.TOOLS_RegID) .. "]")
+                end
+            end
+
+            return true
+        else
+            print("[AutoSubs]   ❌ ImportFusionComp(.comp) failed: " .. tostring(err))
+        end
+    else
+        print("[AutoSubs]   ⚠ Không có file .comp: " .. compPath)
+    end
+
+    -- ═══ KHÔNG CÒN THỬ .setting NỮA ═══
+    -- (ImportFusionComp KHÔNG hỗ trợ .setting MacroOperator format)
+    -- Kiểm tra .setting tồn tại để thông báo cho user
+    local settingFile = io.open(settingPath, "r")
+    if settingFile then
+        settingFile:close()
+        print("[AutoSubs]   ⚠ File .setting TỒN TẠI nhưng ImportFusionComp không hỗ trợ MacroOperator format")
+        print("[AutoSubs]   💡 Cần convert .setting → .comp bằng script: convert_settings_to_comp.lua")
+        print("[AutoSubs]   💡 Chạy script trong DaVinci Fusion Console để tạo file .comp")
+    else
+        print("[AutoSubs]   ❌ Không có cả .comp lẫn .setting cho '" .. templateName .. "'")
+    end
+
+    print("[AutoSubs]   ❌ APPLY FAIL → sẽ dùng programmatic style")
+    return false
+end
+
+-- ===== GET SETTING FILE PATH =====
+-- Trả về path đầy đủ tới file .comp hoặc .setting nếu tồn tại
+-- Ưu tiên .comp trước
+function M.GetSettingFilePath(templateName)
+    -- Thử .comp trước
+    local compPath = TITLES_FOLDER_PATH .. "/" .. templateName .. ".comp"
+    local f1 = io.open(compPath, "r")
+    if f1 then
+        f1:close()
+        return compPath
+    end
+    -- Fallback .setting
+    local settingPath = TITLES_FOLDER_PATH .. "/" .. templateName .. ".setting"
+    local f2 = io.open(settingPath, "r")
+    if f2 then
+        f2:close()
+        return settingPath
+    end
+    return nil
 end
 
 return M

@@ -1,0 +1,236 @@
+Composition {
+	CurrentTime = 0,
+	RenderRange = { 0, 119 },
+	GlobalRange = { 0, 119 },
+	CurrentID = 8,
+	HiQ = true,
+	PlaybackUpdateMode = 0,
+	StereoMode = false,
+	Version = "DaVinci Resolve 20.3.2.0009",
+	SavedOutputs = 0,
+	HeldTools = 0,
+	DisabledTools = 0,
+	LockedTools = 0,
+	AudioOffset = 0,
+	Resumable = true,
+	OutputClips = {
+	},
+	CustomData = {
+		TEMPLATE_ID = "Edit/Titles/Title 2"
+	},
+	Tools = {
+		Title1 = MacroOperator {
+			CustomData = {
+				Path = {
+					Map = {
+						["Setting:"] = "Templates:/Edit/Titles/"
+					}
+				},
+			},
+			Inputs = ordered() {
+				Input1 = InstanceInput {
+					SourceOp = "Glow1",
+					Source = "XGlowSize",
+					Default = 0.5,
+				},
+				Input2 = InstanceInput {
+					SourceOp = "Glow1",
+					Source = "YGlowSize",
+					Default = 10,
+				},
+				Input3 = InstanceInput {
+					SourceOp = "Glow1",
+					Source = "Glow",
+					Default = 0.3,
+				},
+				Input4 = InstanceInput {
+					SourceOp = "Glow1",
+					Source = "Blend",
+					Default = 0.65,
+				},
+				Input5 = InstanceInput {
+					SourceOp = "SoftGlow1",
+					Source = "XGlowSize",
+					Default = 36.2,
+				},
+				Input6 = InstanceInput {
+					SourceOp = "SoftGlow1",
+					Source = "YGlowSize",
+					Default = 10,
+				},
+				Input7 = InstanceInput {
+					SourceOp = "Blur1",
+					Source = "XBlurSize",
+					Default = 41.7,
+				},
+				Input8 = InstanceInput {
+					SourceOp = "Blur1",
+					Source = "YBlurSize",
+					Default = 1,
+				},
+				Input9 = InstanceInput {
+					SourceOp = "Blur1",
+					Source = "Blend",
+					Default = 1,
+				},
+				Input10 = InstanceInput {
+					SourceOp = "Text1",
+					Source = "StyledText",
+				},
+				Input11 = InstanceInput {
+					SourceOp = "Text1",
+					Source = "Size",
+					Default = 0.08,
+				}
+			},
+			Outputs = {
+				MainOutput1 = InstanceOutput {
+					SourceOp = "Merge2",
+					Source = "Output",
+				}
+			},
+			ViewInfo = GroupInfo { Pos = { 220, 49.5 } },
+			Tools = ordered() {
+				Glow1 = Glow {
+					CtrlWShown = false,
+					Inputs = {
+						Blend = Input { Value = 0.65, },
+						Filter = Input { Value = FuID { "Fast Gaussian" }, },
+						XGlowSize = Input { Value = 0.5, },
+						Glow = Input { Value = 0.3, },
+						Input = Input {
+							SourceOp = "SoftGlow1",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 749.358, 93.958 } },
+				},
+				SoftGlow1 = SoftGlow {
+					CtrlWShown = false,
+					Inputs = {
+						Blend = Input { Value = 0.803, },
+						Filter = Input { Value = FuID { "Fast Gaussian" }, },
+						Threshold = Input { Value = 0.2, },
+						Gain = Input { Value = 2.087, },
+						XGlowSize = Input { Value = 36.2, },
+						Input = Input {
+							SourceOp = "Blur1",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 640.112, 96.6251 } },
+				},
+				Blur1 = Blur {
+					CtrlWShown = false,
+					Inputs = {
+						Filter = Input { Value = FuID { "Fast Gaussian" }, },
+						XBlurSize = Input { Value = 41.7, },
+						Input = Input {
+							SourceOp = "Text1",
+							Source = "Output",
+						}
+					},
+					ViewInfo = OperatorInfo { Pos = { 537.222, 95.4057 } },
+				},
+				Text1 = TextPlus {
+					CtrlWShown = false,
+					Inputs = {
+						GlobalOut = Input { Value = 119, },
+						Width = Input { Value = 1920, },
+						Height = Input { Value = 1080, },
+						UseFrameFormatSettings = Input { Value = 1, },
+						["Gamut.SLogVersion"] = Input { Value = FuID { "SLog2" }, },
+						Wrap = Input { Value = 1, },
+						LayoutRotation = Input { Value = 1, },
+						TransformRotation = Input { Value = 1, },
+						SelectElement = Input { Value = 1, },
+						Select = Input { Value = 1, },
+						Enabled2 = Input { Value = 1, },
+						Type1 = Input { Value = 2, },
+						Green1 = Input { Value = 0.9647058823529, },
+						Blue1 = Input { Value = 0, },
+						ShadingGradient1 = Input {
+							Value = Gradient {
+								Colors = {
+									[0] = { 0.85, 0.65, 0.21, 1 },
+									[0.4825870646766] = { 1, 0.95, 0.55, 1 },
+									[1] = { 1, 0.95, 0.3, 1 }
+								}
+							},
+						},
+						ShadingMappingAngle1 = Input { Value = 91.3, },
+						ShadingMappingSize1 = Input { Value = 2, },
+						Softness1 = Input { Value = 1, },
+						StyledText = Input { Value = "HELLO WORLD", },
+						Font = Input { Value = "Trajan Pro 3", },
+						Style = Input { Value = "Regular", },
+						VerticalJustificationNew = Input { Value = 3, },
+						HorizontalJustificationNew = Input { Value = 3, },
+						Thickness2 = Input { Value = 0.04, },
+						Green2 = Input { Value = 0.9019607843137, },
+						Softness2 = Input { Value = 1, },
+						SoftnessX2 = Input { Value = 0.01, },
+						SoftnessY2 = Input { Value = 0.01, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 372.836, 95.9843 } },
+				},
+				Merge2 = Merge {
+					CtrlWZoom = false,
+					CtrlWShown = false,
+					Inputs = {
+						Background = Input {
+							SourceOp = "Glow1",
+							Source = "Output",
+						},
+						Foreground = Input {
+							SourceOp = "Text1",
+							Source = "Output",
+						},
+						PerformDepthMerge = Input { Value = 0, }
+					},
+					ViewInfo = OperatorInfo { Pos = { 474.167, 52.2241 } },
+				}
+			},
+		},
+		MediaOut1 = Saver {
+			Inputs = {
+				Index = Input { Value = "0", },
+				Input = Input {
+					SourceOp = "Merge2",
+					Source = "Output",
+				}
+			},
+			ViewInfo = OperatorInfo { Pos = { 440, 49.5 } },
+		}
+	},
+	Frames = {
+	},
+	Prefs = {
+		Comp = {
+			Interactive = {
+				Proxy = {
+					Scale = 1,
+				},
+			},
+			Views = {
+				View1 = {
+				},
+			},
+			Paths = {
+				Map = {
+					["ResolveCaches:"] = "/Users/may1/Movies/CacheClip/fb090391-e3f2-4657-b6b7-05613b98e3e7/a37b7302-c771-4f27-a05c-d46eacf7f718/c835ff03-8bc6-4ae8-a4a9-d6a55a43fc2c/Fusion",
+				},
+			},
+			FrameFormat = {
+				Rate = 24,
+				GuideRatio = 1.77777777777778,
+				DepthFull = 3,
+				DepthPreview = 3,
+				DepthInteractive = 3,
+			},
+			Unsorted = {
+				GlobalEnd = 119
+			},
+		}
+	},
+}

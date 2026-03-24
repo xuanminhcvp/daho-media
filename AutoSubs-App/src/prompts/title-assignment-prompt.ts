@@ -1,18 +1,23 @@
 // title-assignment-prompt.ts
 // Prompt cho AI phân tích Whisper Words → xác định Text On Screen (Title Cards)
-// Hỗ trợ 8 loại template đầy đủ cho phim tài liệu YouTube
+// V4: Vàng là màu chủ đạo, hạn chế xanh, 10 Fusion Compositions + giới hạn từ + text khớp 100% voice
 
-import type { TextTemplate } from "@/services/template-assignment-service"
+// Import từ types tập trung (KHÔNG import từ service để tránh circular dependency)
+import type { TextTemplate } from "@/types/title-types"
 
 /**
  * Tạo prompt phân tích Whisper Words để tìm Text On Screen (Title) cues
+ * AI sẽ chọn từ 10 template theo cảm xúc + ngữ cảnh của từng câu
+ * V3: Thêm giới hạn từ + text phải khớp 100% lời narrator
  *
  * @param wordsText - Nội dung whisper words (format: "[0.13] February [0.77] twenty ...")
  * @param templates - Danh sách template đang bật
+ * @param scriptText - Kịch bản gốc (optional) — dùng để AI so khớp text chính xác
  */
 export function buildTitleFromWhisperPrompt(
     wordsText: string,
-    templates: TextTemplate[]
+    templates: TextTemplate[],
+    scriptText?: string
 ): string {
     // Mô tả các template đang bật cho AI
     const templateDescriptions = templates
@@ -22,7 +27,12 @@ export function buildTitleFromWhisperPrompt(
         )
         .join("\n\n")
 
-    return `Bạn là Senior Video Editor chuyên sản xuất phim Tài liệu YouTube (3D Investigative Documentary Style).
+    // Phần kịch bản gốc (nếu có)
+    const scriptSection = scriptText
+        ? `\n=== KỊCH BẢN GỐC (dùng để so khớp text chính xác) ===\n${scriptText}\n`
+        : ""
+
+    return `Bạn là Senior Video Editor chuyên sản xuất phim Tài liệu 3D YouTube (Investigative Documentary Style).
 
 NHIỆM VỤ: Phân tích Whisper transcript (word-by-word timestamps) → xác định các cụm từ cần TEXT ON SCREEN.
 
@@ -33,53 +43,54 @@ Ví dụ: [34.20] February [34.50] twenty [34.80] second [35.10] 2026
 === QUAN TRỌNG: ĐÂY KHÔNG PHẢI SUBTITLE ===
 Text On Screen xuất hiện ~20-25% thời lượng video.
 PHẦN LỚN câu kể chuyện bình thường → KHÔNG cần Text On Screen.
-Chỉ những câu CÓ GIÁ TRỊ THÔNG TIN CAO HOặC CẢM XÚC MẠNH mới cần.
+Chỉ những câu CÓ GIÁ TRỊ THÔNG TIN CAO HOẶC CẢM XÚC MẠNH mới cần.
 
-=== 8 LOẠI TEXT ON SCREEN ===
+=== HỆ THỐNG TEMPLATE ===
 
-📌 LOẠI 1 — DOCUMENT / ID CARD (template_1)
-Khi nào: Giới thiệu tên người + chức danh chính thức LẦN ĐẦU, văn bản pháp lý, phán quyết tòa
-Ví dụ: "NEMESIO OSEGUERA CERVANTES — CJNG Cartel Leader", "FBI Indictment No. 2024-CR-0451"
-⚠️ Khi gặp: "FBI special agent", "cartel leader", "former president", "arrested", "indicted" → CHECK xem đây có phải lần đầu giới thiệu không.
+Bạn có 10 template, phân theo 3 tiêu chí:
 
-📌 LOẠI 2 — LOCATION / IMPACT (template_2)
-Khi nào: Địa điểm + mốc thời gian cụ thể (đặc biệt là lần đầu hoặc khi chuyển cảnh)
-Ví dụ: "GUADALAJARA, 2003", "STOCKHOLM — 2006", "FEBRUARY 22, 2026"
-⚠️ BẮT BUỘC: KHÔNG bỏ qua câu nào có: tên thành phố/quốc gia + năm, năm cụ thể ("In 2003", "By 1995"), "in [city]", "at [location]"
+🎨 MÀU SẮC (chọn theo cảm xúc):
+- VÀNG (gold): ⭐ MÀU CHỦ ĐẠO — trang trọng, ấn tượng, thông tin quan trọng, facts, quotes, nhân vật (chiếm 60-70% title cards)
+- XANH (blue/teal): ⚠️ HẠN CHẾ — CHỈ dùng cho location, document pháp lý, thời gian cụ thể (tối đa 15-20% title cards)
+- ĐỎ (red): Nguy hiểm, bạo lực, cảnh báo, chết chóc (10-15% title cards)
 
-📌 LOẠI 3 — DEATH / VIOLENCE (template_3)
-Khi nào: Số người chết/bị thương, bạo lực cụ thể, vũ khí, thảm họa có tên
-Ví dụ: "9 OFFICERS KILLED", "252 BLOCKADES", "CAR BOMB — GUADALAJARA"
-⚠️ Khi gặp số + "dead", "killed", "murdered", "wounded" → LUÔN dùng template này
+📐 KÍCH THƯỚC (chọn theo tầm quan trọng):
+- TO (large): Full screen, impact lớn, câu quan trọng nhất — location/thời gian cũng dùng TO
+- NHỎ (small): Lower-third, thông tin phụ, document dài, quote dài
 
-📌 LOẠI 4 — QUOTE / MOTIF (template_4)
-Khi nào: Trích dẫn trực tiếp có nguồn, câu nhận định triết lý sâu sắc, câu kết chương có sức nặng
-Ví dụ: '"He was untouchable." — DEA Official', "Power always has one weakness."
-⚠️ Câu có dấu ngoặc kép + người nói → LUÔN là template này
+🎬 HOẠT ẢNH (chọn theo cường độ cảm xúc):
+- XUẤT HIỆN (fade-in): Nhẹ nhàng, trang trọng, kéo dài
+- ĐẬP XUỐNG (slam): Mạnh mẽ, bất ngờ, impact
+- ĐÁNH MÁY (typewriter): Tài liệu, hồ sơ, thông tin chính thức
 
-📌 LOẠI 5 — MAIN TITLE (template_5)
-Khi nào: CHỈ xuất hiện 1 lần duy nhất — câu MỞ ĐẦU video giới thiệu chủ đề tổng quan
-Ví dụ: "THE WORLD'S MOST WANTED CARTEL", "THIS IS THE STORY OF..."
-⚠️ Chỉ dùng cho câu đầu tiên của transcript — sau đó KHÔNG dùng nữa
+=== ⚠️ GIỚI HẠN SỐ TỪ — BẮT BUỘC TUÂN THỦ ===
 
-📌 LOẠI 6 — CHAPTER / SCENE (template_6)
-Khi nào: Câu báo hiệu chuyển chương, nhảy timeline, plot twist lớn, reveal bất ngờ
-Ví dụ: "SIX MONTHS LATER", "PART II: THE FALL", "BUT THEN EVERYTHING CHANGED"
-⚠️ Khi gặp: "months later", "years later", "meanwhile", "but then", "however" → CHECK xem có phải chuyển cảnh lớn không
+🔴 TEMPLATE "TO" (large): TỐI ĐA 4 TỪ — KHÔNG CÓ NGOẠI LỆ (kể cả location/thời gian)
+   - 2-3 từ/dòng, tối đa 2 dòng, ≤4 từ tổng
+   - Nếu location/thời gian dài hơn 4 từ → TÁCH thành 2 clips TO liên tiếp:
+     * Clip 1: địa điểm (vd: "RURAL JALISCO") — ≤4 từ
+     * Clip 2: thời gian (vd: "FEBRUARY 22, 2026") — ≤4 từ, start ngay sau clip 1
+   - Ví dụ đúng: "$50 BILLION", "9 DEAD", "PART II", "RURAL JALISCO", "FEBRUARY 2026"
+   - Ví dụ SAI (quá dài): "Rural Jalisco — February 22, 2026" → TÁCH thành 2 clips
 
-📌 LOẠI 7 — FACT / STAT CARD (template_7)
-Khi nào: Số liệu kinh tế, thống kê quan trọng (KHÔNG phải địa điểm/thời gian, KHÔNG phải bạo lực)
-Ví dụ: "$50 BILLION IN ANNUAL REVENUE", "90% OF U.S. COCAINE SUPPLY", "OPERATIONS IN 40+ COUNTRIES"
-⚠️ Khi gặp: số tiền ($), %, "million", "billion", số lượng lớn + danh từ → dùng template này thay vì template_2
+🔵 TEMPLATE "NHỎ" (small): TỐI ĐA 15 TỪ cho 1 clip
+   - Dòng 1: tối đa 10 từ
+   - Dòng 2: tối đa 5 từ thêm
+   - Nếu nội dung >15 từ → TÁCH thành 2 clips liên tiếp (cùng template, chia đều duration)
 
-📌 LOẠI 8 — EMPHASIS / KEY TEXT (template_8)
-Khi nào: Câu đỉnh điểm cảm xúc của đoạn — câu mà nếu cắt ra khỏi video vẫn nói lên thông điệp chính
-Ví dụ: "THEY FOUND HIM THROUGH THE ONE VULNERABILITY NO POWER CAN ELIMINATE", "HE WAS HUMAN"
-⚠️ Câu ngắn, súc tích, có sức nặng tâm lý mạnh → template này
+🚫 KHÔNG BAO GIỜ để text tràn khỏi màn hình. Ngắn gọn = tốt hơn dài.
+
+=== ⚠️ TEXT PHẢI KHỚP 100% VOICE — KHÔNG ĐƯỢC CHẾ CHÁO ===
+
+displayText PHẢI là đúng lời narrator nói trong audio/kịch bản.
+- KHÔNG được tóm tắt, paraphrase, hoặc chế lại nội dung
+- Lấy chính xác từ ngữ narrator nói (viết hoa toàn bộ nếu là title)
+- Nếu có kịch bản gốc → so khớp để lấy text chính xác
+- Chỉ được rút gọn KHI dùng template TO (≤4 từ): lấy keyword chính
 
 === DANH SÁCH TEMPLATE ĐANG BẬT ===
 ${templateDescriptions}
-
+${scriptSection}
 === WHISPER WORDS TRANSCRIPT ===
 ${wordsText}
 
@@ -90,52 +101,96 @@ Ví dụ: "[34.20] February [34.50] twenty [34.80] second [35.10] 2026"
   → start = 34.20 (timestamp "February")
   → end = 35.10 + 0.5 = 35.60
 
-=== QUY TẮC displayText ===
-- MAIN TITLE: VIẾT HOA hoàn toàn, ngắn gọn (không quá 8 từ)
-- CHAPTER: VIẾT HOA, dùng số La Mã nếu phù hợp ("PART II: THE FALL")
-- LOCATION: "THÀNH PHỐ, NĂM" (VD: "GUADALAJARA, 2003")
-- FACT/STAT: Số + đơn vị VIẾT HOA ("$50 BILLION", "90% OF COCAINE")
-- DEATH: Ngắn gọn VIẾT HOA ("9 OFFICERS KILLED")
-- LOWER THIRD: "TÊN ĐẦY ĐỦ — CHỨC DANH"
-- QUOTE: Giữ nguyên kèm dấu ngoặc kép và nguồn
-- EMPHASIS: Câu nguyên văn quan trọng, có thể dùng ELLIPSIS (...)
+=== QUY TẮC CHỌN TEMPLATE ===
+
+⭐ VÀNG LÀ MÀU MẶC ĐỊNH — Khi phân vân giữa vàng và xanh → LUÔN CHỌN VÀNG.
+⚠️ XANH chỉ được dùng khi nội dung là: địa danh cụ thể (location), tài liệu pháp lý, hoặc thời gian/ngày tháng năm. KHÔNG dùng xanh cho chapter/scene.
+
+1. MAIN TITLE (đầu video): vàng to xuất hiện — CHỈ 1 LẦN, ≤4 từ
+2. CHAPTER / SCENE / PHẦN: ⚠️ Dùng VÀNG to xuất hiện/đập xuống — ≤4 từ ("PART II", "THE GHOST") — KHÔNG dùng xanh cho chapter
+3. LOCATION / THỜI GIAN rõ ràng: ⭐ Dùng TO (large) xuất hiện — TỐI ĐA 4 TỪ/clip, KHÔNG NGOẠI LỆ
+   - Màu ưu tiên: VÀNG to xuất hiện (nếu location mang tính trang trọng/giới thiệu)
+   - Màu thay thế: XANH to xuất hiện (nếu location thuần thông tin/trung tính) — hạn chế dùng
+   - Nếu dài hơn 4 từ → TÁCH 2 clips liên tiếp (địa điểm / thời gian riêng biệt):
+     * Clip 1: "RURAL JALISCO" (≤4 từ)
+     * Clip 2: "FEBRUARY 22, 2026" (≤4 từ, ngay sau clip 1)
+4. DOCUMENT / PHÁP LÝ rõ ràng: Xanh nhỏ đánh máy — ≤15 từ (bản án, hồ sơ, tài liệu chính thức)
+5. ID CARD / NHÂN VẬT: Vàng nhỏ đánh máy — ≤15 từ
+6. FACT / STAT (vừa): Vàng nhỏ xuất hiện — ≤15 từ
+7. FACT / STAT (gây sốc, ngắn): Vàng to đập xuống — ≤4 từ ("$50 BILLION", "1,000 KILLED")
+8. QUOTE / MOTIF / THÔNG TIN KỲ: Vàng nhỏ xuất hiện — ≤15 từ
+9. DEATH (nặng nề, chậm): Đỏ to xuất hiện — ≤4 từ
+10. DEATH (bất ngờ, sốc): Đỏ to đập xuống — ≤4 từ ("9 DEAD", "DIRECT HIT")
+
+🚦 KIỂM TRA TỶ LỆ MÀU trước khi trả về:
+   - Vàng: ≥60% tổng title cards ✅
+   - Xanh: ≤20% tổng title cards ✅ (nếu vượt → chuyển sang vàng nhỏ)
+   - Đỏ: ≤20% tổng title cards ✅
+
+=== CÁCH XỬ LÝ NỘI DUNG DÀI ===
+- Nếu câu narrator nói dài (>4 từ) mà cần nhấn mạnh → dùng template NHỎ
+- Nếu muốn dùng template TO → chỉ lấy 2-4 keyword chính
+- Nếu nội dung >15 từ → TÁCH thành 2 clips liên tiếp:
+  * Clip 1: nửa đầu text, start = start gốc, end = giữa duration
+  * Clip 2: nửa sau text, start = giữa duration, end = end gốc
+
+=== QUY TẮC VIẾT HOA / VIẾT THƯỜNG (BẮT BUỘC) ===
+
+🔠 TEMPLATE "TO" (large): VIẾT HOA TOÀN BỘ
+   - Ví dụ: "$50 BILLION", "PART III", "9 DEAD", "HE WAS HUMAN", "DIRECT HIT"
+
+🔡 TEMPLATE "NHỎ" (small): Viết thường, chỉ viết hoa:
+   - Chữ cái đầu tiên của câu
+   - Tên riêng (El Mencho, Nemesio Oseguera Cervantes)
+   - Địa danh (Guadalajara, San Francisco, Mexico City)
+   - Tên tổ chức (CJNG, FBI, DEA)
+   - Viết tắt (U.S., RPG-7)
+   - Ví dụ đúng: "Convicted — conspiracy to distribute heroin, U.S. District Court, 1994"
+   - Ví dụ đúng: "Guadalajara, Mexico — July 17, 1966"
+   - Ví dụ SAI: "CONVICTED — CONSPIRACY TO DISTRIBUTE HEROIN" (đây là nhỏ, không viết hoa hết)
+
+🔤 QUOTE: Giữ nguyên cả câu gốc, có dấu ngoặc kép, viết thường (trừ tên riêng)
+   - Ví dụ: "Before any of this... he was a cop."
+
+⚠️ ĐẾM SỐ TỪ trước khi trả về! TO >4 từ = LỖI. NHỎ >15 từ = TÁCH.
 
 === NHIỆM VỤ ===
-1. Đọc toàn bộ transcript để hiểu narrative arc.
-2. Xác định 20-25% cụm TỪ THỰC SỰ QUAN TRỌNG (không lấy câu bình thường).
-3. Ưu tiên: Main Title (đầu video) → Location → Deaths → Facts/Stats → Chapters → Quotes → Emphasis → Lower Thirds.
-4. Mỗi cụm: chọn đúng template, viết displayText ngắn gọn súc tích, set start/end từ word timestamps.
+1. Đọc toàn bộ transcript (+ kịch bản nếu có) để hiểu narrative arc.
+2. Xác định 20-25% cụm TỪ THỰC SỰ QUAN TRỌNG.
+3. Mỗi cụm: chọn template theo cảm xúc, ĐẾM SỐ TỪ, viết displayText.
+4. Ưu tiên: Main Title → Deaths → Facts/Stats → Nhân vật/ID → Quotes → Chapters.
+5. Sau khi chọn xong: đếm tỷ lệ màu — nếu xanh >20% → thay bằng vàng nhỏ xuất hiện.
 
 Trả về JSON (KHÔNG có markdown, KHÔNG có giải thích thêm):
 {
   "titles": [
     {
       "templateId": "template_5",
-      "displayText": "THE WORLD'S MOST POWERFUL CARTEL",
+      "displayText": "EL MENCHO",
       "start": 2.10,
       "end": 4.50,
-      "reason": "Câu mở đầu video — Main Title"
+      "reason": "Main title — vàng to xuất hiện (2 từ ✅)"
     },
     {
-      "templateId": "template_6",
-      "displayText": "SIX MONTHS LATER",
-      "start": 245.30,
-      "end": 247.00,
-      "reason": "Chuyển timeline — Chapter/Scene"
+      "templateId": "template_3",
+      "displayText": "Guadalajara, Mexico — July 17, 1966",
+      "start": 74.56,
+      "end": 82.19,
+      "reason": "Location + thời gian — Xanh nhỏ xuất hiện (6 từ ✅ ≤15, viết thường)"
     },
     {
-      "templateId": "template_7",
-      "displayText": "$50 BILLION ANNUAL REVENUE",
-      "start": 120.50,
-      "end": 122.80,
-      "reason": "Số liệu doanh thu lớn — Fact/Stat Card"
+      "templateId": "template_10",
+      "displayText": "9 DEAD",
+      "start": 814.37,
+      "end": 816.00,
+      "reason": "Số người chết — đỏ to đập xuống (2 từ ✅ ≤4, VIẾT HOA)"
     },
     {
-      "templateId": "template_8",
-      "displayText": "THEY FOUND HIM THE WAY THEY ALWAYS FIND HIM",
-      "start": 1854.60,
-      "end": 1858.00,
-      "reason": "Câu nhấn mạnh đỉnh điểm — Emphasis"
+      "templateId": "template_4",
+      "displayText": "Convicted — conspiracy to distribute heroin, U.S. District Court, 1994",
+      "start": 162.32,
+      "end": 165.00,
+      "reason": "Pháp lý — Xanh nhỏ đánh máy (10 từ ✅ ≤15, viết thường)"
     }
   ]
 }`

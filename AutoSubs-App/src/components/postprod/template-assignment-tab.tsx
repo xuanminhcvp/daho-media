@@ -202,19 +202,47 @@ export function TemplateAssignmentTab() {
 
     /** AI phân tích whisper words → tìm Title cues */
     const handleAnalyze = async () => {
-        if (!wordsTextCache) {
-            setError("Chưa có dữ liệu Whisper Words. Hãy kết nối DaVinci hoặc chọn file thủ công.")
+        // Kiểm tra nguồn dữ liệu: ưu tiên Master SRT > Whisper thô
+        const masterSrt = project.masterSrt
+        const hasMasterSrt = masterSrt && masterSrt.length > 0
+
+        // Nếu không có Master SRT VÀ không có Whisper thô → báo lỗi
+        if (!hasMasterSrt && !wordsTextCache) {
+            setError("Chưa có dữ liệu. Tạo Master SRT hoặc kết nối DaVinci / chọn file Whisper Words.")
             return
         }
 
         setIsAnalyzing(true)
         setError("")
-        setProgress("AI đang phân tích transcript và xác định Title cues...")
 
         try {
+            let inputWordsText: string
+            let scriptForAI: string | undefined
+
+            if (hasMasterSrt) {
+                // ★ CÓ Master SRT → dùng Master SRT làm nguồn chính
+                // Master SRT đã có text chuẩn (khớp kịch bản) + timing word-level
+                inputWordsText = masterSrt.map(w => `[${w.start.toFixed(2)}] ${w.word}`).join(" ")
+                scriptForAI = inputWordsText // trùng vì Master SRT đã chuẩn
+                setProgress("🟢 Dùng Master SRT — text chuẩn, timing chính xác")
+                console.log("[AddTitle] Dùng Master SRT:", masterSrt.length, "từ")
+            } else {
+                // Fallback: dùng Whisper thô
+                inputWordsText = wordsTextCache
+                scriptForAI = undefined
+                setProgress("⚠ Dùng Whisper thô (chưa có Master SRT)")
+                console.log("[AddTitle] Dùng Whisper thô, không có Master SRT")
+            }
+
+            setProgress(hasMasterSrt
+                ? "🟢 AI đang phân tích Master SRT → tìm Title cues..."
+                : "AI đang phân tích Whisper Words → tìm Title cues..."
+            )
+
             const result = await analyzeWhisperWordsForTitles(
-                wordsTextCache,
+                inputWordsText,
                 templates,
+                scriptForAI,
                 (msg) => setProgress(msg)
             )
             updateTemplateAssignment({ titleCueResult: result })
@@ -245,8 +273,11 @@ export function TemplateAssignmentTab() {
 
             const clipsToApply = titleCueResult.cues.map(cue => {
                 const tpl = templates.find(t => t.id === cue.templateId)
-                const tplName = tpl?.resolveTemplateName || tpl?.displayName || "Title 2"
-                return { start: cue.start, end: cue.end, text: cue.displayText, template: tplName }
+                // resolveTemplateName giờ là tên Fusion Composition trong Power Bin
+                const tplName = tpl?.resolveTemplateName || tpl?.displayName || "vàng to xuất hiện"
+                // sfxName để Lua chọn đúng SFX
+                const sfxName = tpl?.sfxName || ""
+                return { start: cue.start, end: cue.end, text: cue.displayText, template: tplName, sfxName }
             })
 
             setProgress(`Đang thêm ${clipsToApply.length} Title clips vào Video Track ${trackNum}...`)
@@ -293,6 +324,21 @@ export function TemplateAssignmentTab() {
                         <AudioLines className="h-4 w-4 text-blue-400" />
                         🎤 Whisper Words
                     </label>
+
+                    {/* Badge Master SRT — ưu tiên hơn Whisper thô */}
+                    {project.masterSrt?.length > 0 && (
+                        <div className="flex items-center gap-2 p-2.5 rounded bg-green-500/10 border border-green-500/20">
+                            <CheckCircle2 className="h-4 w-4 text-green-400 shrink-0" />
+                            <div className="flex-1 min-w-0">
+                                <p className="text-xs text-green-400 font-medium">
+                                    🟢 Dùng Master SRT — {project.masterSrt.length} từ (text chuẩn)
+                                </p>
+                                <p className="text-[10px] text-muted-foreground">
+                                    AI Title sẽ dùng Master SRT thay Whisper thô → chính xác hơn
+                                </p>
+                            </div>
+                        </div>
+                    )}
 
                     {/* Auto-loaded thành công từ DaVinci */}
                     {autoTranscriptLoaded ? (
@@ -367,7 +413,7 @@ export function TemplateAssignmentTab() {
                     <Button
                         className="w-full gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white border-0 shadow-md h-11"
                         onClick={handleAnalyze}
-                        disabled={!wordsTextCache || isAnalyzing}
+                        disabled={(!wordsTextCache && !(project.masterSrt?.length > 0)) || isAnalyzing}
                     >
                         {isAnalyzing
                             ? <Loader2 className="h-4 w-4 animate-spin" />
