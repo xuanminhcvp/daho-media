@@ -15,24 +15,24 @@ import type { TextTemplate } from "@/types/title-types"
  * @param scriptText - Kịch bản gốc (optional) — dùng để AI so khớp text chính xác
  */
 export function buildTitleFromWhisperPrompt(
-    wordsText: string,
-    templates: TextTemplate[],
-    scriptText?: string
+  wordsText: string,
+  templates: TextTemplate[],
+  scriptText?: string
 ): string {
-    // Mô tả các template đang bật cho AI
-    const templateDescriptions = templates
-        .filter(t => t.enabled)
-        .map((t, i) =>
-            `${i + 1}. ID: "${t.id}" — ${t.displayName}\n   Mô tả: ${t.description}\n   Quy tắc: ${t.usageRule}`
-        )
-        .join("\n\n")
+  // Mô tả các template đang bật cho AI
+  const templateDescriptions = templates
+    .filter(t => t.enabled)
+    .map((t, i) =>
+      `${i + 1}. ID: "${t.id}" — ${t.displayName}\n   Mô tả: ${t.description}\n   Quy tắc: ${t.usageRule}`
+    )
+    .join("\n\n")
 
-    // Phần kịch bản gốc (nếu có)
-    const scriptSection = scriptText
-        ? `\n=== KỊCH BẢN GỐC (dùng để so khớp text chính xác) ===\n${scriptText}\n`
-        : ""
+  // Phần kịch bản gốc (nếu có)
+  const scriptSection = scriptText
+    ? `\n=== KỊCH BẢN GỐC (dùng để so khớp text chính xác) ===\n${scriptText}\n`
+    : ""
 
-    return `Bạn là Senior Video Editor chuyên sản xuất phim Tài liệu 3D YouTube (Investigative Documentary Style).
+  return `Bạn là Senior Video Editor chuyên sản xuất phim Tài liệu 3D YouTube (Investigative Documentary Style).
 
 NHIỆM VỤ: Phân tích Whisper transcript (word-by-word timestamps) → xác định các cụm từ cần TEXT ON SCREEN.
 

@@ -4,7 +4,7 @@
 // Nút Auto Media đã chuyển lên titlebar.tsx
 
 import * as React from "react"
-import { Music, Zap, Type, Layers, Subtitles, Clapperboard, Film, ImageIcon, RefreshCw } from "lucide-react"
+import { Music, Zap, Type, Layers, Subtitles, Clapperboard, Film, ImageIcon, RefreshCw, Palette } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { MusicLibraryTab } from "@/components/postprod/music-library-tab"
@@ -15,6 +15,7 @@ import { SubtitleTab } from "@/components/postprod/subtitle-tab"
 import { EffectsTab } from "@/components/postprod/effects-tab"
 import { FootageTab } from "@/components/postprod/footage-tab"
 import { ReferenceImagesTab } from "@/components/postprod/reference-images-tab"
+import { AutoColorTab } from "@/components/postprod/auto-color-tab"
 import { PostProdTab } from "@/types/audio-types"
 import { useProject } from "@/contexts/ProjectContext"
 import { getSavedFolder } from "@/services/saved-folders-service"
@@ -227,6 +228,22 @@ export function PostProductionPanel() {
                     <TooltipContent side="bottom">AI gợi ý ảnh thực tế minh hoạ → import lên Track V4</TooltipContent>
                 </Tooltip>
 
+                {/* Tab Auto Color — Tự động chỉnh màu */}
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <Button
+                            variant={activeSubTab === "autoColor" ? "secondary" : "ghost"}
+                            size="sm"
+                            className="h-7 px-2.5 gap-1 text-xs"
+                            onClick={() => setActiveSubTab("autoColor")}
+                        >
+                            <Palette className="h-3.5 w-3.5 text-purple-500" />
+                            <span className="font-medium text-purple-600 dark:text-purple-400">Auto Color</span>
+                        </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">AI DaVinci Colorist — tự động phân tích và chỉnh màu clip</TooltipContent>
+                </Tooltip>
+
                 {/* Tab Ducking — TẠM ẨN (chưa dùng) */}
                 {/* <Tooltip>
                     <TooltipTrigger asChild>
@@ -254,6 +271,7 @@ export function PostProductionPanel() {
                 {activeSubTab === "effects" && <EffectsTab />}
                 {activeSubTab === "footage" && <FootageTab />}
                 {activeSubTab === "refImages" && <ReferenceImagesTab />}
+                {activeSubTab === "autoColor" && <AutoColorTab />}
                 {/* Ducking content — TẠM ẨN */}
             </div>
         </div>

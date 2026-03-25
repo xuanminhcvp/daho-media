@@ -162,8 +162,10 @@ export interface AppSettings {
     footageFolder?: string
     /** Đường dẫn folder matching */
     matchingFolder?: string
-    /** Gemini API key cho Audio Scan */
+    /** Gemini API key cho Audio Scan (legacy — 1 key duy nhất) */
     audioScanApiKey?: string
+    /** Danh sách Gemini API keys — round-robin để tránh rate limit */
+    geminiApiKeys?: string[]
     /** Cấu hình templates (4 template highlight text) */
     templates?: any[]
     /** Version templates (để detect thay đổi) */

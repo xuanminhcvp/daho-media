@@ -199,7 +199,8 @@ function splitWordIndicesAtSentenceBoundaries(
   return batches
 }
 
-function buildScriptBatches(scriptText: string, batchCount: number): string[] {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function buildScriptBatches(scriptText: string, batchCount: number): string[] {
   const scriptLines = scriptText.split(/\n+/).filter(l => l.trim())
   if (batchCount <= 1) return [scriptLines.join("\n")]
 

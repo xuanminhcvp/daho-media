@@ -99,10 +99,72 @@ export async function removeSavedFolder(key: keyof SavedFolders): Promise<void> 
     }
 }
 
-// ======================== AUDIO SCAN API KEY ========================
+// ======================== GEMINI API KEYS (ROUND-ROBIN) ========================
+
+/** Bộ đếm round-robin — tự tăng mỗi lần lấy key */
+let geminiKeyIndex = 0
+
+/**
+ * Lưu danh sách Gemini API keys vào settings.json
+ * Thay thế toàn bộ danh sách cũ
+ * @param keys - Mảng API keys cần lưu
+ */
+export async function saveGeminiApiKeys(keys: string[]): Promise<void> {
+    try {
+        // Lọc bỏ key rỗng
+        const validKeys = keys.filter(k => k.trim().length > 0)
+        await saveSettings({ geminiApiKeys: validKeys })
+        console.log(`[SavedFolders] Đã lưu ${validKeys.length} Gemini API keys`)
+    } catch (error) {
+        console.error('[SavedFolders] Lỗi lưu Gemini API keys:', error)
+    }
+}
+
+/**
+ * Đọc danh sách Gemini API keys đã lưu
+ * @returns Mảng keys hoặc mảng rỗng nếu chưa lưu
+ */
+export async function getGeminiApiKeys(): Promise<string[]> {
+    try {
+        const settings = await readSettings()
+        // Ưu tiên mảng keys mới, fallback về key đơn cũ
+        if (settings.geminiApiKeys && settings.geminiApiKeys.length > 0) {
+            return settings.geminiApiKeys
+        }
+        // Backward compatible: nếu có key đơn cũ → wrap thành mảng
+        if (settings.audioScanApiKey) {
+            return [settings.audioScanApiKey]
+        }
+        return []
+    } catch (error) {
+        console.error('[SavedFolders] Lỗi đọc Gemini API keys:', error)
+        return []
+    }
+}
+
+/**
+ * Lấy 1 Gemini API key theo round-robin
+ * Mỗi lần gọi sẽ trả key khác nhau → phân tải tránh rate limit
+ * @returns API key hoặc chuỗi rỗng nếu không có key
+ */
+export async function getAudioScanApiKey(): Promise<string> {
+    try {
+        const keys = await getGeminiApiKeys()
+        if (keys.length === 0) return ''
+        // Round-robin: xoay vòng qua danh sách keys
+        const key = keys[geminiKeyIndex % keys.length]
+        geminiKeyIndex++
+        console.log(`[SavedFolders] 🔑 Gemini key #${((geminiKeyIndex - 1) % keys.length) + 1}/${keys.length}`)
+        return key
+    } catch (error) {
+        console.error('[SavedFolders] Lỗi đọc API key:', error)
+        return ''
+    }
+}
 
 /**
  * Lưu API key cho Audio Scan (Gemini) vào settings.json
+ * Legacy: lưu 1 key đơn — dùng saveGeminiApiKeys() cho nhiều key
  * @param apiKey - API key cần lưu
  */
 export async function saveAudioScanApiKey(apiKey: string): Promise<void> {
@@ -111,20 +173,5 @@ export async function saveAudioScanApiKey(apiKey: string): Promise<void> {
         console.log('[SavedFolders] Đã lưu Audio Scan API key')
     } catch (error) {
         console.error('[SavedFolders] Lỗi lưu API key:', error)
-    }
-}
-
-/**
- * Đọc API key cho Audio Scan đã lưu từ settings.json
- * ⚠️ ASYNC — khác với bản cũ
- * @returns API key hoặc chuỗi rỗng nếu chưa lưu
- */
-export async function getAudioScanApiKey(): Promise<string> {
-    try {
-        const settings = await readSettings()
-        return settings.audioScanApiKey || ''
-    } catch (error) {
-        console.error('[SavedFolders] Lỗi đọc API key:', error)
-        return ''
     }
 }

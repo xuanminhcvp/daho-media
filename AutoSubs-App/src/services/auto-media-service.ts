@@ -545,7 +545,7 @@ async function runImagePipeline(
                 stillJobs.push({
                     inputPath: clip.filePath,
                     durationFrames,
-                    outputPath: getVideoOutputPath(clip.filePath),
+                    outputPath: await getVideoOutputPath(clip.filePath),
                 })
             }
         }
@@ -558,7 +558,7 @@ async function runImagePipeline(
             // Thay filePath bằng video đã convert
             for (const clip of clips) {
                 if (isStillImage(clip.filePath)) {
-                    clip.filePath = getVideoOutputPath(clip.filePath)
+                    clip.filePath = await getVideoOutputPath(clip.filePath)
                 }
             }
         }

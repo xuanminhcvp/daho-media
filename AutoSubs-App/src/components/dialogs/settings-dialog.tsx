@@ -25,7 +25,7 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemMedia, ItemTitle }
 import { Field, FieldGroup } from "@/components/ui/field";
 import { initI18n, normalizeUiLanguage } from "@/i18n";
 import { useRef, useState, useEffect } from "react";
-import { saveAudioScanApiKey, getAudioScanApiKey } from "@/services/saved-folders-service";
+import { saveGeminiApiKeys, getGeminiApiKeys } from "@/services/saved-folders-service";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -37,15 +37,19 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const { t } = useTranslation();
   const deleteIconRef = useRef<DeleteIconHandle>(null);
 
-  // State cho Gemini API Key (Audio Scan) — load async từ settings.json
+  // State cho Gemini API Keys (mảng) — load async từ settings.json
   const [audioApiKey, setAudioApiKey] = useState("");
+  const [keyCount, setKeyCount] = useState(0);
   const [apiKeySaved, setApiKeySaved] = useState(false);
   const [showKey, setShowKey] = useState(false);
 
-  // Load API key khi dialog mở
+  // Load API keys khi dialog mở
   useEffect(() => {
     if (open) {
-      getAudioScanApiKey().then(key => setAudioApiKey(key));
+      getGeminiApiKeys().then(keys => {
+        setAudioApiKey(keys.join("\n"));
+        setKeyCount(keys.length);
+      });
     }
   }, [open]);
 
@@ -164,11 +168,16 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 </Field>
               </FieldGroup>
             </div>
-
-            {/* Gemini API Key — dùng cho Audio Scan */}
+            {/* Gemini API Keys — round-robin nhiều key tránh rate limit */}
             <div className="space-y-3">
-              <h4 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                🔑 Gemini API Key (Audio Scan)
+              <h4 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase flex items-center gap-2">
+                🔑 Gemini API Keys
+                {/* Badge hiển thị số keys hiện có */}
+                {keyCount > 0 && (
+                  <span className="px-1.5 py-0.5 rounded-full bg-green-500/20 text-green-400 text-[10px] font-bold">
+                    {keyCount} keys
+                  </span>
+                )}
               </h4>
 
               <FieldGroup>
@@ -178,57 +187,74 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                       <Key className="h-4 w-4 text-purple-600 dark:text-purple-400" />
                     </ItemMedia>
                     <ItemContent>
-                      <ItemTitle>API Key</ItemTitle>
+                      <ItemTitle>API Keys (Round-Robin)</ItemTitle>
                       <ItemDescription className="text-xs leading-tight line-clamp-1">
-                        Dùng cho AI phân tích nhạc nền & SFX (Gemini 2.5 Pro)
+                        Mỗi dòng 1 key — tự xoay vòng tránh rate limit
                       </ItemDescription>
                     </ItemContent>
                   </Item>
 
-                  {/* Ô nhập API key + nút show/hide + nút Save */}
-                  <div className="flex gap-2 mt-2">
-                    <div className="relative flex-1">
-                      <input
-                        type={showKey ? "text" : "password"}
-                        placeholder="Nhập Gemini API Key..."
-                        className="w-full h-9 px-3 pr-9 rounded-md border border-input bg-background text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                        value={audioApiKey}
-                        onChange={(e) => setAudioApiKey(e.target.value)}
+                  {/* Textarea nhập nhiều keys — mỗi dòng 1 key */}
+                  <div className="flex flex-col gap-2 mt-2">
+                    <div className="relative">
+                      <textarea
+                        placeholder={"Nhập Gemini API Keys...\nMỗi dòng 1 key\nVí dụ: AIzaSy..."}
+                        className="w-full min-h-[100px] px-3 py-2 rounded-md border border-input bg-background text-xs font-mono placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
+                        style={{ fontFamily: "monospace", fontSize: "11px" }}
+                        value={showKey ? audioApiKey : audioApiKey.split("\n").map(k => k ? "••••••••" + k.slice(-6) : "").join("\n")}
+                        onChange={(e) => {
+                          if (showKey) {
+                            setAudioApiKey(e.target.value);
+                            // Cập nhật key count real-time
+                            const lines = e.target.value.split("\n").filter(l => l.trim().length > 0);
+                            setKeyCount(lines.length);
+                          }
+                        }}
+                        readOnly={!showKey}
                       />
-                      {/* Nút toggle hiện/ẩn key */}
-                      <button
-                        type="button"
-                        className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                        onClick={() => setShowKey(!showKey)}
-                        tabIndex={-1}
-                      >
-                        {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                      </button>
                     </div>
 
-                    {/* Nút Save */}
-                    <Button
-                      type="button"
-                      variant={apiKeySaved ? "secondary" : "outline"}
-                      size="sm"
-                      className={`h-9 gap-1.5 shrink-0 transition-all ${
-                        apiKeySaved
-                          ? "bg-green-500/20 border-green-500/40 text-green-400"
-                          : "hover:border-green-500/40 hover:text-green-400"
-                      }`}
-                      onClick={() => {
-                        saveAudioScanApiKey(audioApiKey.trim());
-                        setApiKeySaved(true);
-                        setTimeout(() => setApiKeySaved(false), 2000);
-                      }}
-                      disabled={!audioApiKey.trim()}
-                    >
-                      {apiKeySaved ? (
-                        <span>✓ Đã lưu</span>
-                      ) : (
-                        <><Save className="h-3.5 w-3.5" /> Save</>
-                      )}
-                    </Button>
+                    {/* Nút Show/Hide + Save */}
+                    <div className="flex gap-2 justify-end">
+                      {/* Toggle hiện/ẩn keys */}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 gap-1.5 text-xs"
+                        onClick={() => setShowKey(!showKey)}
+                      >
+                        {showKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                        {showKey ? "Ẩn" : "Hiện"}
+                      </Button>
+
+                      {/* Nút Save — lưu mảng keys */}
+                      <Button
+                        type="button"
+                        variant={apiKeySaved ? "secondary" : "outline"}
+                        size="sm"
+                        className={`h-8 gap-1.5 text-xs transition-all ${
+                          apiKeySaved
+                            ? "bg-green-500/20 border-green-500/40 text-green-400"
+                            : "hover:border-green-500/40 hover:text-green-400"
+                        }`}
+                        onClick={() => {
+                          // Tách theo dòng, lọc rỗng, lưu mảng
+                          const keys = audioApiKey.split("\n").map(k => k.trim()).filter(k => k.length > 0);
+                          saveGeminiApiKeys(keys);
+                          setKeyCount(keys.length);
+                          setApiKeySaved(true);
+                          setTimeout(() => setApiKeySaved(false), 2000);
+                        }}
+                        disabled={!audioApiKey.trim()}
+                      >
+                        {apiKeySaved ? (
+                          <span>✓ Đã lưu {keyCount} keys</span>
+                        ) : (
+                          <><Save className="h-3.5 w-3.5" /> Lưu Keys</>
+                        )}
+                      </Button>
+                    </div>
                   </div>
                 </Field>
               </FieldGroup>

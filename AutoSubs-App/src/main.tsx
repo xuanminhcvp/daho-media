@@ -39,7 +39,8 @@ class AppErrorBoundary extends React.Component<React.PropsWithChildren, FatalSta
   }
 }
 
-function showFatalScreen(title: string, details: string) {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function showFatalScreen(title: string, details: string) {
   // Log chi tiết ra console TRƯỚC (dù UI bị trắng vẫn thấy ở DevTools)
   console.error(`\n${"=".repeat(60)}\n🚨 FATAL: ${title}\n${"=".repeat(60)}\n${details}\n${"=".repeat(60)}`);
 

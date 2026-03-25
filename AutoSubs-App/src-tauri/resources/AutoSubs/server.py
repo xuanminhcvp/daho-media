@@ -24,6 +24,13 @@ from .template_subtitles import add_template_subtitles
 from .template_manager import create_template_set
 from .media_import import add_audio_to_timeline, add_sfx_clips_to_timeline, add_media_to_timeline, auto_relink_autosubs_media
 from .preview_generator import generate_preview
+from .auto_color import (
+    scan_timeline_clips, apply_cdl_to_clip, apply_lut_to_clip,
+    apply_cdl_batch, backup_timeline, get_current_frame_path,
+)
+from .ui_color_automation import (
+    apply_primaries_via_ui, apply_primaries_batch_via_ui,
+)
 
 
 def route_request(data):
@@ -140,6 +147,51 @@ def route_request(data):
         # Gọi khi mở project lại mà bị 'Media not found'
         print("[AutoSubs Server] Auto Relinking offline media...")
         return auto_relink_autosubs_media(data.get("folderPath"))
+
+    # ======================== AUTO COLOR ========================
+
+    elif func == "AutoColorScan":
+        # Quét timeline → trả danh sách clip có thể chỉnh màu
+        print("[AutoSubs Server] Auto Color: Scanning timeline...")
+        return scan_timeline_clips(data.get("scope", "timeline"))
+
+    elif func == "AutoColorApplyCDL":
+        # Apply CDL correction vào 1 clip
+        print("[AutoSubs Server] Auto Color: Applying CDL...")
+        return apply_cdl_to_clip(
+            data.get("trackIndex"),
+            data.get("itemIndex"),
+            data.get("cdl", {}),
+        )
+
+    elif func == "AutoColorApplyBatch":
+        # Apply CDL cho nhiều clip cùng lúc
+        print("[AutoSubs Server] Auto Color: Batch applying CDL...")
+        return apply_cdl_batch(data.get("clips", []))
+
+    elif func == "AutoColorBackup":
+        # Duplicate timeline làm backup
+        print("[AutoSubs Server] Auto Color: Creating backup...")
+        return backup_timeline()
+
+    elif func == "AutoColorGetCurrentFrame":
+        # Lấy thông tin clip tại playhead (để chọn làm reference)
+        print("[AutoSubs Server] Auto Color: Getting current frame...")
+        return get_current_frame_path()
+
+    elif func == "AutoColorApplyPrimaries":
+        # Apply 5 Primaries vào 1 clip qua UI automation (AppleScript)
+        print("[AutoSubs Server] Auto Color: Applying Primaries via UI...")
+        return apply_primaries_via_ui(
+            data.get("trackIndex"),
+            data.get("itemIndex"),
+            data.get("primaries", {}),
+        )
+
+    elif func == "AutoColorApplyPrimariesBatch":
+        # Apply Primaries hàng loạt qua UI automation
+        print("[AutoSubs Server] Auto Color: Batch applying Primaries via UI...")
+        return apply_primaries_batch_via_ui(data.get("clips", []))
 
     elif func == "Exit":
         state.quit_server = True
