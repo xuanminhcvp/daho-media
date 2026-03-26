@@ -101,7 +101,9 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   // Whenever settings change, persist them
   useEffect(() => {
     async function saveState() {
-      if (!store) return;
+      // ⚠️ Bug fix #16: không save khi chưa hydrate xong
+      // Tránh ghi đè settings đã lưu bằng DEFAULT_SETTINGS
+      if (!store || !isHydrated) return;
       try {
         await store.set('settings', settings);
         await store.save();
@@ -111,7 +113,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     }
 
     saveState();
-  }, [settings, store]);
+  }, [settings, store, isHydrated]);
 
   // A handy reset function
   function resetSettings() {

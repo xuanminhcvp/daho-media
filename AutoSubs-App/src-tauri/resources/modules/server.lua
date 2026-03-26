@@ -203,6 +203,11 @@ function M.StartServer(state, helpers, timeline_info, audio_export, subtitle_ren
                                     state, data.trackIndex, data.effectType, data.intensity, data.fadeDuration)
                                 body = helpers.safe_json(result, json)
 
+                            elseif data.func == "SetupTimelineTracks" then
+                                -- Tạo đủ 7V+5A tracks + đặt tên chuẩn (chỉ AddTrack + SetTrackName)
+                                local result = timeline_info.SetupTimelineTracks(state, helpers)
+                                body = helpers.safe_json(result, json)
+
                             -- ======================== AUTO COLOR ROUTES ========================
 
                             elseif data.func == "AutoColorScan" then

@@ -218,7 +218,7 @@ function M.AddRefImagesToTimeline(state, helpers, clips, sfxClips)
 
     local frame_rate    = tonumber(timeline:GetSetting("timelineFrameRate")) or 24
     local timelineStart = tonumber(timeline:GetStartFrame()) or 0
-    local trackIdx      = 4  -- Track V4 cố định cho ref images
+    local trackIdx      = 2  -- Track V2 cố định cho ref images
 
     -- ----------------------------------------------------------------
     -- FIX 1: Verify V4 tồn tại thật sau mỗi AddTrack()
@@ -616,7 +616,7 @@ function M.AddRefImagesToTimeline(state, helpers, clips, sfxClips)
         success     = true,
         clipsAdded  = actualAdded,
         sfxAdded    = sfxAdded,
-        message     = string.format("Đã import %d ảnh + %d SFX lên Track V4", actualAdded, sfxAdded)
+        message     = string.format("Đã import %d ảnh + %d SFX lên Track V2", actualAdded, sfxAdded)
     }
 end
 
@@ -648,11 +648,16 @@ function M.AddAudioToTimeline(state, helpers, filePath, trackName)
     local audioItem = mediaPoolItems[1]
     local clipProps = audioItem:GetClipProperty()
 
-    -- Tạo audio track mới
-    local newTrackIdx = timeline:GetTrackCount("audio") + 1
-    timeline:AddTrack("audio")
+    -- Dùng A5 cố định cho nhạc nền (không tạo track mới mỗi lần)
+    local targetTrackIdx = 5
+    local currentTrackCount = tonumber(timeline:GetTrackCount("audio")) or 0
+    -- Đảm bảo track A5 tồn tại
+    while currentTrackCount < targetTrackIdx do
+        timeline:AddTrack("audio")
+        currentTrackCount = tonumber(timeline:GetTrackCount("audio")) or 0
+    end
     local label = trackName or "BGM - AutoSubs"
-    pcall(function() timeline:SetTrackName("audio", newTrackIdx, label) end)
+    print(string.format("[AutoSubs] 🎵 Dùng track A%d cho nhạc nền (tổng: %d)", targetTrackIdx, currentTrackCount))
 
     -- Tính frame info
     local clipFPS = tonumber(clipProps["FPS"]) or frame_rate
@@ -667,7 +672,7 @@ function M.AddAudioToTimeline(state, helpers, filePath, trackName)
     local audioClip = {
         mediaPoolItem = audioItem, mediaType = 2,
         startFrame = 0, endFrame = totalFrames,
-        recordFrame = timelineStart, trackIndex = newTrackIdx
+        recordFrame = timelineStart, trackIndex = targetTrackIdx
     }
     local timelineItems = state.mediaPool:AppendToTimeline({ audioClip })
 
@@ -679,8 +684,8 @@ function M.AddAudioToTimeline(state, helpers, filePath, trackName)
     timeline:SetCurrentTimecode(timeline:GetCurrentTimecode())
 
     return {
-        success = true, audioTrack = newTrackIdx, trackName = label,
-        message = "Đã thêm nhạc nền vào Audio Track A" .. newTrackIdx
+        success = true, audioTrack = targetTrackIdx, trackName = label,
+        message = "Đã thêm nhạc nền vào Audio Track A" .. targetTrackIdx
     }
 end
 
@@ -766,12 +771,16 @@ function M.AddSfxClipsToTimeline(state, helpers, clips, trackName)
 
     local label = trackName or "SFX - AutoSubs"
     
-    -- Thêm 1 Audio Track mới ở dưới rùng để nhét toàn bộ SFX vào
+    -- Dùng A4 cố định cho SFX ảnh thực tế (không tạo track mới mỗi lần)
+    local targetTrackIdx = 4
     local currentTrackCount = tonumber(timeline:GetTrackCount("audio")) or 0
-    local addOk = timeline:AddTrack("audio")
-    print(string.format("[SFX] 🎵 currentTrackCount=%d, AddTrack(audio)=%s", currentTrackCount, tostring(addOk)))
-    
-    local targetTrackIdx = currentTrackCount + 1
+    -- Đảm bảo track A4 tồn tại
+    while currentTrackCount < targetTrackIdx do
+        local addOk = timeline:AddTrack("audio")
+        print(string.format("[SFX] 🎵 AddTrack(audio) => %s", tostring(addOk)))
+        currentTrackCount = tonumber(timeline:GetTrackCount("audio")) or 0
+    end
+    print(string.format("[SFX] 🎵 Dùng track A%d (tổng audio tracks: %d)", targetTrackIdx, currentTrackCount))
     local addedCount = 0
 
     for i, clip in ipairs(clips) do

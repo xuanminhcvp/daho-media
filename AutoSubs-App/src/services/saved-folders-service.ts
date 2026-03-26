@@ -175,3 +175,58 @@ export async function saveAudioScanApiKey(apiKey: string): Promise<void> {
         console.error('[SavedFolders] Lỗi lưu API key:', error)
     }
 }
+
+// ======================== CLAUDE API KEYS (ROUND-ROBIN) ========================
+
+/** Bộ đếm round-robin cho Claude keys */
+let claudeKeyIndex = 0
+
+/**
+ * Lưu danh sách Claude API keys vào settings.json
+ * @param keys - Mảng API keys cần lưu
+ */
+export async function saveClaudeApiKeys(keys: string[]): Promise<void> {
+    try {
+        const validKeys = keys.filter(k => k.trim().length > 0)
+        await saveSettings({ claudeApiKeys: validKeys })
+        console.log(`[SavedFolders] Đã lưu ${validKeys.length} Claude API keys`)
+    } catch (error) {
+        console.error('[SavedFolders] Lỗi lưu Claude API keys:', error)
+    }
+}
+
+/**
+ * Đọc danh sách Claude API keys đã lưu
+ * @returns Mảng keys hoặc mảng rỗng nếu chưa lưu
+ */
+export async function getClaudeApiKeys(): Promise<string[]> {
+    try {
+        const settings = await readSettings()
+        if (settings.claudeApiKeys && settings.claudeApiKeys.length > 0) {
+            return settings.claudeApiKeys
+        }
+        return []
+    } catch (error) {
+        console.error('[SavedFolders] Lỗi đọc Claude API keys:', error)
+        return []
+    }
+}
+
+/**
+ * Lấy 1 Claude API key theo round-robin
+ * Mỗi lần gọi sẽ trả key khác nhau → phân tải tránh rate limit
+ * @returns API key hoặc chuỗi rỗng nếu không có key
+ */
+export async function getNextClaudeApiKey(): Promise<string> {
+    try {
+        const keys = await getClaudeApiKeys()
+        if (keys.length === 0) return ''
+        const key = keys[claudeKeyIndex % keys.length]
+        claudeKeyIndex++
+        console.log(`[SavedFolders] 🔑 Claude key #${((claudeKeyIndex - 1) % keys.length) + 1}/${keys.length}`)
+        return key
+    } catch (error) {
+        console.error('[SavedFolders] Lỗi đọc Claude API key:', error)
+        return ''
+    }
+}

@@ -14,11 +14,13 @@ import { join } from "@tauri-apps/api/path";
 // ======================== CẤU HÌNH AI ========================
 const AI_CONFIG = {
     baseUrl: "https://ezaiapi.com/v1",
-    apiKey: "sk-570848c49fda787c748cd58f3a21a1d95f00afd87a5cba6e",
+    // apiKey: đã chuyển sang nhập qua Settings UI (không hardcode)
     model: "claude-sonnet-4-6",  // Sonnet — nhanh hơn Opus, vẫn chính xác tốt
     batchCount: 4,       // Chia transcript 4 phần (Documentary 25-27min ~200-350 câu → ~50-87 câu/batch)
     timeoutMs: 900000,   // 15 phút timeout per request
     maxTokens: 16000,    // Đủ cho output JSON
+    batchRetryCount: 3,  // Retry tối đa 3 lần khi batch lỗi (429, 500, 524, timeout)
+    batchRetryBaseMs: 3000, // Delay cơ sở: 3s → 6s → 12s (exponential backoff)
 };
 
 // Tên file lưu kết quả matching (KHÔNG dùng dấu . ở đầu — hidden file bị Tauri chặn trên macOS)
@@ -411,7 +413,16 @@ export async function aiMatchScriptToTimeline(
     // Thu thập tất cả kết quả từ các batch
     const matchedMap = new Map<number, { start: number; end: number; whisper: string }>();
 
-    // ⚡ Gửi SONG SONG tất cả batch cùng lúc
+    // ⭐ Danh sách HTTP status/error có thể retry (lỗi tạm thời)
+    const RETRYABLE_PATTERNS = ["429", "500", "502", "503", "524", "529", "rate limit", "timeout", "ETIMEDOUT", "abort"];
+
+    /** Kiểm tra lỗi có thể retry không */
+    function isRetryableError(err: unknown): boolean {
+        const msg = String(err).toLowerCase();
+        return RETRYABLE_PATTERNS.some(p => msg.includes(p.toLowerCase()));
+    }
+
+    // ⚡ Gửi SONG SONG tất cả batch cùng lúc — MỖI BATCH CÓ RETRY TỐI ĐA 3 LẦN
     const batchPromises = transcriptParts.map(async (part, i) => {
         const batchNum = i + 1;
         const timeRange = `${part.startTime.toFixed(0)}s → ${part.endTime.toFixed(0)}s`;
@@ -423,33 +434,61 @@ export async function aiMatchScriptToTimeline(
             message: `Đang gửi ${N} batch song song...`,
         });
 
-        try {
-            // ⭐ Tạo prompt: 1/N transcript + phần script TƯƠNG ỨNG (không full)
-            const prompt = buildMatchPrompt(
-                batchScript,
-                part.text,
-                batchNum,
-                N,
-                timeRange
-            );
+        // ⭐ RETRY LOOP — tối đa 3 lần, delay exponential: 3s → 6s → 12s
+        for (let attempt = 0; attempt <= AI_CONFIG.batchRetryCount; attempt++) {
+            try {
+                // Log retry status
+                if (attempt > 0) {
+                    console.log(`[AI Matcher] 🔄 Batch ${batchNum}: retry lần ${attempt}/${AI_CONFIG.batchRetryCount}...`);
+                    onProgress?.({
+                        current: i,
+                        total: N,
+                        message: `Batch ${batchNum}/${N}: retry lần ${attempt}/${AI_CONFIG.batchRetryCount}...`,
+                    });
+                }
 
-            console.log(`[AI Matcher] Batch ${batchNum}: transcript ${timeRange}, ${batchScript.length} câu script, prompt ~${(prompt.length / 1000).toFixed(0)}KB`);
+                // ⭐ Tạo prompt: 1/N transcript + phần script TƯƠNG ỨNG (không full)
+                const prompt = buildMatchPrompt(
+                    batchScript,
+                    part.text,
+                    batchNum,
+                    N,
+                    timeRange
+                );
 
-            // Gọi AI (song song)
-            const response = await callAI(
-                prompt,
-                `Batch ${batchNum}/${N} (${timeRange}) ${batchScript.length} câu`
-            );
+                console.log(`[AI Matcher] Batch ${batchNum}: transcript ${timeRange}, ${batchScript.length} câu script, prompt ~${(prompt.length / 1000).toFixed(0)}KB`);
 
-            // Parse kết quả (có xử lý truncated JSON)
-            const aiResults = parseAIResponse(response);
-            console.log(`[AI Matcher] Batch ${batchNum}: ${aiResults.length} câu matched ✅`);
+                // Gọi AI (song song)
+                const response = await callAI(
+                    prompt,
+                    `Batch ${batchNum}/${N} (${timeRange}) ${batchScript.length} câu`
+                );
 
-            return { batchNum, aiResults };
-        } catch (error) {
-            console.error(`[AI Matcher] Batch ${batchNum} LỖI:`, error);
-            return { batchNum, aiResults: [] as { num: number; start: number; end: number; whisper: string }[] };
+                // Parse kết quả (có xử lý truncated JSON)
+                const aiResults = parseAIResponse(response);
+                console.log(`[AI Matcher] Batch ${batchNum}: ${aiResults.length} câu matched ✅${attempt > 0 ? ` (sau ${attempt} lần retry)` : ""}`);
+
+                return { batchNum, aiResults };
+            } catch (error) {
+                const errMsg = String(error);
+
+                // Kiểm tra lỗi có thể retry không
+                if (isRetryableError(error) && attempt < AI_CONFIG.batchRetryCount) {
+                    // Delay exponential: 3s → 6s → 12s
+                    const delayMs = AI_CONFIG.batchRetryBaseMs * Math.pow(2, attempt);
+                    console.warn(`[AI Matcher] ⚠️ Batch ${batchNum}: ${errMsg.slice(0, 150)} → retry ${attempt + 1}/${AI_CONFIG.batchRetryCount} sau ${delayMs / 1000}s`);
+                    await new Promise(r => setTimeout(r, delayMs));
+                    continue; // Retry
+                }
+
+                // Lỗi không thể retry HOẶC hết số lần retry → bỏ batch này
+                console.error(`[AI Matcher] ❌ Batch ${batchNum} THẤT BẠI${attempt > 0 ? ` sau ${attempt} lần retry` : ""}:`, errMsg.slice(0, 200));
+                return { batchNum, aiResults: [] as { num: number; start: number; end: number; whisper: string }[] };
+            }
         }
+
+        // Fallback (không bao giờ tới đây, nhưng TypeScript cần return)
+        return { batchNum, aiResults: [] as { num: number; start: number; end: number; whisper: string }[] };
     });
 
     // Chờ TẤT CẢ batch hoàn thành

@@ -84,9 +84,13 @@ export function applyTextFormattingToSubtitle(
         w = applyCaseToWord(w, options.case);
         return { ...wordObj, word: w };
     });
-    subtitle.text = joinWordsToText(result);
-    subtitle.words = result;
-    return subtitle;
+    // ⚠️ Bug fix #13: KHÔNG mutate object gốc — tạo bản copy mới
+    // Trước đây sửa trực tiếp subtitle.text/words → React không detect thay đổi
+    return {
+        ...subtitle,
+        text: joinWordsToText(result),
+        words: result,
+    };
 }
 
 

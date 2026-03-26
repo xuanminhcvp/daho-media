@@ -497,15 +497,16 @@ function M.AddTemplateSubtitles(state, helpers, template_manager, clips, trackIn
     -- ═══ TRACK CONFIG ═══
     local titleTrackIdx = tonumber(trackIndex) or 9      -- Title clip (V9)
     local adjustmentTrackIdx = titleTrackIdx - 1          -- Adjustment ngay dưới (V8)
-    local sfxTrackIdx = 10                                -- SFX audio (A10)
+    local sfxTrackIdx = 3                                 -- SFX audio (A3)
 
-    -- ═══ TÌM ASSET TRONG MEDIA POOL (đệ quy) ═══
-    -- Duyệt toàn bộ Media Pool bao gồm Power Bin items
+    -- ═══ TÌM ASSET TRONG MEDIA POOL + POWER BINS (đệ quy) ═══
+    -- walk_media_pool_with_power_bins sẽ dẫn rootFolder (Media Pool) + Power Bin hiện tại
     local assetCache = {} -- cache theo tên
     local function findAsset(name)
         if assetCache[name] then return assetCache[name] end
         local found = nil
-        helpers.walk_media_pool(rootFolder, function(clip)
+        -- Dùng hàm mới: dận cả Power Bins
+        helpers.walk_media_pool_with_power_bins(state.mediaPool, function(clip)
             if found then return end -- đã tìm thấy, bỏ qua
             local clipName = clip:GetName() or ""
             if clipName == name then
@@ -515,6 +516,8 @@ function M.AddTemplateSubtitles(state, helpers, template_manager, clips, trackIn
         if found then
             assetCache[name] = found
             print("[AutoSubs] ✅ Asset cached: '" .. name .. "'")
+        else
+            print("[AutoSubs] ⚠️ Asset không tìm thấy: '" .. name .. "'")
         end
         return found
     end

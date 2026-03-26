@@ -19,7 +19,6 @@ import {
     Search,
     ChevronDown,
     ChevronRight,
-    FileText,
     RefreshCw,
     Play,
     Pause,
@@ -39,7 +38,6 @@ import {
     type ScanProgress,
 } from "@/services/audio-library-service"
 import {
-    loadMatchingScript,
     analyzeScriptForMusic,
     suggestMusicKeywords,
     type MusicKeywordSuggestion,
@@ -60,8 +58,6 @@ export function MusicLibraryTab() {
     const {
         project,
         updateMusicLibrary,
-        setMatchingFolder: setSharedMatchingFolder,
-        setMatchingSentences: setSharedMatchingSentences,
     } = useProject()
 
     // Lấy data từ context (thay vì useState)
@@ -115,8 +111,6 @@ export function MusicLibraryTab() {
 
     // Trạng thái "đã lưu" — hiện tick xanh sau khi bấm Save
     const [musicFolderSaved, setMusicFolderSaved] = React.useState(false)
-    const [matchingFolderSaved, setMatchingFolderSaved] = React.useState(false)
-
     // ======================== AUTO-LOAD THƯ MỤC ĐÃ LƯU ========================
     // Khi component mount lần đầu, tự động load thư mục nhạc nền đã lưu + metadata từ file JSON trong folder
     React.useEffect(() => {
@@ -615,75 +609,25 @@ export function MusicLibraryTab() {
 
                         {suggestExpanded && (
                             <div className="space-y-2">
-                                {/* Chọn thư mục chứa matching.json */}
-                                <div className="space-y-1">
-                                    <p className="text-xs text-muted-foreground">Thư mục chứa autosubs_matching.json:</p>
-                                    <div className="flex gap-2">
-                                        {/* Nút chọn thư mục matching */}
-                                        <Button
-                                            variant="outline"
-                                            size="sm"
-                                            className="flex-1 justify-start gap-2 h-8 min-w-0"
-                                            onClick={async () => {
-                                                const desktop = await desktopDir()
-                                                const folder = await open({ directory: true, title: "Chọn thư mục chứa autosubs_matching.json", defaultPath: desktop })
-                                                if (!folder) return
-                                                // Lưu vào shared context (dùng chung với SFX, Highlight, Template...)
-                                                setSharedMatchingFolder(folder as string)
-                                                // Load matching.json ngay
-                                                const loaded = await loadMatchingScript(folder as string)
-                                                if (loaded) {
-                                                    setSharedMatchingSentences(loaded.sentences)
-                                                    updateMusicLibrary({ directorResult: loaded.aiDirectorResult || null })
-                                                } else {
-                                                    setSharedMatchingSentences(null)
-                                                    updateMusicLibrary({ directorResult: null })
-                                                }
-                                                setAnalyzeError("")
-                                            }}
-                                        >
-                                            <FileText className="h-3.5 w-3.5 shrink-0" />
-                                            <span className="truncate">
-                                                {matchingFolder
-                                                    ? matchingFolder.split(/[/\\]/).pop()
-                                                    : "Chọn thư mục..."}
+                                {/* Hiển thị trạng thái dữ liệu thay vì bắt chọn file */}
+                                <div className="space-y-1 mb-2">
+                                    {sentences && sentences.length > 0 ? (
+                                        <div className="flex items-center gap-2 text-xs bg-green-500/10 text-green-600 dark:text-green-400 p-2 rounded-md border border-green-500/20">
+                                            <Check className="h-4 w-4 shrink-0" />
+                                            <span>
+                                                Đã nhận <strong>{sentences.length} câu</strong> từ kết quả AI Matching.
                                             </span>
-                                        </Button>
-
-                                        {/* Nút Save matching folder */}
-                                        {matchingFolder && (
-                                            <Button
-                                                variant={matchingFolderSaved ? "secondary" : "outline"}
-                                                size="icon"
-                                                className={`h-8 w-8 shrink-0 transition-all ${
-                                                    matchingFolderSaved
-                                                        ? "bg-green-500/20 border-green-500/40 text-green-400"
-                                                        : "hover:border-green-500/40 hover:text-green-400"
-                                                }`}
-                                                onClick={() => {
-                                                    saveFolderPath("matchingFolder", matchingFolder)
-                                                    setMatchingFolderSaved(true)
-                                                    setTimeout(() => setMatchingFolderSaved(false), 2000)
-                                                }}
-                                                title="Lưu thư mục matching để dùng lại lần sau"
-                                            >
-                                                {matchingFolderSaved ? (
-                                                    <span className="text-xs">✓</span>
-                                                ) : (
-                                                    <Save className="h-3.5 w-3.5" />
-                                                )}
-                                            </Button>
-                                        )}
-                                    </div>
-                                    {sentences !== null && (
-                                        <p className="text-xs text-green-500">
-                                            ✅ Đã load {sentences.length} câu từ matching.json
-                                        </p>
-                                    )}
-                                    {sentences === null && matchingFolder && (
-                                        <p className="text-xs text-yellow-500">
-                                            ⚠️ Không tìm thấy autosubs_matching.json trong thư mục này
-                                        </p>
+                                        </div>
+                                    ) : (
+                                        <div className="flex items-start gap-2 text-xs bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 p-2 rounded-md border border-yellow-500/20">
+                                            <span className="text-[14px] leading-none shrink-0">⚠️</span>
+                                            <div>
+                                                <p className="font-medium mb-0.5">Chưa có dữ liệu Kịch bản (Matching)</p>
+                                                <p className="text-[11px] opacity-80">
+                                                    Vui lòng qua tab <strong>Media Import</strong> và chạy <strong>AI Match</strong> trước để AI phân tích nhạc chuẩn xác.
+                                                </p>
+                                            </div>
+                                        </div>
                                     )}
                                 </div>
 
@@ -699,7 +643,7 @@ export function MusicLibraryTab() {
                                             updateMusicLibrary({ directorResult: null })
                                             try {
                                                 const result = await analyzeScriptForMusic(
-                                                    matchingFolder,
+                                                    matchingFolder || "",
                                                     sentences,
                                                     musicItems.filter(i => i.aiMetadata),
                                                     (msg) => setAnalyzeProgress(msg)

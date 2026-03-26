@@ -48,6 +48,11 @@ transcription-engine = { path = "crates/transcription-engine" }
 
 # Core utilities
 eyre = "0.6"
+
+# License key validation (HMAC-SHA256)
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 tempfile = "3.9.0"
 chrono = "0.4.38"
 which = "6.0"

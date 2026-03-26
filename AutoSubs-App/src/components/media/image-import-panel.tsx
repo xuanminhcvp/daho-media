@@ -213,7 +213,7 @@ export function ImageImportPanel() {
         scriptText = '',
         matchedSentences = [],
         matchResults = [],
-        selectedTrack = '1',
+        selectedTrack = '1',  // V1 — Video AI (cố định)
         importedScenes = [],
     } = project.imageImport || {}
 
@@ -985,28 +985,12 @@ export function ImageImportPanel() {
                         </div>
                     </div>
 
-                    {/* 4. Chọn track */}
+                    {/* 4. Track — cố định V1 (Video AI) */}
                     <div className="space-y-2">
                         <label className="text-sm font-medium">3. Track video đích</label>
-                        <select
-                            className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
-                            value={selectedTrack}
-                            onChange={(e) => setSelectedTrack(e.target.value)}
-                        >
-                            {timelineInfo?.outputTracks?.map((track) => (
-                                <option key={track.value} value={track.value}>
-                                    {track.label}
-                                </option>
-                            )) || (
-                                    <>
-                                        <option value="1">Video Track 1</option>
-                                        <option value="2">Video Track 2</option>
-                                        <option value="3">Video Track 3</option>
-                                        <option value="4">Video Track 4</option>
-                                        <option value="5">Video Track 5</option>
-                                    </>
-                                )}
-                        </select>
+                        <div className="flex items-center gap-2 px-3 py-2 rounded-md border bg-muted/30 text-sm text-muted-foreground">
+                            📹 Track V1 — Video AI (cố định)
+                        </div>
                     </div>
 
                     {/* 5. Nút hành động */}

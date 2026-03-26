@@ -29,7 +29,7 @@ import {
 } from "@/services/subtitle-matcher-service"
 import type { SubtitleMatchProgress } from "@/services/subtitle-matcher-service"
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http"
-import { readTranscript } from "@/utils/file-utils"
+import { masterSrtToTranscript, hasMasterSrt, MASTER_SRT_REQUIRED_MESSAGE } from "@/utils/master-srt-utils"
 
 // ======================== HELPERS ========================
 
@@ -91,9 +91,15 @@ export function SubtitleTab() {
     // ======================== AI SO KHỚP PHỤ ĐỀ ========================
 
     const handleAIMatch = useCallback(async () => {
-        // Chỉ cần kịch bản gốc - Whisper lấy từ transcript theo timelineId trong session
+        // Chỉ cần kịch bản gốc - timing lấy từ Master SRT (bắt buộc)
         if (!(subData.scriptText || '').trim()) {
             setError("Chưa có kịch bản — hãy paste kịch bản vào ô Kịch Bản Gốc bên dưới")
+            return
+        }
+
+        // ⭐ BẮT BUỘC Master SRT — không dùng raw transcript
+        if (!hasMasterSrt(project.masterSrt)) {
+            setError(MASTER_SRT_REQUIRED_MESSAGE)
             return
         }
 
@@ -108,30 +114,15 @@ export function SubtitleTab() {
                 throw new Error("Chưa có kịch bản gốc — hãy paste kịch bản vào ô bên dưới.")
             }
 
-            // 2. Lấy whisper transcript từ file
-            // File lưu tại Documents/AutoSubs-Transcripts/<timelineId>.json
-            let transcriptData: any = null
-
-            // Thử tìm transcript file: đọc tên timeline từ DaVinci hoặc tìm file mới nhất
-            if (timelineInfo?.timelineId) {
-                transcriptData = await readTranscript(`${timelineInfo.timelineId}.json`)
-            }
-
-            if (!transcriptData) {
-                // Fallback: thử đọc file transcript từ timeline name
-                if (timelineInfo?.name) {
-                    transcriptData = await readTranscript(`${timelineInfo.name}.json`)
-                }
-            }
-
-            if (!transcriptData || (!transcriptData.segments && !transcriptData.originalSegments)) {
-                throw new Error("Chưa có Whisper transcript. Hãy transcribe audio trước ở tab Subtitles.")
-            }
+            // 2. ⭐ Dùng Master SRT thay vì raw Whisper transcript
+            // Master SRT đã có text chuẩn (khớp kịch bản) + timing word-level chính xác
+            const transcriptData = masterSrtToTranscript(project.masterSrt!)
+            console.log(`[SubtitleTab] Dùng Master SRT: ${project.masterSrt!.length} từ → fake transcript`)
 
             const scriptLines = scriptText.split(/\n+/).filter((l: string) => l.trim())
             console.log(`[SubtitleTab] Script: ${scriptText.length} chars, ${scriptLines.length} dòng`)
 
-            // 3. Gọi AI matching 5 batch (saveFolder tùy chọn - để cache)
+            // 3. Gọi AI matching (dùng Master SRT làm nguồn timing)
             const lines = await aiSubtitleMatch(
                 scriptText,
                 transcriptData,
@@ -150,7 +141,7 @@ export function SubtitleTab() {
         } finally {
             setIsMatching(false)
         }
-    }, [subData.scriptText, subData.matchingFolder, timelineInfo, updateSubtitleData])
+    }, [subData.scriptText, subData.matchingFolder, project.masterSrt, updateSubtitleData])
 
     // ======================== IMPORT LÊN DAVINCI ========================
 
@@ -169,8 +160,8 @@ export function SubtitleTab() {
         try {
             // Gửi TẤT CẢ clips 1 lần duy nhất (không chia batch)
             // Lua backend AppendToTimeline() xử lý tất cả trong 1 lần gọi → nhanh nhất
-            // Track mặc định V3 nếu chưa chọn (tránh tạo track mới)
-            const trackToUse = subData.selectedTrack === "0" ? "3" : subData.selectedTrack
+            // Track cố định V4 — Text Onscreen (không còn dropdown)
+            const trackToUse = "4"
 
             setImportProgress({ current: 0, total: totalLines })
             console.log(`[SubtitleTab] Sending ${totalLines} clips in 1 request → track V${trackToUse}`)
@@ -301,12 +292,29 @@ export function SubtitleTab() {
                 </div>
             </div>
 
+            {/* Cảnh báo khi chưa có Master SRT */}
+            {!hasMasterSrt(project.masterSrt) && (
+                <div className="shrink-0 mx-4 mt-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                    <div className="flex items-center gap-2">
+                        <AlertCircle className="h-4 w-4 text-amber-400 shrink-0" />
+                        <div className="flex-1">
+                            <p className="text-xs font-medium text-amber-400">
+                                Cần tạo Master SRT trước
+                            </p>
+                            <p className="text-[10px] text-muted-foreground">
+                                Vào tab &quot;Master SRT&quot; → tạo từ Whisper + kịch bản. Phụ đề sẽ chính xác hơn nhiều.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Nút AI So Khớp */}
             <div className="shrink-0 px-4 py-2 border-t">
                 <Button
                     className="w-full h-9 gap-2 text-xs font-medium bg-yellow-600 hover:bg-yellow-700 text-white"
                     onClick={handleAIMatch}
-                    disabled={isMatching || !(subData.scriptText || '').trim()}
+                    disabled={isMatching || !(subData.scriptText || '').trim() || !hasMasterSrt(project.masterSrt)}
                 >
                     {isMatching ? (
                         <>
@@ -436,19 +444,12 @@ export function SubtitleTab() {
                         </select>
                     </div>
 
-                    {/* Track */}
+                    {/* Track — cố định V4 (Text Onscreen) */}
                     <div className="flex items-center gap-2">
                         <label className="text-[10px] text-muted-foreground w-[60px] shrink-0">Track:</label>
-                        <select
-                            className="flex-1 text-xs h-7 px-2 rounded border border-border bg-background"
-                            value={subData.selectedTrack}
-                            onChange={(e) => updateSubtitleData({ selectedTrack: e.target.value })}
-                        >
-                            <option value="0">Add to New Track</option>
-                            {timelineInfo?.outputTracks?.map((t: any) => (
-                                <option key={t.value} value={t.value}>{t.label}</option>
-                            ))}
-                        </select>
+                        <div className="flex-1 text-xs h-7 px-2 rounded border border-border bg-muted/30 flex items-center text-muted-foreground">
+                            💬 Track V4 — Text Onscreen (cố định)
+                        </div>
                     </div>
 
                     {/* Nút Import */}

@@ -32,13 +32,14 @@ export const AVAILABLE_GEMINI_MODELS = [
 ] as const;
 
 /** Claude qua ezaiapi — dùng cho text analysis
- *  model có thể thay đổi runtime qua setClaudeModel() */
+ *  model có thể thay đổi runtime qua setClaudeModel()
+ *  ⚠️ API key KHÔNG hardcode — đọc từ settings (user nhập qua UI) */
 let CLAUDE_CONFIG = {
     name: "Claude",
     baseUrl: "https://ezaiapi.com/v1",
-    apiKey: "sk-570848c49fda787c748cd58f3a21a1d95f00afd87a5cba6e",
+    // apiKey: xóa hardcode — đọc dynamic từ settings mỗi lần gọi
     model: DEFAULT_CLAUDE_MODEL,
-    maxTokens: 65536, // Tăng từ 16K → 65K (Gemini 2.5 Pro cần chỗ cho thinking tokens)
+    maxTokens: 65536,
     timeoutMs: 900000,  // 15 phút
 };
 
@@ -68,14 +69,26 @@ let claudeRateLimitResetTime = 0;
 let geminiRateLimitResetTime = 0;
 
 /**
- * Lấy Gemini API key từ settings (đã lưu bởi user)
+ * Lấy TẤT CẢ Claude keys (để retry khi key lỗi)
  */
-async function getGeminiApiKey(): Promise<string | null> {
+async function getAllClaudeKeys(): Promise<string[]> {
     try {
-        const { getAudioScanApiKey } = await import("@/services/saved-folders-service");
-        return await getAudioScanApiKey();
+        const { getClaudeApiKeys } = await import("@/services/saved-folders-service");
+        return await getClaudeApiKeys();
     } catch {
-        return null;
+        return [];
+    }
+}
+
+/**
+ * Lấy TẤT CẢ Gemini keys (để retry khi key lỗi)
+ */
+async function getAllGeminiKeys(): Promise<string[]> {
+    try {
+        const { getGeminiApiKeys } = await import("@/services/saved-folders-service");
+        return await getGeminiApiKeys();
+    } catch {
+        return [];
     }
 }
 
@@ -84,7 +97,7 @@ async function getGeminiApiKey(): Promise<string | null> {
  * 1. Nếu user đã chọn cụ thể (claude/gemini) → dùng đó, fallback khi rate limit
  * 2. Nếu "auto" → round-robin — request chẵn Claude, lẻ Gemini
  */
-function pickProvider(hasGeminiKey: boolean): "claude" | "gemini" {
+function pickProvider(hasGeminiKey: boolean, hasClaudeKey: boolean): "claude" | "gemini" {
     const now = Date.now();
 
     // Reset rate limit flags sau 60s
@@ -92,7 +105,9 @@ function pickProvider(hasGeminiKey: boolean): "claude" | "gemini" {
     if (geminiRateLimited && now > geminiRateLimitResetTime) geminiRateLimited = false;
 
     // Không có Gemini key → bắt buộc dùng Claude
-    if (!hasGeminiKey) return "claude";
+    if (!hasGeminiKey && hasClaudeKey) return "claude";
+    // Không có Claude key → bắt buộc dùng Gemini
+    if (!hasClaudeKey && hasGeminiKey) return "gemini";
 
     // User đã chọn cụ thể trên UI
     if (preferredProviderSetting === "claude") {
@@ -131,14 +146,15 @@ async function callClaude(
     prompt: string,
     logId: string,
     label: string,
-    timeoutMs: number
+    timeoutMs: number,
+    claudeApiKey: string  // ← Key truyền vào, KHÔNG hardcode
 ): Promise<string> {
     const url = `${CLAUDE_CONFIG.baseUrl}/chat/completions`;
     const requestBody = JSON.stringify({
         model: CLAUDE_CONFIG.model,
         messages: [{ role: "user", content: prompt }],
         max_tokens: CLAUDE_CONFIG.maxTokens,
-        stream: false, // ← tauri-plugin-http không hỗ trợ ReadableStream → dùng non-stream
+        stream: false,
     });
 
     addDebugLog({
@@ -148,7 +164,7 @@ async function callClaude(
         url,
         requestHeaders: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${CLAUDE_CONFIG.apiKey.slice(0, 8)}...`,
+            Authorization: `Bearer ${claudeApiKey.slice(0, 8)}...`,
         },
         requestBody,
         status: null,
@@ -159,6 +175,9 @@ async function callClaude(
         label: `[Claude] ${label}`,
     });
 
+    // Lưu thời điểm bắt đầu để tính duration chính xác
+    // (không dùng parseInt(logId) vì logId có prefix "log-" → NaN)
+    const startTime = Date.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -167,7 +186,7 @@ async function callClaude(
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
-                Authorization: `Bearer ${CLAUDE_CONFIG.apiKey}`,
+                Authorization: `Bearer ${claudeApiKey}`,
             },
             body: requestBody,
             signal: controller.signal,
@@ -175,7 +194,7 @@ async function callClaude(
 
         // Bắt lỗi 524 riêng — thông báo rõ ràng
         if (response.status === 524) {
-            const duration = Date.now() - parseInt(logId);
+            const duration = Date.now() - startTime;
             updateDebugLog(logId, {
                 status: 524,
                 responseBody: "Cloudflare 524 timeout",
@@ -196,7 +215,7 @@ async function callClaude(
 
         if (!response.ok) {
             const errorText = await response.text();
-            const duration = Date.now() - parseInt(logId);
+            const duration = Date.now() - startTime;
             updateDebugLog(logId, {
                 status: response.status,
                 responseBody: errorText,
@@ -215,7 +234,7 @@ async function callClaude(
         };
         const fullText = data.choices?.[0]?.message?.content ?? "";
 
-        const duration = Date.now() - parseInt(logId);
+        const duration = Date.now() - startTime;
         updateDebugLog(logId, {
             status: response.status,
             responseBody: fullText.slice(0, 2000) + (fullText.length > 2000 ? "..." : ""),
@@ -263,6 +282,8 @@ async function callGemini(
         label: `[Gemini] ${label}`,
     });
 
+    // Lưu thời điểm bắt đầu để tính duration chính xác
+    const startTime = Date.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -274,7 +295,7 @@ async function callGemini(
             signal: controller.signal,
         });
 
-        const duration = Date.now() - parseInt(logId);
+        const duration = Date.now() - startTime;
         const responseText = await response.text();
 
         updateDebugLog(logId, {
@@ -324,61 +345,95 @@ export async function callAIMultiProvider(
     preferredProvider: AIProvider = "auto",
     timeoutMs?: number
 ): Promise<string> {
-    const logId = generateLogId();
     const actualTimeout = timeoutMs || CLAUDE_CONFIG.timeoutMs;
 
-    // Lấy Gemini API key
-    const geminiKey = await getGeminiApiKey();
-    const hasGeminiKey = !!geminiKey;
+    // ═══ Lấy TẤT CẢ keys của cả 2 provider ═══
+    const allClaudeKeys = await getAllClaudeKeys();
+    const allGeminiKeys = await getAllGeminiKeys();
+    const hasClaudeKey = allClaudeKeys.length > 0;
+    const hasGeminiKey = allGeminiKeys.length > 0;
 
-    // Chọn provider
+    // Không có key nào → báo lỗi rõ ràng
+    if (!hasClaudeKey && !hasGeminiKey) {
+        throw new Error(
+            "❌ Chưa có API key nào! Vui lòng vào Settings nhập Claude hoặc Gemini API keys."
+        );
+    }
+
+    // Chọn provider ưu tiên
     let provider: "claude" | "gemini";
     if (preferredProvider === "auto") {
-        provider = pickProvider(hasGeminiKey);
+        provider = pickProvider(hasGeminiKey, hasClaudeKey);
     } else {
         provider = preferredProvider;
-        // Nếu chọn gemini nhưng không có key → fallback claude
-        if (provider === "gemini" && !hasGeminiKey) {
-            provider = "claude";
-        }
+        if (provider === "gemini" && !hasGeminiKey) provider = "claude";
+        if (provider === "claude" && !hasClaudeKey) provider = "gemini";
     }
 
     console.log(`[AI Provider] 🔀 ${label} → ${provider.toUpperCase()} (counter: ${requestCounter})`);
 
-    // Gọi provider đã chọn
-    try {
-        if (provider === "claude") {
-            return await callClaude(prompt, logId, label, actualTimeout);
-        } else {
-            return await callGemini(prompt, logId, label, actualTimeout, geminiKey!);
+    // ═══ BỂ XOAY TUA: thử từng key cùng provider, rồi fallback ═══
+    const primaryKeys = provider === "claude" ? allClaudeKeys : allGeminiKeys;
+    const fallbackProvider = provider === "claude" ? "gemini" : "claude";
+    const fallbackKeys = provider === "claude" ? allGeminiKeys : allClaudeKeys;
+
+    // Bước 1: Thử từng key của provider chính
+    for (let i = 0; i < primaryKeys.length; i++) {
+        const key = primaryKeys[i];
+        const logId = generateLogId();
+        try {
+            if (provider === "claude") {
+                return await callClaude(prompt, logId, label, actualTimeout, key);
+            } else {
+                return await callGemini(prompt, logId, label, actualTimeout, key);
+            }
+        } catch (error) {
+            const errMsg = String(error);
+            // Chỉ retry key khác nếu lỗi rate limit / server error
+            if (errMsg.includes("429") || errMsg.includes("529") || errMsg.includes("500") || errMsg.includes("rate limit")) {
+                console.warn(`[AI Provider] ⚠️ ${provider} key #${i + 1} lỗi: ${errMsg.slice(0, 100)}`);
+                if (i < primaryKeys.length - 1) {
+                    console.log(`[AI Provider] 🔄 Thử key #${i + 2}...`);
+                    continue; // Thử key tiếp theo
+                }
+                // Hết key cùng provider → chuyển sang fallback
+                break;
+            }
+            // Lỗi khác (network, timeout...) → throw luôn
+            throw error;
         }
-    } catch (error) {
-        const errMsg = String(error);
-        console.warn(`[AI Provider] ⚠️ ${provider} failed: ${errMsg}`);
+    }
 
-        // Rate limit → thử provider còn lại
-        if (errMsg.includes("rate limit") || errMsg.includes("429") || errMsg.includes("529")) {
-            const fallbackProvider = provider === "claude" ? "gemini" : "claude";
+    // Bước 2: Fallback — thử từng key của provider còn lại
+    if (fallbackKeys.length > 0) {
+        console.log(`[AI Provider] 🔄 Hết key ${provider} → Fallback ${fallbackProvider.toUpperCase()} (${fallbackKeys.length} keys)`);
 
-            // Kiểm tra fallback có available không
-            if (fallbackProvider === "gemini" && !hasGeminiKey) {
-                console.warn("[AI Provider] ❌ Gemini key không có, không thể fallback");
+        for (let i = 0; i < fallbackKeys.length; i++) {
+            const key = fallbackKeys[i];
+            const fallbackLogId = generateLogId();
+            try {
+                if (fallbackProvider === "claude") {
+                    return await callClaude(prompt, fallbackLogId, `[Fallback] ${label}`, actualTimeout, key);
+                } else {
+                    return await callGemini(prompt, fallbackLogId, `[Fallback] ${label}`, actualTimeout, key);
+                }
+            } catch (error) {
+                const errMsg = String(error);
+                if (errMsg.includes("429") || errMsg.includes("529") || errMsg.includes("500") || errMsg.includes("rate limit")) {
+                    console.warn(`[AI Provider] ⚠️ ${fallbackProvider} key #${i + 1} cũng lỗi`);
+                    continue;
+                }
                 throw error;
             }
-
-            console.log(`[AI Provider] 🔄 Fallback → ${fallbackProvider.toUpperCase()}`);
-            const fallbackLogId = generateLogId();
-
-            if (fallbackProvider === "claude") {
-                return await callClaude(prompt, fallbackLogId, `[Fallback] ${label}`, actualTimeout);
-            } else {
-                return await callGemini(prompt, fallbackLogId, `[Fallback] ${label}`, actualTimeout, geminiKey!);
-            }
         }
-
-        // Lỗi khác → throw nguyên
-        throw error;
     }
+
+    // Bước 3: Hết tất cả keys → báo lỗi
+    throw new Error(
+        `❌ Tất cả API keys đều bị rate limit!\n` +
+        `Claude: ${allClaudeKeys.length} keys, Gemini: ${allGeminiKeys.length} keys\n` +
+        `Vui lòng chờ 1-2 phút rồi thử lại, hoặc thêm key mới trong Settings.`
+    );
 }
 
 // ======================== EXPORT CONFIG (để các service khác dùng) ========================

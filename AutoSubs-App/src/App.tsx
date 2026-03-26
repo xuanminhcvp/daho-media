@@ -13,6 +13,8 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { Titlebar } from "@/components/layout/titlebar"
 import { useResolve } from "@/contexts/ResolveContext"
 import { initAutoMediaStorage } from "@/services/auto-media-storage"
+// License gate: chặn toàn bộ app cho đến khi nhập key hợp lệ
+import { LicenseGate } from "@/components/license/license-gate"
 
 export function ThemeToggle() {
   const { setTheme, theme } = useTheme()
@@ -78,7 +80,10 @@ function AppContent() {
 function App() {
   return (
     <ThemeProvider defaultTheme="system" storageKey="vite-ui-theme">
-      <AppContent />
+      {/* LicenseGate: chặn app cho đến khi nhập license key hợp lệ */}
+      <LicenseGate>
+        <AppContent />
+      </LicenseGate>
     </ThemeProvider>
   );
 }

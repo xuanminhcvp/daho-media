@@ -28,7 +28,7 @@ import { readTextFile } from "@tauri-apps/plugin-fs"
 import { desktopDir } from "@tauri-apps/api/path"
 import { useResolve } from "@/contexts/ResolveContext"
 import { useProject } from "@/contexts/ProjectContext"
-import { addTemplateSubtitlesToTimeline, getTimelineInfo } from "@/api/resolve-api"
+import { addTemplateSubtitlesToTimeline } from "@/api/resolve-api"
 import { readTranscript, generateTranscriptFilename } from "@/utils/file-utils"
 import { extractWhisperWords } from "@/utils/media-matcher"
 import {
@@ -78,7 +78,6 @@ export function TemplateAssignmentTab() {
 
     const {
         whisperWordsPath = "",
-        selectedTrack = "2",
         titleCueResult = null,
     } = project.templateAssignment || {}
 
@@ -90,8 +89,6 @@ export function TemplateAssignmentTab() {
     const [progress, setProgress] = React.useState<string>("")
     const [error, setError] = React.useState<string>("")
     const [showTemplateConfig, setShowTemplateConfig] = React.useState(false)
-    const [resolveTrackCount, setResolveTrackCount] = React.useState<number>(8)
-    const [loadingTracks, setLoadingTracks] = React.useState(false)
     // Transcript đã được auto-detect và load sẵn (không cần chọn file)
     const [autoTranscriptLoaded, setAutoTranscriptLoaded] = React.useState(false)
     // Cache nội dung whisper words text (từ auto hoặc file thủ công)
@@ -105,30 +102,15 @@ export function TemplateAssignmentTab() {
         loadTemplatesConfig().then(setTemplates)
     }, [])
 
-    // Khi kết nối DaVinci → lấy số track thực và auto-detect transcript
+    // Khi kết nối DaVinci → auto-detect transcript
     React.useEffect(() => {
         if (isConnected) {
-            loadTrackCountFromResolve()
             autoLoadTranscript()
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isConnected])
 
     // ======================== HANDLERS ========================
-
-    /** Lấy số track video hiện có trên DaVinci timeline */
-    const loadTrackCountFromResolve = async () => {
-        setLoadingTracks(true)
-        try {
-            const info = await getTimelineInfo()
-            const count = info?.videoTrackCount ?? info?.trackCount ?? 8
-            setResolveTrackCount(Math.max(1, count))
-        } catch {
-            // Giữ mặc định 8 track nếu lỗi
-        } finally {
-            setLoadingTracks(false)
-        }
-    }
 
     /**
      * Tự động đọc transcript từ DaVinci timeline hiện tại
@@ -200,15 +182,16 @@ export function TemplateAssignmentTab() {
         }
     }
 
-    /** AI phân tích whisper words → tìm Title cues */
+    /** AI phân tích Master SRT → tìm Title cues */
     const handleAnalyze = async () => {
-        // Kiểm tra nguồn dữ liệu: ưu tiên Master SRT > Whisper thô
+        // ⭐ BẮT BUỘC Master SRT — không fallback Whisper thô
         const masterSrt = project.masterSrt
-        const hasMasterSrt = masterSrt && masterSrt.length > 0
-
-        // Nếu không có Master SRT VÀ không có Whisper thô → báo lỗi
-        if (!hasMasterSrt && !wordsTextCache) {
-            setError("Chưa có dữ liệu. Tạo Master SRT hoặc kết nối DaVinci / chọn file Whisper Words.")
+        if (!masterSrt || masterSrt.length === 0) {
+            setError(
+                '⚠️ Bắt buộc phải có Master SRT!\n\n' +
+                'Vui lòng vào tab "Master SRT" để tạo trước.\n' +
+                'Master SRT chứa text chuẩn (khớp kịch bản) + timing chính xác từ Whisper.'
+            )
             return
         }
 
@@ -216,33 +199,17 @@ export function TemplateAssignmentTab() {
         setError("")
 
         try {
-            let inputWordsText: string
-            let scriptForAI: string | undefined
+            // ★ LUÔN dùng Master SRT — text chuẩn, timing chính xác
+            const inputWordsText = masterSrt.map(w => `[${w.start.toFixed(2)}] ${w.word}`).join(" ")
+            setProgress("🟢 Dùng Master SRT — text chuẩn, timing chính xác")
+            console.log("[AddTitle] Dùng Master SRT:", masterSrt.length, "từ")
 
-            if (hasMasterSrt) {
-                // ★ CÓ Master SRT → dùng Master SRT làm nguồn chính
-                // Master SRT đã có text chuẩn (khớp kịch bản) + timing word-level
-                inputWordsText = masterSrt.map(w => `[${w.start.toFixed(2)}] ${w.word}`).join(" ")
-                scriptForAI = inputWordsText // trùng vì Master SRT đã chuẩn
-                setProgress("🟢 Dùng Master SRT — text chuẩn, timing chính xác")
-                console.log("[AddTitle] Dùng Master SRT:", masterSrt.length, "từ")
-            } else {
-                // Fallback: dùng Whisper thô
-                inputWordsText = wordsTextCache
-                scriptForAI = undefined
-                setProgress("⚠ Dùng Whisper thô (chưa có Master SRT)")
-                console.log("[AddTitle] Dùng Whisper thô, không có Master SRT")
-            }
-
-            setProgress(hasMasterSrt
-                ? "🟢 AI đang phân tích Master SRT → tìm Title cues..."
-                : "AI đang phân tích Whisper Words → tìm Title cues..."
-            )
+            setProgress("🟢 AI đang phân tích Master SRT → tìm Title cues...")
 
             const result = await analyzeWhisperWordsForTitles(
                 inputWordsText,
                 templates,
-                scriptForAI,
+                inputWordsText, // Master SRT đã chuẩn → trùng
                 (msg) => setProgress(msg)
             )
             updateTemplateAssignment({ titleCueResult: result })
@@ -267,9 +234,8 @@ export function TemplateAssignmentTab() {
         setProgress("Đang chuẩn bị clips...")
 
         try {
-            const trackNum = selectedTrack === "new"
-                ? resolveTrackCount + 1
-                : parseInt(selectedTrack) || 2
+            // Track cố định V4 — Text Onscreen (không còn dropdown)
+            const trackNum = 4
 
             const clipsToApply = titleCueResult.cues.map(cue => {
                 const tpl = templates.find(t => t.id === cue.templateId)
@@ -284,10 +250,7 @@ export function TemplateAssignmentTab() {
             await addTemplateSubtitlesToTimeline(clipsToApply, String(trackNum))
             setProgress(`✅ Đã thêm ${clipsToApply.length} Titles vào Video Track ${trackNum}!`)
 
-            if (selectedTrack === "new") {
-                setResolveTrackCount(trackNum)
-                updateTemplateAssignment({ selectedTrack: String(trackNum) })
-            }
+
         } catch (err: any) {
             setError(`Lỗi khi apply vào DaVinci: ${err}`)
             setProgress("")
@@ -410,10 +373,25 @@ export function TemplateAssignmentTab() {
 
                 {/* ===== SECTION 2: Nút AI Phân Tích ===== */}
                 <div className="space-y-2">
+                    {/* ⚠️ Cảnh báo khi chưa có Master SRT */}
+                    {!(project.masterSrt?.length > 0) && (
+                        <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                            <span className="text-amber-400 text-lg">⚠️</span>
+                            <div className="flex-1 min-w-0">
+                                <p className="text-xs font-medium text-amber-400">
+                                    Cần tạo Master SRT trước khi phân tích
+                                </p>
+                                <p className="text-[10px] text-muted-foreground">
+                                    Vào tab &quot;Master SRT&quot; → tạo Master SRT từ Whisper + kịch bản
+                                </p>
+                            </div>
+                        </div>
+                    )}
+
                     <Button
                         className="w-full gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white border-0 shadow-md h-11"
                         onClick={handleAnalyze}
-                        disabled={(!wordsTextCache && !(project.masterSrt?.length > 0)) || isAnalyzing}
+                        disabled={!(project.masterSrt?.length > 0) || isAnalyzing}
                     >
                         {isAnalyzing
                             ? <Loader2 className="h-4 w-4 animate-spin" />
@@ -510,40 +488,16 @@ export function TemplateAssignmentTab() {
                             Áp dụng vào DaVinci Resolve
                         </label>
 
-                        {/* Chọn track — hiển thị track thực tế từ DaVinci */}
+                        {/* Track — cố định V4 (Text Onscreen) */}
                         <div className="space-y-1">
                             <div className="flex items-center gap-2">
                                 <label className="text-xs text-muted-foreground shrink-0">Video Track:</label>
-                                <button
-                                    className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors flex items-center gap-1 ml-auto"
-                                    onClick={loadTrackCountFromResolve}
-                                    disabled={loadingTracks || !isConnected}
-                                    title="Cập nhật số track từ DaVinci"
-                                >
-                                    <RefreshCw className={`h-3 w-3 ${loadingTracks ? "animate-spin" : ""}`} />
-                                    {loadingTracks ? "Đang tải..." : `${resolveTrackCount} tracks`}
-                                </button>
                             </div>
-
-                            <select
-                                className="w-full text-xs bg-background border border-input rounded px-2 py-1.5 h-9"
-                                value={selectedTrack}
-                                onChange={e => updateTemplateAssignment({ selectedTrack: e.target.value })}
-                                disabled={isApplying}
-                            >
-                                {Array.from({ length: resolveTrackCount }, (_, i) => i + 1).map(n => (
-                                    <option key={n} value={String(n)}>
-                                        Video Track {n}{n === resolveTrackCount ? " (track cuối)" : ""}
-                                    </option>
-                                ))}
-                                <option value="new">➕ Tạo track mới (V{resolveTrackCount + 1})</option>
-                            </select>
-
+                            <div className="flex items-center gap-2 px-3 py-2 rounded-md border bg-muted/30 text-xs text-muted-foreground">
+                                💬 Track V4 — Text Onscreen (cố định)
+                            </div>
                             <p className="text-[10px] text-muted-foreground pl-1">
-                                {selectedTrack === "new"
-                                    ? `DaVinci sẽ tạo Video Track ${resolveTrackCount + 1} mới`
-                                    : `Titles sẽ được thêm vào Video Track ${selectedTrack}`
-                                }
+                                Titles sẽ được thêm vào Video Track 4 + Adjustment Layer tự tạo ở V3
                             </p>
                         </div>
 
@@ -564,7 +518,7 @@ export function TemplateAssignmentTab() {
                             }
                             {isApplying
                                 ? "Đang thêm vào DaVinci..."
-                                : `Thêm ${titleCueResult.cues.length} Titles vào Track ${selectedTrack}`
+                                : `Thêm ${titleCueResult.cues.length} Titles vào Track V4`
                             }
                         </Button>
 

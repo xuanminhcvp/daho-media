@@ -103,7 +103,7 @@ export async function saveTranscript(
         ? segment.words
         : interpolateWordsFromText(safeText, segment.start, segment.end);
       return {
-        id: index.toString(),
+        id: index, // ⚠️ Bug fix: dùng number (khớp interface Subtitle.id: number)
         start: segment.start,
         end: segment.end,
         text: safeText.trim(),
@@ -174,6 +174,12 @@ export async function updateTranscript(
 
   // read current file
   let transcript = await readTranscript(filename);
+
+  // ⚠️ Guard: file không tồn tại → không có gì để update → bỏ qua
+  if (!transcript) {
+    console.warn(`[updateTranscript] File transcript không tồn tại: ${filename} — bỏ qua update`);
+    return;
+  }
 
   // update speakers and subtitles
   if (speakers) {

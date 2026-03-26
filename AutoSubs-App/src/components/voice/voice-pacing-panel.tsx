@@ -46,6 +46,7 @@ import { useSettings } from "@/contexts/SettingsContext"
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs"
 import type { PauseResult } from "@/services/voice-pacing-service"
 import { useProject } from "@/contexts/ProjectContext"
+import { hasMasterSrt } from "@/utils/master-srt-utils"
 
 // ======================== COMPONENT CHÍNH ========================
 
@@ -257,6 +258,16 @@ export function VoicePacingPanel() {
 
         if (matchedSentences.length === 0) {
             setErrorMessage("Chưa có matching data! Chọn folder trước.")
+            return
+        }
+
+        // ⭐ BẮT BUỘC Master SRT — không dùng SRT thô
+        if (!hasMasterSrt(project.masterSrt)) {
+            setErrorMessage(
+                '⚠️ Bắt buộc phải có Master SRT!\n' +
+                'Vui lòng vào tab "Master SRT" để tạo trước.\n' +
+                'Master SRT chứa text chuẩn + timing chính xác.'
+            )
             return
         }
 
@@ -670,10 +681,25 @@ export function VoicePacingPanel() {
 
                     {/* ═══ 4. Nút phân tích ═══ */}
                     <div className="space-y-2 pt-1">
+                        {/* Cảnh báo khi chưa có Master SRT */}
+                        {!hasMasterSrt(project.masterSrt) && (
+                            <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                                <AlertCircle className="h-4 w-4 text-amber-400 shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                    <p className="text-xs font-medium text-amber-400">
+                                        Cần tạo Master SRT trước khi phân tích nhịp
+                                    </p>
+                                    <p className="text-[10px] text-muted-foreground">
+                                        Vào tab &quot;Master SRT&quot; → tạo từ Whisper + kịch bản
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+
                         <Button
                             className="w-full gap-2"
                             onClick={handleAnalyze}
-                            disabled={isAnalyzing || matchedSentences.length === 0}
+                            disabled={isAnalyzing || matchedSentences.length === 0 || !hasMasterSrt(project.masterSrt)}
                         >
                             {isAnalyzing ? (
                                 <Loader2 className="h-4 w-4 animate-spin" />

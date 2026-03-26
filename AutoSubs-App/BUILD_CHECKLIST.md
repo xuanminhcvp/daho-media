@@ -135,3 +135,95 @@ pkgbuild \
 | 3.0.13 | 2026-03-17 | VAD treo 53 phút audio | Không đủ log |
 | 3.0.14 | 2026-03-17 | VAD treo + thiếu ffprobe | Chunk VAD + bundle ffprobe |
 | 3.0.15 | 2026-03-17 | Tổng hợp tất cả fix | Build ổn định |
+
+---
+
+## 🔒 Checklist bảo mật production
+
+### 6. Obfuscation + Xóa debug logs
+
+**Mục đích:** User không đọc được source code JS, không thấy console.log, không thấy Debug Panel.
+
+**Đã cấu hình sẵn (tự động khi build production):**
+- ✅ `vite.config.ts` → `vite-plugin-obfuscator`: mã hóa tên biến, string literals, thêm dead code
+- ✅ `vite.config.ts` → `esbuild.drop`: xóa sạch `console.log()` và `debugger`
+- ✅ `right-panel-tabs.tsx` → Debug Panel chỉ hiện khi `import.meta.env.DEV`
+- ✅ `debug-logger.ts` → `addDebugLog()` return sớm khi production
+
+**Kiểm tra sau build:**
+```bash
+# Kiểm tra output JS không còn console.log
+grep -r "console.log" dist/assets/ | head -5
+# Kết quả phải TRỐNG (hoặc chỉ có code rối)
+
+# Kiểm tra code đã được obfuscate
+cat dist/assets/index-*.js | head -20
+# Phải thấy code rối, không đọc được
+```
+
+### 7. License Key — Xác thực nội bộ
+
+**Mục đích:** Chỉ người có key mới mở được app. Không cần internet, không cần server.
+
+**Cách tạo key cho team member:**
+```bash
+# Chạy script tạo key (trên máy admin)
+python3 scripts/generate_license_key.py "Nguyen Van A"
+# Output: ASUBS-4E67-7579-656E-2056-616E-2041-XXXXXXXXXXXXXXXX
+
+python3 scripts/generate_license_key.py "editor_team_02"
+# Output: ASUBS-6564-6974-6F72-5F74-6561-6D5F-3032-XXXXXXXXXXXXXXXX
+```
+
+**⚠️ QUAN TRỌNG:**
+- Secret key nằm trong `src-tauri/src/license.rs` (dòng `SECRET_KEY`)
+- Secret key trong `scripts/generate_license_key.py` phải **GIỐNG HỆT** với `license.rs`
+- Nếu đổi secret → phải đổi CẢ HAI file + build lại app + tạo key mới
+
+**Kiểm tra:**
+```bash
+# Tạo 1 key test
+python3 scripts/generate_license_key.py "test_user"
+# Nhập key này vào app → phải được kích hoạt
+
+# Thử nhập key sai → app phải báo lỗi
+```
+
+---
+
+## 📝 Quy trình build PRODUCTION hoàn chỉnh (cập nhật)
+
+```bash
+# 1. Kill tiến trình cũ
+pkill -f "target/debug/autosubs" 2>/dev/null
+
+# 2. Patch ffmpeg (nếu copy mới từ Homebrew)
+./scripts/patch_ffmpeg_macos.sh
+
+# 3. Verify ffmpeg
+otool -L src-tauri/binaries/ffmpeg-aarch64-apple-darwin | grep homebrew  # phải trống
+otool -L src-tauri/binaries/ffprobe-aarch64-apple-darwin | grep homebrew # phải trống
+
+# 4. Build (NODE_ENV=production tự động bật obfuscation + drop console.log)
+NODE_ENV=production npm run tauri build -- --target aarch64-apple-darwin
+
+# 5. Verify app bundle
+ls src-tauri/target/aarch64-apple-darwin/release/bundle/macos/AutoSubs_Media.app/Contents/MacOS/
+# Phải thấy: autosubs, ffmpeg, ffprobe
+
+# 6. Verify bảo mật
+grep -r "console.log" dist/assets/ | wc -l  # phải = 0 hoặc rất ít
+cat dist/assets/index-*.js | head -5        # phải thấy code rối
+
+# 7. Tạo .pkg
+pkgbuild \
+  --root src-tauri/target/aarch64-apple-darwin/release/bundle/macos/AutoSubs_Media.app \
+  --install-location /Applications/AutoSubs_Media.app \
+  --scripts Mac-Package/Scripts \
+  --identifier com.autosubs-media \
+  --version X.Y.Z \
+  ~/Downloads/AutoSubs-Mac-ARM.X.Y.Z.pkg
+
+# 7. Tạo key cho team
+python3 scripts/generate_license_key.py "Tên người dùng"
+```

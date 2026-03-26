@@ -123,7 +123,7 @@ export async function ensureAutoMediaFolders(): Promise<void> {
         console.log('[AutoMediaStorage] Đã tạo folder gốc:', root)
     }
 
-    // Tạo 3 folder media
+    // Tạo 4 folder media (nhac_nen, sfx, footage, ref_images)
     for (const folder of MEDIA_FOLDERS) {
         const path = await join(root, folder)
         if (!(await exists(path))) {
@@ -166,6 +166,8 @@ export interface AppSettings {
     audioScanApiKey?: string
     /** Danh sách Gemini API keys — round-robin để tránh rate limit */
     geminiApiKeys?: string[]
+    /** Danh sách Claude API keys (ezaiapi) — round-robin để tránh rate limit */
+    claudeApiKeys?: string[]
     /** Cấu hình templates (4 template highlight text) */
     templates?: any[]
     /** Version templates (để detect thay đổi) */

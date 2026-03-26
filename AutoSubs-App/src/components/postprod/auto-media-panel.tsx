@@ -64,12 +64,12 @@ const STEP_INFO: Record<AutoMediaStep, { icon: React.ReactNode; label: string; d
     image: {
         icon: <Image className="h-4 w-4" />,
         label: "Import Ảnh",
-        desc: `Track V${TRACK_LAYOUT.IMAGE_TRACK}`,
+        desc: `Track V${TRACK_LAYOUT.VIDEO_AI_TRACK}`,
     },
     subtitle: {
         icon: <Subtitles className="h-4 w-4" />,
         label: "Phụ Đề",
-        desc: `Track V${TRACK_LAYOUT.SUBTITLE_TRACK}`,
+        desc: `Track V${TRACK_LAYOUT.TEXT_ONSCREEN_TRACK}`,
     },
     music: {
         icon: <Music className="h-4 w-4" />,
@@ -79,7 +79,7 @@ const STEP_INFO: Record<AutoMediaStep, { icon: React.ReactNode; label: string; d
     sfx: {
         icon: <Zap className="h-4 w-4" />,
         label: "SFX",
-        desc: `Track A${TRACK_LAYOUT.SFX_TRACK}`,
+        desc: `Track A${TRACK_LAYOUT.SFX_VIDEO_TRACK}`,
     },
     footage: {
         icon: <Film className="h-4 w-4" />,
@@ -531,22 +531,29 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                     </DialogDescription>
                 </DialogHeader>
 
-                {/* ====== NOTE: Track layout + 24fps ====== */}
-                <div className="rounded-lg bg-blue-500/10 border border-blue-500/20 p-3 text-xs space-y-1">
+                {/* ====== NOTE: Track layout 7V+5A ====== */}
+                <div className="rounded-lg bg-blue-500/10 border border-blue-500/20 p-3 text-xs space-y-1.5">
                     <div className="flex items-center gap-1.5 font-medium text-blue-400">
                         <Info className="h-3.5 w-3.5" />
-                        Track Layout (24fps)
+                        Track Layout Chuẩn (24fps)
                     </div>
                     <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-muted-foreground">
-                        <span>V1: Ảnh/Media</span>
-                        <span>A1: SFX</span>
-                        <span>V2: Footage</span>
-                        <span>A2: Voice ⚠️</span>
-                        <span>V3: Phụ Đề</span>
-                        <span>A3: Nhạc Nền</span>
+                        <span>V1: 📹 Video AI</span>
+                        <span>A1: 🔊 SFX Video</span>
+                        <span>V2: 🖼️ Ảnh Thực Tế</span>
+                        <span>A2: 🎙️ VO (Voice)</span>
+                        <span>V3: 🎚️ Adjustment</span>
+                        <span>A3: 🔔 SFX Text</span>
+                        <span>V4: 💬 Text Onscreen</span>
+                        <span>A4: 📸 SFX Ảnh Ref</span>
+                        <span>V5: #️⃣ Số Chương</span>
+                        <span>A5: 🎵 Nhạc Nền</span>
+                        <span>V6: 🔤 Tên Chương</span>
+                        <span></span>
+                        <span>V7: 🎬 Footage</span>
                     </div>
                     <p className="text-yellow-500/80 text-[10px]">
-                        ⚠️ Voice nên đặt ở Audio Track A2 — DaVinci timeline mặc định 24fps
+                        ⚠️ Tạo đủ 7 Video + 5 Audio tracks trong DaVinci trước khi chạy
                     </p>
                 </div>
 

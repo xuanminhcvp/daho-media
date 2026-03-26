@@ -113,6 +113,36 @@ function M.walk_media_pool(folder, onClip)
     end
 end
 
+-- ===== WALK MEDIA POOL + POWER BINS =====
+-- Duyệt đệ quy rootFolder VÀ Power Bins
+-- Power Bins trong DaVinci Resolve là hệ thống folder TÁCH BIỆT với Media Pool thông thường
+-- Cách tiếp cận:
+--   1. Luôn duyệt rootFolder (Media Pool bình thường)
+--   2. Thử GetCurrentFolder() -- có thể trả về Power Bin nếu user đang chọn Power Bin
+--   3. Thử lấy các folder đặc biệt khác nếu có API
+function M.walk_media_pool_with_power_bins(mediaPool, onClip)
+    -- Bước 1: Duyệt Media Pool bình thường (rootFolder)
+    local rootFolder = mediaPool:GetRootFolder()
+    M.walk_media_pool(rootFolder, onClip)
+
+    -- Bước 2: Thử lấy Power Bin thông qua GetCurrentFolder
+    -- Nếu DaVinci đang có Power Bin được chọn, GetCurrentFolder() trả Power Bin folder đó
+    local ok, currentFolder = pcall(function()
+        return mediaPool:GetCurrentFolder()
+    end)
+    if ok and currentFolder then
+        local currentName = ""
+        pcall(function() currentName = currentFolder:GetName() or "" end)
+        local rootName = ""
+        pcall(function() rootName = rootFolder:GetName() or "" end)
+        -- Chỉ duyệt thêm nếu currentFolder khác rootFolder
+        if currentName ~= rootName and currentName ~= "" then
+            print("[AutoSubs] 🗂️ Quét thêm Power Bin: '" .. currentName .. "'")
+            M.walk_media_pool(currentFolder, onClip)
+        end
+    end
+end
+
 -- ===== SAFE JSON =====
 -- Encode JSON an toàn, fallback nếu module json chưa load
 function M.safe_json(obj, json)

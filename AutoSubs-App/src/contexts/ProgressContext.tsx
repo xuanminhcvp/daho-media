@@ -195,6 +195,10 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
   }
 
   // Set up simplified event listener
+  // ⚠️ Bug fix #4: Lưu unlisten functions để cleanup khi setup lại
+  // Trước đây mỗi lần gọi setupEventListeners → thêm listener mới mà KHÔNG xóa cũ → memory leak
+  const unlistenFnsRef = useRef<Array<() => void>>([]);
+
   const setupEventListeners = useCallback((settings: { targetLanguage: string; language: string; isResolveMode?: boolean; isModelCached?: boolean; enableDiarize?: boolean }) => {
     // Update settings ref
     settingsRef.current = {
@@ -204,17 +208,24 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
       isModelCached: settings.isModelCached ?? false,
       enableDiarize: settings.enableDiarize ?? false,
     };
+
+    // ⚠️ Cleanup listener cũ trước khi tạo mới (tránh chồng chất)
+    for (const unlisten of unlistenFnsRef.current) {
+      unlisten();
+    }
+    unlistenFnsRef.current = [];
     
     const setup = async () => {
       try {
         // Single progress listener that directly updates steps array
-        await listen<{ progress: number, type?: string, label?: string }>('labeled-progress', (event: { payload: any }) => {
+        const unlistenProgress = await listen<{ progress: number, type?: string, label?: string }>('labeled-progress', (event: { payload: any }) => {
           console.log('Received progress event:', JSON.stringify(event.payload, null, 2));
           updateProgressStep(event.payload);
         });
+        unlistenFnsRef.current.push(unlistenProgress);
         
         // New segment listener for live preview
-        await listen<string>('new-segment', (event: { payload: any }) => {
+        const unlistenSegment = await listen<string>('new-segment', (event: { payload: any }) => {
           console.log('Received new segment:', event.payload);
           
           // Check if this segment text already exists to prevent duplicates
@@ -234,28 +245,30 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
           seenSegmentsRef.current.add(segmentText);
           console.log('Adding new segment:', segmentText);
           
-          // Create a simple subtitle object from the text
-          const newSegment: Subtitle = {
-            id: livePreviewSegments.length + 1,
-            start: 0,
-            end: 0,
-            text: event.payload,
-            words: [], // Empty array for live preview
-            speaker_id: undefined
-          };
-          
+          // ⚠️ Bug fix #5: tạo segment BÊN TRONG setter callback
+          // Trước đây dùng livePreviewSegments.length bên ngoài → stale closure → id luôn = 1
           setLivePreviewSegments(prev => {
+            const newSegment: Subtitle = {
+              id: prev.length + 1,  // ← Dùng prev.length thay vì stale closure
+              start: 0,
+              end: 0,
+              text: event.payload,
+              words: [], // Empty array for live preview
+              speaker_id: undefined
+            };
             console.log('Current segments count:', prev.length);
             return [...prev, newSegment];
           });
         });
+        unlistenFnsRef.current.push(unlistenSegment);
         
         // Clear live preview and seen segments when transcription completes
-        await listen('transcription-complete', () => {
+        const unlistenComplete = await listen('transcription-complete', () => {
           console.log('Transcription complete, clearing live preview');
           setLivePreviewSegments([]);
           seenSegmentsRef.current.clear();
         });
+        unlistenFnsRef.current.push(unlistenComplete);
         
       } catch (error) {
         console.error('Failed to set up progress listener:', error);
@@ -264,9 +277,12 @@ export function ProgressProvider({ children }: { children: React.ReactNode }) {
     
     setup();
     
-    // Return cleanup function
+    // Return cleanup function — gọi khi component unmount hoặc setup lại
     return () => {
-      // Cleanup handled automatically by Tauri when component unmounts
+      for (const unlisten of unlistenFnsRef.current) {
+        unlisten();
+      }
+      unlistenFnsRef.current = [];
     };
   }, []);
 

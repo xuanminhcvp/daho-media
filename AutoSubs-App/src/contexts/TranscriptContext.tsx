@@ -55,6 +55,8 @@ export function TranscriptProvider({ children }: { children: React.ReactNode }) 
     };
 
     loadSubtitlesForTimeline();
+  // loadSubtitles là useCallback([], []) → reference ổn định, không cần thêm vào deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timelineInfo?.timelineId, settings.isStandaloneMode]);
 
   // Load subtitles when timelineId or fileInput changes
@@ -206,14 +208,16 @@ export function TranscriptProvider({ children }: { children: React.ReactNode }) 
       }
 
       if (format === 'srt') {
-        console.log('Generating SRT data from subtitles (first 3 items):', subtitles.slice(0, 3));
-        console.log('Subtitles array length:', subtitles.length);
+        // ⚠️ Bug fix: dùng subtitlesToExport (param truyền vào) thay vì subtitles (state)
+        // Trước đây dùng subtitles → xuất SRT sai nội dung khi có custom data
+        console.log('Generating SRT data from subtitles (first 3 items):', subtitlesToExport.slice(0, 3));
+        console.log('Subtitles array length:', subtitlesToExport.length);
 
         // Log the structure of the first subtitle if it exists
-        if (subtitles.length > 0) {
+        if (subtitlesToExport.length > 0) {
           console.log('First subtitle structure:', {
-            keys: Object.keys(subtitles[0]),
-            values: Object.entries(subtitles[0]).map(([key, value]) => ({
+            keys: Object.keys(subtitlesToExport[0]),
+            values: Object.entries(subtitlesToExport[0]).map(([key, value]) => ({
               key,
               type: typeof value,
               value: value
@@ -221,7 +225,7 @@ export function TranscriptProvider({ children }: { children: React.ReactNode }) 
           });
         }
 
-        let srtData = generateSrt(subtitles, includeSpeakerLabels, speakers);
+        let srtData = generateSrt(subtitlesToExport, includeSpeakerLabels, speakers);
 
         if (!srtData || srtData.trim() === '') {
           console.error('Generated SRT data is empty');
@@ -232,7 +236,7 @@ export function TranscriptProvider({ children }: { children: React.ReactNode }) 
         console.log('SRT file saved successfully to', filePath);
       } else {
         // Export as JSON
-        console.log('Generating JSON data from subtitles (first 3 items):', subtitles.slice(0, 3));
+        console.log('Generating JSON data from subtitles (first 3 items):', subtitlesToExport.slice(0, 3));
 
         // Create a structured JSON object similar to what's used internally
         const jsonData = {

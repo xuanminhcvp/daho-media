@@ -55,17 +55,26 @@ export function subscribeDebugLogs(listener: () => void): () => void {
     };
 }
 
-/** Thêm 1 log entry */
+// ======================== BẢO MẬT ========================
+// Khi build production: KHÔNG ghi log request/response
+// → user không thể xem được thông tin API
+const IS_DEV = import.meta.env.DEV;
+
+/** Thêm 1 log entry — chỉ hoạt động khi dev */
 export function addDebugLog(entry: DebugLogEntry): void {
+    // Production: không ghi log gì → return sớm
+    if (!IS_DEV) return;
     _logs = [entry, ..._logs].slice(0, MAX_LOGS); // Mới nhất ở đầu
     _notifyListeners();
 }
 
-/** Cập nhật log entry (khi response về) */
+/** Cập nhật log entry (khi response về) — chỉ hoạt động khi dev */
 export function updateDebugLog(
     id: string,
     updates: Partial<DebugLogEntry>
 ): void {
+    // Production: không ghi log gì → return sớm
+    if (!IS_DEV) return;
     _logs = _logs.map((log) =>
         log.id === id ? { ...log, ...updates } : log
     );

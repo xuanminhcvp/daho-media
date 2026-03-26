@@ -220,7 +220,7 @@ export function FootageTab() {
                         trimStart: s.trimStart,
                         trimEnd: s.trimEnd,
                     })),
-                    trackIndex: 2,   // Track V2
+                    trackIndex: 7,   // Track V7 — Footage B-roll
                     videoOnly: true, // CHỈ LẤY HÌNH — bỏ audio gốc của footage
                 }),
             })
@@ -231,7 +231,7 @@ export function FootageTab() {
             } else {
                 setImportResult({
                     success: true,
-                    message: `✅ Đã import ${suggestions.length} footage lên Track V2`
+                    message: `✅ Đã import ${suggestions.length} footage lên Track V7`
                 })
             }
         } catch (err) {
@@ -468,7 +468,7 @@ export function FootageTab() {
                     {isImporting ? (
                         <><Loader2 className="h-4 w-4 animate-spin" /> Đang import...</>
                     ) : (
-                        <><Upload className="h-4 w-4" /> Import {suggestions.length} footage lên Track V2</>
+                        <><Upload className="h-4 w-4" /> Import {suggestions.length} footage lên Track V7</>
                     )}
                 </Button>
             )}
@@ -492,7 +492,7 @@ export function FootageTab() {
             <div className="mt-auto p-2 rounded-md bg-muted/30 border border-border text-[10px] text-muted-foreground space-y-0.5">
                 <p>📽️ <strong>Bước 1</strong>: Chọn folder footage → Quét AI (scan 3 frame/video)</p>
                 <p>🤖 <strong>Bước 2</strong>: AI gợi ý 5-10 footage phù hợp với script</p>
-                <p>📤 <strong>Bước 3</strong>: Import lên DaVinci Track V2 (overlay)</p>
+                <p>📤 <strong>Bước 3</strong>: Import lên DaVinci Track V7 (footage)</p>
             </div>
         </div>
     )

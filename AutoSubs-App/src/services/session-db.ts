@@ -25,8 +25,8 @@ export interface SessionData {
   /** Thời điểm cập nhật session gần nhất */
   updatedAt: number;
 
-  /** Kiểu lưu: 'auto' = tự động sau 5 phút, 'manual' = user bấm Ctrl+S */
-  saveType: 'auto' | 'manual';
+  /** @deprecated — không phân biệt nữa, giữ lại cho backward compatible */
+  saveType?: 'auto' | 'manual';
 
   /** === SNAPSHOT TRẠNG THÁI APP === */
 
@@ -302,38 +302,22 @@ export async function renameSession(id: string, newName: string): Promise<Sessio
 
 /**
  * Xóa sessions cũ nhất nếu tổng số vượt quá MAX_SESSIONS.
- * Ưu tiên giữ lại manual sessions, xóa auto sessions trước.
+ * Đơn giản: xóa cũ nhất trước (đã sort mới nhất → cuối = cũ nhất).
  */
 async function cleanupOldSessions(): Promise<void> {
   const sessions = await getAllSessions();
 
   if (sessions.length <= MAX_SESSIONS) return;
 
-  // Tách riêng auto vs manual
-  const autoSessions = sessions.filter(s => s.saveType === 'auto');
-  const manualSessions = sessions.filter(s => s.saveType === 'manual');
+  // Xóa session cũ nhất (cuối danh sách — đã sort mới nhất trước)
+  const toDelete = sessions.length - MAX_SESSIONS;
+  const oldest = sessions.slice(-toDelete);
 
-  // Tính số lượng cần xóa
-  let toDelete = sessions.length - MAX_SESSIONS;
-
-  // Xóa auto sessions cũ trước (đã sort mới nhất trước, nên xóa từ cuối)
-  const autoToDelete = autoSessions.slice(-toDelete);
-
-  for (const session of autoToDelete) {
+  for (const session of oldest) {
     await deleteSession(session.id);
-    toDelete--;
-    if (toDelete <= 0) break;
   }
 
-  // Nếu vẫn còn thừa, xóa manual sessions cũ
-  if (toDelete > 0) {
-    const manualToDelete = manualSessions.slice(-toDelete);
-    for (const session of manualToDelete) {
-      await deleteSession(session.id);
-    }
-  }
-
-  console.log(`[SessionDB] 🧹 Đã dọn dẹp sessions cũ`);
+  console.log(`[SessionDB] 🧹 Đã dọn dẹp ${toDelete} sessions cũ`);
 }
 
 /**

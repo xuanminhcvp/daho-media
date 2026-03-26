@@ -1,4 +1,5 @@
 import { Gauge, Clock, Key, Save, Eye, EyeOff } from "lucide-react";
+import { TrackGuide } from "@/components/settings/track-guide";
 import { DeleteIcon, type DeleteIconHandle } from "@/components/ui/icons/delete";
 import { useSettings } from "@/contexts/SettingsContext";
 import { ask } from "@tauri-apps/plugin-dialog";
@@ -25,7 +26,7 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemMedia, ItemTitle }
 import { Field, FieldGroup } from "@/components/ui/field";
 import { initI18n, normalizeUiLanguage } from "@/i18n";
 import { useRef, useState, useEffect } from "react";
-import { saveGeminiApiKeys, getGeminiApiKeys } from "@/services/saved-folders-service";
+import { saveGeminiApiKeys, getGeminiApiKeys, saveClaudeApiKeys, getClaudeApiKeys } from "@/services/saved-folders-service";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -43,12 +44,24 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const [apiKeySaved, setApiKeySaved] = useState(false);
   const [showKey, setShowKey] = useState(false);
 
+  // State cho Claude API Keys (mảng) — giống Gemini
+  const [claudeKeysText, setClaudeKeysText] = useState("");
+  const [claudeKeyCount, setClaudeKeyCount] = useState(0);
+  const [claudeKeySaved, setClaudeKeySaved] = useState(false);
+  const [showClaudeKey, setShowClaudeKey] = useState(false);
+
   // Load API keys khi dialog mở
   useEffect(() => {
     if (open) {
+      // Load Gemini keys
       getGeminiApiKeys().then(keys => {
         setAudioApiKey(keys.join("\n"));
         setKeyCount(keys.length);
+      });
+      // Load Claude keys
+      getClaudeApiKeys().then(keys => {
+        setClaudeKeysText(keys.join("\n"));
+        setClaudeKeyCount(keys.length);
       });
     }
   }, [open]);
@@ -168,6 +181,91 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 </Field>
               </FieldGroup>
             </div>
+            {/* Claude API Keys — round-robin nhiều key tránh rate limit */}
+            <div className="space-y-3">
+              <h4 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase flex items-center gap-2">
+                🔑 Claude API Keys (ezaiapi)
+                {claudeKeyCount > 0 && (
+                  <span className="px-1.5 py-0.5 rounded-full bg-violet-500/20 text-violet-400 text-[10px] font-bold">
+                    {claudeKeyCount} keys
+                  </span>
+                )}
+              </h4>
+
+              <FieldGroup>
+                <Field>
+                  <Item variant="outline" size="sm">
+                    <ItemMedia variant="icon" className="bg-violet-100 dark:bg-violet-900/30">
+                      <Key className="h-4 w-4 text-violet-600 dark:text-violet-400" />
+                    </ItemMedia>
+                    <ItemContent>
+                      <ItemTitle>Claude Keys (Round-Robin)</ItemTitle>
+                      <ItemDescription className="text-xs leading-tight line-clamp-1">
+                        Mỗi dòng 1 key — tự xoay vòng tránh rate limit
+                      </ItemDescription>
+                    </ItemContent>
+                  </Item>
+
+                  <div className="flex flex-col gap-2 mt-2">
+                    <div className="relative">
+                      <textarea
+                        placeholder={"Nhập Claude API Keys (ezaiapi)...\nMỗi dòng 1 key\nVí dụ: sk-abc123..."}
+                        className="w-full min-h-[80px] px-3 py-2 rounded-md border border-input bg-background text-xs font-mono placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
+                        style={{ fontFamily: "monospace", fontSize: "11px" }}
+                        value={showClaudeKey ? claudeKeysText : claudeKeysText.split("\n").map(k => k ? "••••••••" + k.slice(-6) : "").join("\n")}
+                        onFocus={() => {
+                          // Tự động hiện key khi focus vào textarea → gõ tự nhiên
+                          if (!showClaudeKey) setShowClaudeKey(true);
+                        }}
+                        onChange={(e) => {
+                          setClaudeKeysText(e.target.value);
+                          const lines = e.target.value.split("\n").filter(l => l.trim().length > 0);
+                          setClaudeKeyCount(lines.length);
+                        }}
+                      />
+                    </div>
+
+                    <div className="flex gap-2 justify-end">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 gap-1.5 text-xs"
+                        onClick={() => setShowClaudeKey(!showClaudeKey)}
+                      >
+                        {showClaudeKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                        {showClaudeKey ? "Ẩn" : "Hiện"}
+                      </Button>
+
+                      <Button
+                        type="button"
+                        variant={claudeKeySaved ? "secondary" : "outline"}
+                        size="sm"
+                        className={`h-8 gap-1.5 text-xs transition-all ${
+                          claudeKeySaved
+                            ? "bg-violet-500/20 border-violet-500/40 text-violet-400"
+                            : "hover:border-violet-500/40 hover:text-violet-400"
+                        }`}
+                        onClick={() => {
+                          const keys = claudeKeysText.split("\n").map(k => k.trim()).filter(k => k.length > 0);
+                          saveClaudeApiKeys(keys);
+                          setClaudeKeyCount(keys.length);
+                          setClaudeKeySaved(true);
+                          setTimeout(() => setClaudeKeySaved(false), 2000);
+                        }}
+                        disabled={!claudeKeysText.trim()}
+                      >
+                        {claudeKeySaved ? (
+                          <span>✓ Đã lưu {claudeKeyCount} keys</span>
+                        ) : (
+                          <><Save className="h-3.5 w-3.5" /> Lưu Keys</>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                </Field>
+              </FieldGroup>
+            </div>
             {/* Gemini API Keys — round-robin nhiều key tránh rate limit */}
             <div className="space-y-3">
               <h4 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase flex items-center gap-2">
@@ -202,15 +300,16 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                         className="w-full min-h-[100px] px-3 py-2 rounded-md border border-input bg-background text-xs font-mono placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
                         style={{ fontFamily: "monospace", fontSize: "11px" }}
                         value={showKey ? audioApiKey : audioApiKey.split("\n").map(k => k ? "••••••••" + k.slice(-6) : "").join("\n")}
-                        onChange={(e) => {
-                          if (showKey) {
-                            setAudioApiKey(e.target.value);
-                            // Cập nhật key count real-time
-                            const lines = e.target.value.split("\n").filter(l => l.trim().length > 0);
-                            setKeyCount(lines.length);
-                          }
+                        onFocus={() => {
+                          // Tự động hiện key khi focus vào textarea → gõ tự nhiên
+                          if (!showKey) setShowKey(true);
                         }}
-                        readOnly={!showKey}
+                        onChange={(e) => {
+                          setAudioApiKey(e.target.value);
+                          // Cập nhật key count real-time
+                          const lines = e.target.value.split("\n").filter(l => l.trim().length > 0);
+                          setKeyCount(lines.length);
+                        }}
                       />
                     </div>
 
@@ -258,6 +357,16 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                   </div>
                 </Field>
               </FieldGroup>
+            </div>
+
+            {/* ====== Track Layout Guide ====== */}
+            <div className="space-y-3">
+              <h4 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                🎛️ Track Layout
+              </h4>
+              <div className="rounded-lg border p-3">
+                <TrackGuide compact />
+              </div>
             </div>
           </div>
 

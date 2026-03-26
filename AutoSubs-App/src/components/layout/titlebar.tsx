@@ -39,7 +39,7 @@ import { useModels } from "@/contexts/ModelsContext";
 import { useState, useEffect, useCallback } from "react";
 import { SettingsDialog } from "@/components/dialogs/settings-dialog";
 import { ManageModelsDialog } from "@/components/settings/model-manager";
-import { pingResolve } from "@/api/resolve-api";
+import { pingResolve, setupTimelineTracks } from "@/api/resolve-api";
 import { useResolve } from "@/contexts/ResolveContext";
 import { AutoMediaPanel } from "@/components/postprod/auto-media-panel";
 import { ClaudeModelSelector } from "@/components/settings/claude-model-selector";
@@ -469,6 +469,10 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
   // State hiển thị popup Auto Media
   const [showAutoMedia, setShowAutoMedia] = useState(false);
 
+  // State nút Setup Track (tạo 7V+5A)
+  const [setupLoading, setSetupLoading] = useState(false);
+  const [setupResult, setSetupResult] = useState<string | null>(null);
+
   // State nút copy mã kết nối DaVinci
   const [copied, setCopied] = useState(false);
 
@@ -529,6 +533,27 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
     setTimeout(() => setCopied(false), 1500);
   };
 
+  // Gọi API tạo 7V+5A tracks
+  const handleSetupTracks = async () => {
+    if (setupLoading) return;
+    setSetupLoading(true);
+    setSetupResult(null);
+    try {
+      const result = await setupTimelineTracks();
+      if (result?.success) {
+        setSetupResult(`✅ ${result.message}`);
+      } else {
+        setSetupResult(`❌ ${result?.message || 'Lỗi không xác định'}`);
+      }
+    } catch (err: any) {
+      setSetupResult(`❌ ${err?.message || 'Không kết nối được DaVinci'}`);
+    } finally {
+      setSetupLoading(false);
+      // Tự ẩn thông báo sau 3 giây
+      setTimeout(() => setSetupResult(null), 3000);
+    }
+  };
+
   return (
     <header
       className="flex items-center justify-between h-9 px-1 border-b bg-card backdrop-blur select-none z-50"
@@ -559,6 +584,30 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
                 <><Check className="h-3 w-3" /> Đã copy!</>
               ) : (
                 <><Terminal className="h-3 w-3" /><Copy className="h-2.5 w-2.5 -ml-0.5" /> Copy mã</>
+              )}
+            </Button>
+            {/* Nút Setup Track — tạo 7V+5A */}
+            <Button
+              variant="outline"
+              size="sm"
+              className={`h-6 gap-1 text-[10px] px-2 rounded-full border-dashed transition-all duration-200 ${
+                setupResult?.startsWith('✅')
+                  ? 'border-green-500 text-green-400 bg-green-500/10'
+                  : setupResult?.startsWith('❌')
+                  ? 'border-red-500 text-red-400 bg-red-500/10'
+                  : 'border-violet-500/50 text-violet-300 bg-violet-500/5 hover:bg-violet-500/15'
+              }`}
+              onClick={handleSetupTracks}
+              disabled={setupLoading}
+              data-tauri-drag-region="false"
+              title="Tạo 7V+5A tracks + đặt tên chuẩn trong DaVinci"
+            >
+              {setupLoading ? (
+                <><RefreshCw className="h-3 w-3 animate-spin" /> Đang tạo...</>
+              ) : setupResult ? (
+                <span className="truncate max-w-[150px]">{setupResult}</span>
+              ) : (
+                <>Setup Track</>
               )}
             </Button>
             {/* Nút Auto Media — gradient tím-xanh */}
@@ -621,6 +670,30 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
                 <><Check className="h-3 w-3" /> Đã copy!</>
               ) : (
                 <><Terminal className="h-3 w-3" /><Copy className="h-2.5 w-2.5 -ml-0.5" /> Copy mã</>
+              )}
+            </Button>
+            {/* Nút Setup Track — tạo 7V+5A (Windows layout) */}
+            <Button
+              variant="outline"
+              size="sm"
+              className={`h-6 gap-1 text-[10px] px-2 rounded-full border-dashed transition-all duration-200 ${
+                setupResult?.startsWith('✅')
+                  ? 'border-green-500 text-green-400 bg-green-500/10'
+                  : setupResult?.startsWith('❌')
+                  ? 'border-red-500 text-red-400 bg-red-500/10'
+                  : 'border-violet-500/50 text-violet-300 bg-violet-500/5 hover:bg-violet-500/15'
+              }`}
+              onClick={handleSetupTracks}
+              disabled={setupLoading}
+              data-tauri-drag-region="false"
+              title="Tạo 7V+5A tracks + đặt tên chuẩn trong DaVinci"
+            >
+              {setupLoading ? (
+                <><RefreshCw className="h-3 w-3 animate-spin" /> Đang tạo...</>
+              ) : setupResult ? (
+                <span className="truncate max-w-[150px]">{setupResult}</span>
+              ) : (
+                <>Setup Track</>
               )}
             </Button>
             {/* Nút Auto Media — gradient tím-xanh */}

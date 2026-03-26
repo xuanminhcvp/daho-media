@@ -434,13 +434,7 @@ export async function analyzeAudioWithAI(
         });
 
         console.error(`[AudioLib] ❌ AI lỗi cho ${item.fileName}:`, error);
-        return {
-            emotion: ["Lỗi"],
-            intensity: "Trung bình",
-            description: `Không thể kết nối Gemini API. Lỗi: ${String(error)}`,
-            tags: [item.type],
-            timeline: []
-        };
+        throw error;
     } finally {
         // 🧹 Dọn file MP3 tạm (dù thành công hay lỗi)
         if (tempMp3Path) {
@@ -623,18 +617,31 @@ export async function scanAndAnalyzeFolder(
     let processedCount = 0;
 
     const tasks = newFiles.map((item) => async (): Promise<AudioLibraryItem> => {
-        // Gọi AI phân tích
-        const metadata = await analyzeAudioWithAI(item, apiKey);
-        item.aiMetadata = metadata;
-        item.scannedAt = new Date().toISOString();
+        try {
+            // Gọi AI phân tích
+            const metadata = await analyzeAudioWithAI(item, apiKey);
+            item.aiMetadata = metadata;
+            item.scannedAt = new Date().toISOString();
 
-        // Cập nhật item trong allItems
-        allItems = allItems.map(i => i.filePath === item.filePath ? item : i);
+            // Cập nhật item trong allItems
+            allItems = allItems.map(i => i.filePath === item.filePath ? item : i);
 
-        // Lưu ngay vào file JSON (phòng crash)
-        await saveAudioItemsToFolder(folderPath, allItems);
+            // Lưu ngay vào file JSON (phòng crash)
+            await saveAudioItemsToFolder(folderPath, allItems);
 
-        return item;
+            return item;
+        } catch (error) {
+            console.warn(`[AudioLib] ⚠️ Lỗi API: xoá metadata cũ (nếu có) của: ${item.fileName}`);
+            // File lỗi sẽ bị gán aiMetadata = null để xoá nhãn "Lỗi" cũ (do cache trước đây)
+            // Trả về giao diện trạng thái trống (chưa quét)
+            item.aiMetadata = null;
+
+            // Cập nhật lại list và lưu đè file JSON để làm sạch db 
+            allItems = allItems.map(i => i.filePath === item.filePath ? item : i);
+            await saveAudioItemsToFolder(folderPath, allItems);
+
+            return item;
+        }
     });
 
     // ===== Bước 6: Chạy concurrency pool (sliding window) =====

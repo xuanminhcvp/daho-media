@@ -193,7 +193,7 @@ export function MediaImportPanel() {
     const mediaFolder = project.mediaImport.mediaFolder
     const mediaFiles = project.mediaImport.mediaFiles
     const matchedSentences = project.mediaImport.matchedSentences
-    const selectedTrack = project.mediaImport.selectedTrack
+    const selectedTrack = "1" // V1 — Video AI (cố định, không cần context)
     const scriptText = project.scriptText
 
     // ======================== LOCAL STATE (UI transient) ========================
@@ -691,28 +691,12 @@ export function MediaImportPanel() {
                         )}
                     </div>
 
-                    {/* 3. Chọn track */}
+                    {/* 3. Track — cố định V1 (Video AI) */}
                     <div className="space-y-2">
                         <label className="text-sm font-medium">3. Track video đích</label>
-                        <select
-                            className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm"
-                            value={selectedTrack}
-                            onChange={(e) => updateMediaImport({ selectedTrack: e.target.value })}
-                        >
-                            {timelineInfo?.outputTracks?.map((track) => (
-                                <option key={track.value} value={track.value}>
-                                    {track.label}
-                                </option>
-                            )) || (
-                                    <>
-                                        <option value="1">Video Track 1</option>
-                                        <option value="2">Video Track 2</option>
-                                        <option value="3">Video Track 3</option>
-                                        <option value="4">Video Track 4</option>
-                                        <option value="5">Video Track 5</option>
-                                    </>
-                                )}
-                        </select>
+                        <div className="flex items-center gap-2 px-3 py-2 rounded-md border bg-muted/30 text-sm text-muted-foreground">
+                            📹 Track V1 — Video AI (cố định)
+                        </div>
                     </div>
 
                     {/* 4. Nút hành động */}
@@ -781,7 +765,7 @@ export function MediaImportPanel() {
                                                 })
                                                 .map(s => s.num)
                                             setTimelineMissing(missing)
-                                            setStatusMessage(`Track V${selectedTrack}: ${result.totalClips} clips | Thiếu ${missing.length}/${matchedSentences.length} câu`)
+                                            setStatusMessage(`Track V1: ${result.totalClips} clips | Thiếu ${missing.length}/${matchedSentences.length} câu`)
                                         }
                                     } catch (err) {
                                         setErrorMessage("Không kết nối được DaVinci: " + String(err))
@@ -796,7 +780,7 @@ export function MediaImportPanel() {
                                 ) : (
                                     <Search className="h-4 w-4" />
                                 )}
-                                {isScanning ? "Đang quét..." : `Quét Timeline V${selectedTrack} → Tìm câu thiếu`}
+                                {isScanning ? "Đang quét..." : `Quét Timeline V1 → Tìm câu thiếu`}
                             </Button>
                         )}
                     </div>

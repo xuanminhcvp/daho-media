@@ -46,7 +46,7 @@ export interface PacingProgress {
 
 const AI_CONFIG = {
     baseUrl: "https://ezaiapi.com/v1",
-    apiKey: "sk-570848c49fda787c748cd58f3a21a1d95f00afd87a5cba6e",
+    // apiKey: đã chuyển sang nhập qua Settings UI (không hardcode)
     model: "claude-sonnet-4-6",   // Claude Sonnet local
     timeoutMs: 120000,             // 2 phút timeout (Sonnet nhanh hơn Opus)
     maxTokens: 8000,

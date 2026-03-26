@@ -26,6 +26,7 @@ mod models;
 mod transcription_api;
 mod transcript_types;
 mod logging;
+mod license;
 
 // Include integration-like tests that need crate visibility
 #[cfg(test)]
@@ -176,7 +177,8 @@ fn main() {
             logging::get_backend_logs,
             logging::clear_backend_logs,
             logging::get_log_dir,
-            logging::export_backend_logs
+            logging::export_backend_logs,
+            license::validate_license_key
         ])
         .build(tauri::generate_context!())
         .expect("error while building Tauri application")

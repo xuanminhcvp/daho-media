@@ -143,6 +143,13 @@ export function ResolveProvider({ children }: { children: React.ReactNode }) {
         setIsExporting(false);
         setExportProgress(100);
 
+        // ⚠️ Guard: nếu user hủy export giữa chừng, audioInfo vẫn null
+        // → trả về null an toàn thay vì crash TypeError
+        if (!audioInfo) {
+          console.warn("[ResolveContext] Export bị hủy hoặc không hoàn thành — audioInfo = null");
+          return null;
+        }
+
         let audioPath = audioInfo["path"];
         let audioOffset = audioInfo["offset"];
         return { path: audioPath, offset: audioOffset };

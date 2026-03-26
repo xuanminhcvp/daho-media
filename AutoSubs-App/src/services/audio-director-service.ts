@@ -19,7 +19,7 @@ import { generateLogId } from "@/services/debug-logger";
 // ⚡ BẢN MỚI: Round-robin Claude + Gemini (tránh rate limit)
 const CLAUDE_CONFIG = {
     baseUrl: "https://ezaiapi.com/v1",
-    apiKey: "sk-570848c49fda787c748cd58f3a21a1d95f00afd87a5cba6e",
+    // apiKey: đã chuyển sang nhập qua Settings UI (không hardcode)
     model: "claude-sonnet-4-6",
     timeoutMs: 900000,  // 15 phút (giống ai-matcher)
     maxTokens: 16000,
@@ -99,6 +99,10 @@ export interface MatchingSentence {
     start: number;
     end: number;
     quality: string;
+    // ⚠️ Bug fix #17: thêm 2 field optional — trước đây thiếu so với ScriptSentence
+    // Downstream code (SFX, Music) có thể truy cập mà không bị undefined
+    matchRate?: string;
+    matchedWhisper?: string;
 }
 
 export interface SfxCue {

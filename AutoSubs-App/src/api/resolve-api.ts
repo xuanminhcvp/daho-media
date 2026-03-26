@@ -30,6 +30,28 @@ export async function pingResolve(): Promise<boolean> {
   }
 }
 
+/**
+ * Gọi Lua server tạo đủ 7V+5A tracks và đặt tên chuẩn
+ * Chỉ dùng AddTrack + SetTrackName, không xoá gì
+ */
+export async function setupTimelineTracks(): Promise<any> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(resolveAPI, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ func: "SetupTimelineTracks" }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    return await response.json();
+  } catch (err) {
+    clearTimeout(timeout);
+    throw err;
+  }
+}
+
 export async function exportAudio(inputTracks: Array<string>) {
   const outputDir = await downloadDir();
   const response = await fetch(resolveAPI, {

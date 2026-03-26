@@ -16,7 +16,7 @@ export type { TextTemplate, TitleCue, AITitleCueResult } from "@/types/title-typ
 // Cấu hình AI local (OpenAI-compatible API)
 const LOCAL_AI_CONFIG = {
     baseUrl: "https://ezaiapi.com/v1",
-    apiKey: "sk-570848c49fda787c748cd58f3a21a1d95f00afd87a5cba6e",
+    // apiKey: đã chuyển sang nhập qua Settings UI (không hardcode)
     model: "claude-sonnet-4-6",
     timeoutMs: 300000, // 5 phút
 };

@@ -12,6 +12,14 @@ import {
     HoverCardContent,
     HoverCardTrigger,
 } from "@/components/ui/hover-card"
+import {
+    Dialog,
+    DialogContent,
+    DialogHeader,
+    DialogTitle,
+    DialogDescription,
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
 import { TranscriptionWorkspace } from "@/pages/transcription-workspace"
 import { MediaImportPanel } from "@/components/media/media-import-panel"
 import { ImageImportPanel } from "@/components/media/image-import-panel"
@@ -33,7 +41,6 @@ type RightPanelTab = "subtitles" | "master-srt" | "media-import" | "image-import
 
 interface LiveDataSummaryProps {
     sessionName: string;
-    saveType: 'auto' | 'manual';
     updatedAt: number;
 }
 
@@ -45,7 +52,7 @@ interface DataLine {
     detail: string;     // Chi tiết (số lượng, tên file...)
 }
 
-function LiveDataSummary({ sessionName, saveType, updatedAt }: LiveDataSummaryProps) {
+function LiveDataSummary({ sessionName, updatedAt }: LiveDataSummaryProps) {
     // Lấy dữ liệu live từ contexts
     const { project } = useProject()
     const { subtitles, speakers } = useTranscript()
@@ -178,9 +185,7 @@ function LiveDataSummary({ sessionName, saveType, updatedAt }: LiveDataSummaryPr
             <div className="space-y-0.5">
                 <p className="text-sm font-semibold truncate">{sessionName}</p>
                 <p className="text-[11px] text-muted-foreground">
-                    {saveType === 'auto' ? '🔄 Auto-save' : '💾 Manual save'}
-                    {' • '}
-                    {new Date(updatedAt).toLocaleString('vi-VN')}
+                    💾 Session • {new Date(updatedAt).toLocaleString('vi-VN')}
                 </p>
             </div>
 
@@ -251,6 +256,23 @@ export function RightPanelTabs() {
         window.addEventListener('keydown', handleKeyDown)
         return () => window.removeEventListener('keydown', handleKeyDown)
     }, [])
+
+    // === Session Name Prompt: hiện khi Ctrl+S lần đầu ===
+    const [sessionNameInput, setSessionNameInput] = React.useState('')
+
+    // Khi hook yêu cầu đặt tên → mở prompt
+    React.useEffect(() => {
+        if (sessionManager.needsNameInput) {
+            setSessionNameInput('') // Reset input mỗi lần mở
+        }
+    }, [sessionManager.needsNameInput])
+
+    // Xử lý submit tên session
+    const handleCreateSession = async () => {
+        if (sessionNameInput.trim()) {
+            await sessionManager.createNamedSession(sessionNameInput.trim())
+        }
+    }
 
     return (
         <div className="flex flex-col h-full min-w-0">
@@ -362,50 +384,55 @@ export function RightPanelTabs() {
                         <HoverCard openDelay={300}>
                             <HoverCardTrigger asChild>
                                 <button
-                                    className="flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs bg-muted/60 hover:bg-muted transition-colors min-w-0 max-w-[220px] border border-border/50"
+                                    className="group/sess flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs bg-muted/60 hover:bg-muted transition-all min-w-0 max-w-[260px] border border-border/50"
                                     onClick={() => setSessionDialogOpen(true)}
                                 >
-                                    {/* Dot xanh = đang active */}
-                                    <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
+                                    {/* Dot xanh — pulse ngắn khi vừa save (trong 3 giây gần nhất) */}
+                                    <span className={`w-1.5 h-1.5 rounded-full bg-green-500 shrink-0 transition-all ${
+                                        sessionManager.lastSavedAt && (Date.now() - sessionManager.lastSavedAt < 3000)
+                                            ? 'ring-2 ring-green-400/50 animate-pulse' : ''
+                                    }`} />
 
                                     {/* Tên session (truncate nếu dài) */}
-                                    <span className="truncate text-foreground/80">
+                                    <span className="truncate text-foreground/80 font-medium">
                                         {sessionManager.currentSession.name}
                                     </span>
 
-                                    {/* Badge loại save */}
-                                    <span className={`shrink-0 text-[9px] px-1 py-px rounded font-medium uppercase tracking-wider
-                                        ${sessionManager.currentSession.saveType === 'auto'
-                                            ? 'bg-blue-500/15 text-blue-500'
-                                            : 'bg-green-500/15 text-green-500'
-                                        }`}
-                                    >
-                                        {sessionManager.currentSession.saveType === 'auto' ? 'A' : 'M'}
-                                    </span>
+                                    {/* Mini timestamp — hiện thời gian save cuối */}
+                                    {sessionManager.lastSavedAt && (
+                                        <span className="hidden group-hover/sess:inline shrink-0 text-[10px] text-muted-foreground">
+                                            {(() => {
+                                                const diff = Math.floor((Date.now() - sessionManager.lastSavedAt) / 60000)
+                                                if (diff < 1) return '✓ vừa lưu'
+                                                if (diff < 60) return `${diff}′ trước`
+                                                return `${Math.floor(diff / 60)}h trước`
+                                            })()}
+                                        </span>
+                                    )}
                                 </button>
                             </HoverCardTrigger>
                             <HoverCardContent side="bottom" align="end" className="w-[320px] p-0">
                                 <LiveDataSummary
                                     sessionName={sessionManager.currentSession.name}
-                                    saveType={sessionManager.currentSession.saveType}
                                     updatedAt={sessionManager.currentSession.updatedAt}
                                 />
                             </HoverCardContent>
                         </HoverCard>
                     ) : (
-                        /* Chưa có session nào */
+                        /* Chưa có session nào — mời gọi rõ ràng hơn */
                         <Tooltip>
                             <TooltipTrigger asChild>
                                 <button
-                                    className="flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs text-muted-foreground hover:bg-muted transition-colors border border-dashed border-border/50"
-                                    onClick={() => setSessionDialogOpen(true)}
+                                    className="flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 transition-colors border border-dashed border-amber-400/40"
+                                    onClick={() => sessionManager.saveSession()}
                                 >
-                                    <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 shrink-0" />
-                                    <span>Chưa lưu</span>
+                                    <Save className="h-3 w-3 shrink-0" />
+                                    <span>Lưu session</span>
                                 </button>
                             </TooltipTrigger>
                             <TooltipContent side="bottom">
-                                Bấm Ctrl+S để lưu session đầu tiên
+                                <p className="font-medium">Ctrl+S để lưu session</p>
+                                <p className="text-muted-foreground text-[11px]">Đặt tên → auto-save mỗi 5 phút</p>
                             </TooltipContent>
                         </Tooltip>
                     )}
@@ -438,8 +465,8 @@ export function RightPanelTabs() {
                 {activeTab === "voice-pacing" && <VoicePacingPanel />}
                 {activeTab === "post-production" && <PostProductionPanel />}
             </div>
-            {/* Debug Panel — nổi ở góc dưới phải */}
-            <DebugPanel />
+            {/* Debug Panel — chỉ hiển thị khi dev, ẩn hoàn toàn khi build production */}
+            {import.meta.env.DEV && <DebugPanel />}
 
             {/* Session Manager Dialog */}
             <SessionManagerDialog
@@ -451,12 +478,97 @@ export function RightPanelTabs() {
                 lastSavedAt={sessionManager.lastSavedAt}
                 autoSaveEnabled={sessionManager.autoSaveEnabled}
                 onAutoSaveChange={sessionManager.setAutoSaveEnabled}
-                onSaveManual={sessionManager.saveManualSession}
+                onSave={sessionManager.saveSession}
                 onRestore={sessionManager.restoreSession}
                 onDelete={sessionManager.removeSession}
                 onRename={sessionManager.renameSessionById}
                 onRefresh={sessionManager.refreshSessions}
             />
+
+            {/* === Prompt đặt tên session (hiện khi Ctrl+S lần đầu) === */}
+            <Dialog
+                open={sessionManager.needsNameInput}
+                onOpenChange={(open) => {
+                    if (!open) sessionManager.cancelNameInput()
+                }}
+            >
+                <DialogContent className="sm:max-w-[420px]">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-base">
+                            <div className="w-8 h-8 rounded-full bg-green-500/10 flex items-center justify-center">
+                                <Save className="h-4 w-4 text-green-500" />
+                            </div>
+                            Lưu Session Làm Việc
+                        </DialogTitle>
+                        <DialogDescription className="text-[13px]">
+                            Đặt tên cho session. Sau này <kbd className="px-1.5 py-0.5 rounded bg-muted text-[11px] font-mono border">⌘S</kbd> sẽ tự cập nhật lên session này.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-3 pt-1">
+                        {/* Input chính */}
+                        <Input
+                            placeholder="Nhập tên session..."
+                            value={sessionNameInput}
+                            onChange={(e) => setSessionNameInput(e.target.value)}
+                            autoFocus
+                            className="h-10"
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' && sessionNameInput.trim()) {
+                                    handleCreateSession()
+                                }
+                                if (e.key === 'Escape') {
+                                    sessionManager.cancelNameInput()
+                                }
+                            }}
+                        />
+
+                        {/* Gợi ý tên nhanh — bấm chọn luôn */}
+                        <div className="space-y-1.5">
+                            <p className="text-[11px] text-muted-foreground font-medium">💡 Gợi ý nhanh:</p>
+                            <div className="flex flex-wrap gap-1.5">
+                                {[
+                                    // Gợi ý dựa trên ngày
+                                    `Session ${new Date().toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })}`,
+                                    // Gợi ý chung
+                                    'Documentary',
+                                    'Phóng sự',
+                                    'Review',
+                                    'Tutorial',
+                                ].map((suggestion) => (
+                                    <button
+                                        key={suggestion}
+                                        className="px-2.5 py-1 rounded-full text-[11px] bg-muted hover:bg-accent border border-border/50 transition-colors"
+                                        onClick={() => setSessionNameInput(suggestion)}
+                                    >
+                                        {suggestion}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex justify-end gap-2 pt-1">
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => sessionManager.cancelNameInput()}
+                            >
+                                Hủy
+                            </Button>
+                            <Button
+                                size="sm"
+                                onClick={handleCreateSession}
+                                disabled={!sessionNameInput.trim()}
+                                className="gap-1.5 bg-green-600 hover:bg-green-700 text-white"
+                            >
+                                <Save className="h-3.5 w-3.5" />
+                                Tạo & Lưu
+                            </Button>
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
         </div>
     )
 }

@@ -4,7 +4,7 @@
  * 3 phần:
  * 1. AI Gợi Ý: phân tích kịch bản → liệt kê 6-10 moment cần ảnh thực tế
  * 2. Quản Lý: copy keywords, gán ảnh đã tải vào từng slot
- * 3. Import: đẩy ảnh lên DaVinci Track V4 (overlay)
+ * 3. Import: đẩy ảnh lên DaVinci Track V2 (overlay)
  */
 
 import * as React from "react"
@@ -385,7 +385,7 @@ export function ReferenceImagesTab() {
             )
 
             const sfxCount = sfxClips.length
-            setImportMessage(`📥 Đang import ${assigned.length} ảnh + ${sfxCount} SFX lên Track V4...`)
+            setImportMessage(`📥 Đang import ${assigned.length} ảnh + ${sfxCount} SFX lên Track V2...`)
 
             // Build clips data gốc
             const clips = assigned.map(s => ({
@@ -445,7 +445,7 @@ export function ReferenceImagesTab() {
                 }
             }
 
-            setImportMessage(`📥 Đang import ${clips.length} ảnh/video + ${sfxCount} SFX lên Track V4...`)
+            setImportMessage(`📥 Đang import ${clips.length} ảnh/video + ${sfxCount} SFX lên Track V2...`)
 
             // Gọi API thực tế đẩy File sang Resolve
             const data = await addRefImagesToTimeline(clips, sfxClips)
@@ -453,7 +453,7 @@ export function ReferenceImagesTab() {
             if (data.error) {
                 setImportMessage(`❌ ${data.message || "Lỗi import DaVinci"}`)
             } else {
-                setImportMessage(`✅ Đã import ${data.clipsAdded ?? assigned.length} ảnh + ${data.sfxAdded ?? 0} SFX lên Track V4`)
+                setImportMessage(`✅ Đã import ${data.clipsAdded ?? assigned.length} ảnh + ${data.sfxAdded ?? 0} SFX lên Track V2`)
             }
         } catch (err) {
             setImportMessage(`❌ Lỗi: ${String(err).slice(0, 100)}`)
@@ -760,7 +760,7 @@ export function ReferenceImagesTab() {
                     {isImporting ? (
                         <><Loader2 className="h-4 w-4 animate-spin" /> Đang import...</>
                     ) : (
-                        <><Upload className="h-4 w-4" /> Import {assignedCount} ảnh lên Track V4</>
+                        <><Upload className="h-4 w-4" /> Import {assignedCount} ảnh lên Track V2</>
                     )}
                 </Button>
             )}
@@ -812,7 +812,7 @@ export function ReferenceImagesTab() {
                 <p>🔍 <strong>Bước 1</strong>: AI gợi ý 6-10 moment cần ảnh thực tế</p>
                 <p>📋 <strong>Bước 2</strong>: Copy keywords → tìm ảnh trên Google/Pinterest/Wikipedia</p>
                 <p>📂 <strong>Bước 3</strong>: Gán ảnh đã tải vào từng slot</p>
-                <p>📤 <strong>Bước 4</strong>: Import lên DaVinci Track V4 (overlay)</p>
+                <p>📤 <strong>Bước 4</strong>: Import lên DaVinci Track V2 (overlay)</p>
             </div>
         </div>
     )

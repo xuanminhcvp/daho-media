@@ -76,8 +76,8 @@ interface SessionManagerDialogProps {
 
   /** Toggle auto-save */
   onAutoSaveChange: (enabled: boolean) => void;
-  /** Lưu session thủ công */
-  onSaveManual: () => Promise<any>;
+  /** Lưu session */
+  onSave: () => Promise<any>;
   /** Khôi phục session */
   onRestore: (sessionId: string) => Promise<boolean>;
   /** Xóa session */
@@ -322,14 +322,11 @@ function SessionItem({ session, isActive, onRestore, onDelete, onRename, isResto
           : 'bg-card hover:bg-accent/50 border-border'
         }`}
       >
-        {/* Icon loại session */}
-        <div className={`mt-0.5 flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm
-          ${session.saveType === 'auto'
-            ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/50 dark:text-blue-400'
-            : 'bg-green-100 text-green-600 dark:bg-green-900/50 dark:text-green-400'
-          }`}
+        {/* Icon session */}
+        <div className="mt-0.5 flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm
+          bg-green-100 text-green-600 dark:bg-green-900/50 dark:text-green-400"
         >
-          {session.saveType === 'auto' ? <RefreshCw className="h-3.5 w-3.5" /> : <Save className="h-3.5 w-3.5" />}
+          <Save className="h-3.5 w-3.5" />
         </div>
 
         {/* Nội dung chính */}
@@ -383,24 +380,10 @@ function SessionItem({ session, isActive, onRestore, onDelete, onRename, isResto
               </TooltipContent>
             </Tooltip>
 
-            <span className="text-muted-foreground/50">•</span>
-
             {/* Số subtitles */}
             <span className="flex items-center gap-1">
               <HardDrive className="h-3 w-3" />
               {subtitleCount} subs
-            </span>
-
-            <span className="text-muted-foreground/50">•</span>
-
-            {/* Badge loại save */}
-            <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide
-              ${session.saveType === 'auto'
-                ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-                : 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-              }`}
-            >
-              {session.saveType === 'auto' ? 'Auto' : 'Manual'}
             </span>
           </div>
 
@@ -417,50 +400,42 @@ function SessionItem({ session, isActive, onRestore, onDelete, onRename, isResto
             const badges = getSessionDataSummary(session);
             if (badges.length === 0) return null;
             return (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <div className="flex flex-wrap gap-1 mt-1.5 cursor-default">
-                    {badges.map((badge, idx) => (
+              <div className="flex flex-wrap gap-1 mt-1.5">
+                {badges.map((badge, idx) => (
+                  <Tooltip key={idx}>
+                    <TooltipTrigger asChild>
                       <span
-                        key={idx}
-                        className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium leading-tight ${badge.color}`}
+                        className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium leading-tight cursor-default ${badge.color}`}
                       >
                         {badge.label}
                       </span>
-                    ))}
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="max-w-[300px]">
-                  <p className="font-semibold text-xs mb-1">📦 Dữ liệu trong session:</p>
-                  <div className="space-y-0.5">
-                    {badges.map((badge, idx) => (
-                      <p key={idx} className="text-[11px]">
-                        {badge.label} — {badge.detail}
-                      </p>
-                    ))}
-                  </div>
-                </TooltipContent>
-              </Tooltip>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="text-[11px]">
+                      {badge.detail}
+                    </TooltipContent>
+                  </Tooltip>
+                ))}
+              </div>
             );
           })()}
         </div>
 
-        {/* Nút hành động */}
-        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+        {/* Nút hành động — LUÔN HIỆN để user dễ thấy */}
+        <div className="flex items-center gap-1 flex-shrink-0 ml-auto">
           {/* Khôi phục */}
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
                 variant="ghost"
                 size="icon-sm"
-                className="h-7 w-7 text-blue-600 hover:text-blue-700 hover:bg-blue-100 dark:text-blue-400 dark:hover:bg-blue-900/50"
+                className="h-8 w-8 text-blue-600 hover:text-blue-700 hover:bg-blue-100 dark:text-blue-400 dark:hover:bg-blue-900/50"
                 onClick={() => onRestore(session.id)}
                 disabled={isRestoring}
               >
-                <RotateCcw className={`h-3.5 w-3.5 ${isRestoring ? 'animate-spin' : ''}`} />
+                <RotateCcw className={`h-4 w-4 ${isRestoring ? 'animate-spin' : ''}`} />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Khôi phục session này</TooltipContent>
+            <TooltipContent>Khôi phục bản này</TooltipContent>
           </Tooltip>
 
           {/* Đổi tên */}
@@ -469,31 +444,31 @@ function SessionItem({ session, isActive, onRestore, onDelete, onRename, isResto
               <Button
                 variant="ghost"
                 size="icon-sm"
-                className="h-7 w-7"
+                className="h-8 w-8 text-muted-foreground hover:text-foreground"
                 onClick={() => {
                   setEditName(session.name);
                   setIsEditing(true);
                 }}
               >
-                <Pencil className="h-3.5 w-3.5" />
+                <Pencil className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Đổi tên</TooltipContent>
+            <TooltipContent>Sửa tên</TooltipContent>
           </Tooltip>
 
-          {/* Xóa */}
+          {/* Xoá */}
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
                 variant="ghost"
                 size="icon-sm"
-                className="h-7 w-7 text-red-500 hover:text-red-600 hover:bg-red-100 dark:hover:bg-red-900/50"
+                className="h-8 w-8 text-red-500 hover:text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/50"
                 onClick={() => setShowDeleteConfirm(true)}
               >
-                <Trash2 className="h-3.5 w-3.5" />
+                <Trash2 className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Xóa session</TooltipContent>
+            <TooltipContent>Xoá bỏ</TooltipContent>
           </Tooltip>
         </div>
       </div>
@@ -534,7 +509,7 @@ export function SessionManagerDialog({
   lastSavedAt,
   autoSaveEnabled,
   onAutoSaveChange,
-  onSaveManual,
+  onSave,
   onRestore,
   onDelete,
   onRename,
@@ -608,7 +583,7 @@ export function SessionManagerDialog({
   const handleSaveManual = async () => {
     setIsSaving(true);
     try {
-      await onSaveManual();
+      await onSave();
     } finally {
       setIsSaving(false);
     }
@@ -620,10 +595,10 @@ export function SessionManagerDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Save className="h-5 w-5" />
-            Quản lý Sessions
+            Sessions
           </DialogTitle>
-          <DialogDescription>
-            Lưu và khôi phục trạng thái làm việc. Auto-save mỗi 5 phút, hoặc Ctrl+S để lưu ngay.
+          <DialogDescription className="text-[13px]">
+            Lưu và khôi phục trạng thái làm việc. <kbd className="px-1 py-0.5 rounded bg-muted text-[10px] font-mono border">⌘S</kbd> lưu • <kbd className="px-1 py-0.5 rounded bg-muted text-[10px] font-mono border">⌘⇧S</kbd> mở dialog này.
           </DialogDescription>
         </DialogHeader>
 
@@ -661,6 +636,25 @@ export function SessionManagerDialog({
               {isSaving ? 'Đang lưu...' : 'Lưu ngay'}
             </Button>
 
+            {/* Nút dọn dẹp (Cleanup) */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="h-8 w-8 text-amber-600 hover:bg-amber-100"
+                  onClick={async () => {
+                    if (confirm('Dọn dẹp các session cũ, chỉ giữ lại 50 bản mới nhất?')) {
+                      await onRefresh();
+                    }
+                  }}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Dọn dẹp (Giữ 50 bản mới nhất)</TooltipContent>
+            </Tooltip>
+
             {/* Nút refresh */}
             <Button
               variant="ghost"
@@ -688,7 +682,7 @@ export function SessionManagerDialog({
         </div>
 
         {/* Danh sách sessions — scroll khi vượt quá */}
-        <ScrollArea className="flex-1 min-h-0 -mx-2 px-2">
+        <ScrollArea className="flex-1 min-h-0 -mx-3 px-3">
           {isLoading ? (
             /* Loading state */
             <div className="flex items-center justify-center py-12 text-muted-foreground">
@@ -696,16 +690,18 @@ export function SessionManagerDialog({
               Đang tải...
             </div>
           ) : filteredSessions.length === 0 ? (
-            /* Empty state */
-            <div className="text-center py-12">
-              <Save className="h-10 w-10 mx-auto text-muted-foreground/40 mb-3" />
-              <p className="text-sm font-medium text-muted-foreground">
+            /* Empty state — ấm áp, hướng dẫn rõ ràng */
+            <div className="text-center py-10">
+              <div className="w-14 h-14 mx-auto rounded-full bg-muted/80 flex items-center justify-center mb-4">
+                <Save className="h-6 w-6 text-muted-foreground/50" />
+              </div>
+              <p className="text-sm font-medium text-foreground">
                 {searchQuery ? 'Không tìm thấy session nào' : 'Chưa có session nào'}
               </p>
-              <p className="text-xs text-muted-foreground mt-1">
+              <p className="text-xs text-muted-foreground mt-1.5 max-w-[280px] mx-auto">
                 {searchQuery
                   ? 'Thử từ khóa khác'
-                  : 'Bấm Ctrl+S hoặc nút "Lưu ngay" để tạo session đầu tiên'}
+                  : 'Bấm ⌘S (Ctrl+S) để lưu session đầu tiên. App sẽ tự động cập nhật mỗi 5 phút.'}
               </p>
             </div>
           ) : (
@@ -745,8 +741,6 @@ export function SessionManagerDialog({
             <div className="flex items-center justify-between text-xs text-muted-foreground pt-1">
               <span>
                 Tổng: {sessions.length} sessions
-                ({sessions.filter(s => s.saveType === 'manual').length} thủ công,
-                {' '}{sessions.filter(s => s.saveType === 'auto').length} tự động)
               </span>
               <span className="flex items-center gap-1">
                 <HardDrive className="h-3 w-3" />

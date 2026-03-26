@@ -8,8 +8,9 @@
 //   Bước 3: 5 việc song song (Image, Subtitle, Music, SFX, Footage)
 //   Bước 4: Effects (sau khi Image xong)
 //
-// Track cố định: V1=ảnh, V2=footage, V3=phụ đề, A1=SFX, A2=voice, A3=nhạc nền
-// 24fps mặc định
+// Track cố định 7V+5A: V1=Video AI, V2=Ref Images, V3=Adjustment, V4=Text,
+// V5=Số Chương, V6=Tên Chương, V7=Footage | A1=SFX Video, A2=VO, A3=SFX Text,
+// A4=SFX Ref, A5=Nhạc Nền | 24fps mặc định
 
 import type {
     AutoMediaConfig,
@@ -251,6 +252,9 @@ export async function runAutoMedia(
     deps: AutoMediaDependencies,
     onStepUpdate: OnStepUpdate
 ): Promise<void> {
+    // ⚠️ Bug fix #14: abort controller cũ nếu đang tồn tại (tránh race condition khi double-click)
+    // Trước đây ghi đè trực tiếp → pipeline cũ vẫn chạy ngầm
+    abortController?.abort()
     abortController = new AbortController()
 
     console.log('[AutoMedia] 🚀 Bắt đầu pipeline...')
@@ -498,7 +502,7 @@ async function runImagePipeline(
         deps.updateImageImport({
             matchedSentences,
             matchResults,
-            selectedTrack: TRACK_LAYOUT.IMAGE_TRACK,
+            selectedTrack: TRACK_LAYOUT.VIDEO_AI_TRACK,
         })
 
         // Bước 2: Tạo clips để import
@@ -566,12 +570,12 @@ async function runImagePipeline(
         checkAbort()
 
         // Bước 4: Import lên DaVinci Track V1
-        onStepUpdate('image', 'running', `📥 Đang import ${clips.length} clips lên Track V${TRACK_LAYOUT.IMAGE_TRACK}...`)
-        await addMediaToTimeline(clips, TRACK_LAYOUT.IMAGE_TRACK)
+        onStepUpdate('image', 'running', `📥 Đang import ${clips.length} clips lên Track V${TRACK_LAYOUT.VIDEO_AI_TRACK}...`)
+        await addMediaToTimeline(clips, TRACK_LAYOUT.VIDEO_AI_TRACK)
 
         // Debug: chi tiết clips đã import
         const debugImg = `total files: ${deps.imageFiles.length} | matched: ${matchResults.filter(r => r.quality === 'matched').length} | clips: ${clips.length} | still→video: ${stillJobs.length}\nSample: ${clips.slice(0, 3).map(c => `"${c.filePath.split('/').pop()}" ${c.startTime.toFixed(1)}-${c.endTime.toFixed(1)}s`).join(' | ')}\nRange: ${clips[0]?.startTime.toFixed(1)}s → ${clips[clips.length-1]?.endTime.toFixed(1)}s`
-        onStepUpdate('image', 'done', `✅ Import ${clips.length} ảnh lên Track V${TRACK_LAYOUT.IMAGE_TRACK}`, undefined, debugImg)
+        onStepUpdate('image', 'done', `✅ Import ${clips.length} ảnh lên Track V${TRACK_LAYOUT.VIDEO_AI_TRACK}`, undefined, debugImg)
 
         // Bước 5: Effects (chạy ngay sau import ảnh, không chờ bước khác)
         if (config.enableEffects) {
@@ -619,14 +623,14 @@ async function runSubtitlePipeline(
         onStepUpdate('subtitle', 'running', `💾 Lưu ${subtitleLines.length} dòng phụ đề...`)
         deps.updateSubtitleData({
             subtitleLines,
-            selectedTrack: TRACK_LAYOUT.SUBTITLE_TRACK,
+            selectedTrack: TRACK_LAYOUT.TEXT_ONSCREEN_TRACK,
         })
 
         checkAbort()
 
         // Import lên DaVinci — giống hệt tab Subtitle
         // Track fallback: nếu selectedTrack = "0" → dùng track 3 (giống tab)
-        const trackToUse = TRACK_LAYOUT.SUBTITLE_TRACK
+        const trackToUse = TRACK_LAYOUT.TEXT_ONSCREEN_TRACK
         onStepUpdate('subtitle', 'running', `📥 Đang import ${subtitleLines.length} phụ đề lên Track V${trackToUse}...`)
 
         const response = await tauriFetch('http://127.0.0.1:56003/', {
@@ -969,7 +973,7 @@ async function runSfxPipeline(
             return
         }
 
-        onStepUpdate('sfx', 'running', `📥 Đang import ${normalizedClips.length} SFX clips lên Track A${TRACK_LAYOUT.SFX_TRACK}...`)
+        onStepUpdate('sfx', 'running', `📥 Đang import ${normalizedClips.length} SFX clips lên Track A${TRACK_LAYOUT.SFX_VIDEO_TRACK}...`)
         const sfxResult2 = await addSfxClipsToTimeline(normalizedClips, 'SFX - AutoSubs')
 
         // Tạo thông tin skipped để hiển thị
@@ -1095,7 +1099,7 @@ async function runEffectsPipeline(
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 func: 'ApplyMotionEffects',
-                trackIndex: TRACK_LAYOUT.IMAGE_TRACK,
+                trackIndex: TRACK_LAYOUT.VIDEO_AI_TRACK,
                 effectType: config.effectType,
                 intensity: config.effectIntensity,
                 fadeDuration: 0.3, // Fade mặc định 0.3s

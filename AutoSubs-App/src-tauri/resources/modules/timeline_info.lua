@@ -194,4 +194,118 @@ function M.GetTrackClipNumbers(state, trackIndex)
     return { clipNumbers = clipNumbers, clipRanges = clipRanges, totalClips = #trackItems }
 end
 
+-- ===== SETUP TIMELINE TRACKS =====
+-- Tự động tạo đủ 7 Video + 5 Audio tracks và đặt tên chuẩn
+-- AN TOÀN: chỉ dùng AddTrack + SetTrackName, KHÔNG xoá track/clip
+function M.SetupTimelineTracks(state, helpers)
+    print("[AutoSubs] ========== SetupTimelineTracks START ==========")
+
+    -- Refresh project state
+    state.project = state.projectManager:GetCurrentProject()
+    local timeline = state.project:GetCurrentTimeline()
+    if not timeline then
+        print("[AutoSubs] ❌ Không có timeline đang mở")
+        return { error = true, message = "Không có timeline đang mở. Vui lòng tạo hoặc mở timeline trước." }
+    end
+
+    local tlName = timeline:GetName() or "Unknown"
+    print("[AutoSubs] Timeline: " .. tlName)
+
+    -- ═══ CẤU HÌNH TRACK CHUẨN ═══
+    local VIDEO_TRACKS = {
+        { index = 1, name = "Video AI" },
+        { index = 2, name = "Ảnh Thực Tế" },
+        { index = 3, name = "Adjustment Layer" },
+        { index = 4, name = "Text Onscreen" },
+        { index = 5, name = "Số Chương" },
+        { index = 6, name = "Tên Chương" },
+        { index = 7, name = "Footage B-roll" },
+    }
+
+    local AUDIO_TRACKS = {
+        { index = 1, name = "SFX Video AI" },
+        { index = 2, name = "VO (Voice)" },
+        { index = 3, name = "SFX Text" },
+        { index = 4, name = "SFX Ảnh Ref" },
+        { index = 5, name = "Nhạc Nền" },
+    }
+
+    local WANT_VIDEO = #VIDEO_TRACKS  -- 7
+    local WANT_AUDIO = #AUDIO_TRACKS  -- 5
+
+    -- ═══ BƯỚC 1: Thêm Video Tracks nếu thiếu ═══
+    local currentVideo = tonumber(timeline:GetTrackCount("video")) or 0
+    print(string.format("[AutoSubs] Video tracks hiện có: %d, cần: %d", currentVideo, WANT_VIDEO))
+
+    while currentVideo < WANT_VIDEO do
+        local ok = timeline:AddTrack("video")
+        currentVideo = tonumber(timeline:GetTrackCount("video")) or currentVideo
+        print(string.format("[AutoSubs]   AddTrack(video) => %s | total=%d", tostring(ok), currentVideo))
+        if not ok then
+            print("[AutoSubs]   ⚠️ AddTrack(video) thất bại, dừng lại")
+            break
+        end
+    end
+
+    -- ═══ BƯỚC 2: Thêm Audio Tracks nếu thiếu (TẤT CẢ MONO) ═══
+    local currentAudio = tonumber(timeline:GetTrackCount("audio")) or 0
+    print(string.format("[AutoSubs] Audio tracks hiện có: %d, cần: %d", currentAudio, WANT_AUDIO))
+
+    while currentAudio < WANT_AUDIO do
+        -- Tất cả audio dùng mono (tránh lỗi 2.0 stereo nghe 2 tai)
+        local ok = timeline:AddTrack("audio", "mono")
+        currentAudio = tonumber(timeline:GetTrackCount("audio")) or currentAudio
+        print(string.format("[AutoSubs]   AddTrack(audio, mono) => %s | total=%d", tostring(ok), currentAudio))
+        if not ok then
+            print("[AutoSubs]   ⚠️ AddTrack(audio) thất bại, dừng lại")
+            break
+        end
+    end
+
+    -- ═══ BƯỚC 3: Đặt tên cho Video Tracks ═══
+    local renamedVideo = 0
+    for _, t in ipairs(VIDEO_TRACKS) do
+        if t.index <= currentVideo then
+            local ok = timeline:SetTrackName("video", t.index, t.name)
+            -- Read-back để xác nhận API thực sự ghi tên hay silently no-op
+            local readBack = timeline:GetTrackName("video", t.index) or "(nil)"
+            local matched = (readBack == t.name)
+            print(string.format("[AutoSubs]   V%d set='%s' ok=%s | readBack='%s' match=%s",
+                t.index, t.name, tostring(ok), readBack, tostring(matched)))
+            if ok and matched then renamedVideo = renamedVideo + 1 end
+        end
+    end
+
+    -- ═══ BƯỚC 4: Đặt tên cho Audio Tracks ═══
+    local renamedAudio = 0
+    for _, t in ipairs(AUDIO_TRACKS) do
+        if t.index <= currentAudio then
+            local ok = timeline:SetTrackName("audio", t.index, t.name)
+            -- Read-back để xác nhận
+            local readBack = timeline:GetTrackName("audio", t.index) or "(nil)"
+            local matched = (readBack == t.name)
+            print(string.format("[AutoSubs]   A%d set='%s' ok=%s | readBack='%s' match=%s",
+                t.index, t.name, tostring(ok), readBack, tostring(matched)))
+            if ok and matched then renamedAudio = renamedAudio + 1 end
+        end
+    end
+
+    -- Refresh timeline display
+    timeline:SetCurrentTimecode(timeline:GetCurrentTimecode())
+
+    local msg = string.format("Đã setup %dV + %dA tracks (renamed %dV + %dA)",
+        currentVideo, currentAudio, renamedVideo, renamedAudio)
+    print("[AutoSubs] ✅ " .. msg)
+    print("[AutoSubs] ========== SetupTimelineTracks DONE ==========")
+
+    return {
+        success = true,
+        videoTracks = currentVideo,
+        audioTracks = currentAudio,
+        renamedVideo = renamedVideo,
+        renamedAudio = renamedAudio,
+        message = msg,
+    }
+end
+
 return M

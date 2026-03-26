@@ -89,6 +89,9 @@ export function SegmentPreview({ segments, isActive }: SegmentPreviewProps) {
     }, [streamedText, scrollToBottom]);
     
     // Optimized streaming with better diff algorithm
+    // ⚠️ Bug fix #15: Lưu animation frame ID để cancel khi cleanup
+    const animFrameRef = useRef<number | null>(null)
+    
     useEffect(() => {
         if (fullText && fullText !== streamedText && !streamingRef.current) {
             setIsStreaming(true)
@@ -114,17 +117,18 @@ export function SegmentPreview({ segments, isActive }: SegmentPreviewProps) {
                         setStreamedText(words.slice(0, currentIndex + 1).join(' '))
                         currentIndex++
                         lastTime = timestamp
-                        requestAnimationFrame(streamFrame)
+                        animFrameRef.current = requestAnimationFrame(streamFrame)
                     } else {
                         setIsStreaming(false)
                         streamingRef.current = false
+                        animFrameRef.current = null
                     }
                 } else {
-                    requestAnimationFrame(streamFrame)
+                    animFrameRef.current = requestAnimationFrame(streamFrame)
                 }
             }
             
-            requestAnimationFrame(streamFrame)
+            animFrameRef.current = requestAnimationFrame(streamFrame)
             
         } else if (!fullText) {
             setStreamedText("")
@@ -134,6 +138,11 @@ export function SegmentPreview({ segments, isActive }: SegmentPreviewProps) {
         
         return () => {
             streamingRef.current = false
+            // ⚠️ Cancel animation frame cũ khi cleanup (tránh chạy ngầm sau unmount)
+            if (animFrameRef.current !== null) {
+                cancelAnimationFrame(animFrameRef.current)
+                animFrameRef.current = null
+            }
         }
     }, [fullText, words]);
     

@@ -58,8 +58,17 @@ export interface SessionManagerReturn {
   /** Bật/tắt auto-save */
   setAutoSaveEnabled: (enabled: boolean) => void;
 
-  /** Lưu session thủ công (Ctrl+S) */
-  saveManualSession: () => Promise<SessionData | null>;
+  /** UI cần hiện prompt đặt tên session (lần đầu Ctrl+S) */
+  needsNameInput: boolean;
+
+  /** Tạo session mới với tên do user đặt */
+  createNamedSession: (name: string) => Promise<SessionData | null>;
+
+  /** Lưu session (Ctrl+S) — nếu chưa có session → set needsNameInput */
+  saveSession: () => Promise<SessionData | null>;
+
+  /** Hủy prompt đặt tên */
+  cancelNameInput: () => void;
 
   /** Khôi phục (restore) một session */
   restoreSession: (sessionId: string) => Promise<boolean>;
@@ -74,41 +83,7 @@ export interface SessionManagerReturn {
   refreshSessions: () => Promise<void>;
 }
 
-// ===== HELPER: TẠO TÊN SESSION TỰ ĐỘNG =====
-
-/**
- * Sinh tên session tự động dựa trên ngữ cảnh hiện tại.
- * Ví dụ: "Timeline A - 12/03 22:30" hoặc "Standalone - video.mp4"
- */
-function generateSessionName(
-  timelineName: string | undefined,
-  fileInput: string | null,
-  isStandaloneMode: boolean,
-  saveType: 'auto' | 'manual'
-): string {
-  // Lấy timestamp hiển thị
-  const now = new Date();
-  const timeStr = now.toLocaleString('vi-VN', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-
-  // Prefix theo loại save
-  const prefix = saveType === 'auto' ? '🔄' : '💾';
-
-  // Tên dựa trên context
-  if (isStandaloneMode && fileInput) {
-    // Lấy tên file từ đường dẫn
-    const fileName = fileInput.split('/').pop()?.split('\\').pop() || fileInput;
-    return `${prefix} ${fileName} — ${timeStr}`;
-  } else if (timelineName) {
-    return `${prefix} ${timelineName} — ${timeStr}`;
-  } else {
-    return `${prefix} Session — ${timeStr}`;
-  }
-}
+// (Đã bỏ helper generateSessionName — user tự đặt tên session)
 
 // ===== HOOK CHÍNH =====
 
@@ -167,7 +142,7 @@ export function useSessionManager(callbacks?: SessionRestoreCallbacks) {
    */
   const collectCurrentState = useCallback(() => {
     const state = stateRef.current;
-    return {
+    const snapshot = {
       subtitles: state.subtitles,
       speakers: state.speakers,
       settings: state.settings,
@@ -180,71 +155,95 @@ export function useSessionManager(callbacks?: SessionRestoreCallbacks) {
       // ⭐ Kèm theo debug logs (request/response) nếu có
       debugLogs: getDebugLogs(),
     };
+    // Debug: log xem matchingSentences có bị thiếu khi save không
+    console.log('[SessionManager] 📸 collectCurrentState:', {
+      matchingSentences: state.project?.matchingSentences?.length ?? 'null/undefined',
+      subtitles: state.subtitles?.length ?? 0,
+      projectKeys: state.project ? Object.keys(state.project).filter(k => (state.project as any)[k] != null).join(', ') : 'null',
+    });
+    return snapshot;
   }, []);
 
-  // ===== LƯU SESSION (CẢ THỦ CÔNG Ctrl+S LẪN AUTO-SAVE) =====
-  // Logic chung: đã có currentSession → cập nhật (overwrite), chưa có → tạo mới
+  // ===== TRẠNG THÁI: CẦN ĐẶT TÊN SESSION =====
+  // Khi Ctrl+S lần đầu (chưa có session) → hiện prompt đặt tên
+  const [needsNameInput, setNeedsNameInput] = useState(false);
+
+  // ===== TẠO SESSION MỚI VỚI TÊN DO USER ĐẶT =====
 
   /**
-   * Lưu session: nếu đã có session active thì UPDATE, chưa có thì TẠO MỚI.
-   * Ctrl+S và auto-save đều gọi hàm này.
-   * @param source - 'manual' (Ctrl+S) hoặc 'auto' (timer) — chỉ dùng cho log
+   * Tạo session mới với tên user nhập.
+   * Gọi sau khi user đặt tên ở prompt.
    */
-  const saveCurrentSession = useCallback(async (source: 'manual' | 'auto' = 'manual'): Promise<SessionData | null> => {
+  const createNamedSession = useCallback(async (name: string): Promise<SessionData | null> => {
     try {
       const currentState = collectCurrentState();
-      const state = stateRef.current;
 
-      // Lấy ID session đang active (nếu có)
-      const activeId = currentSessionRef.current?.id || null;
-
-      if (activeId) {
-        // ===== CẬP NHẬT session đang active =====
-        const updated = await updateSession(activeId, {
-          // Giữ nguyên tên cũ (user đã đổi tên thì giữ)
-          ...currentState,
-        });
-
-        if (updated) {
-          setLastSavedAt(Date.now());
-          updateCurrentSession(updated);
-          await refreshSessions();
-          console.log(`[SessionManager] 💾 Đã cập nhật session (${source}):`, updated.name);
-          return updated;
-        }
-
-        // Nếu update thất bại (session đã bị xóa?) → tạo mới bên dưới
-        console.warn('[SessionManager] ⚠️ Update thất bại, tạo session mới...');
-      }
-
-      // ===== TẠO MỚI session =====
       const session = await saveSession({
-        name: generateSessionName(
-          state.timelineInfo?.name,
-          currentState.fileInput,
-          state.settings.isStandaloneMode,
-          source
-        ),
-        saveType: source, // Chỉ dùng cho badge hiển thị lần đầu
+        name: name.trim() || 'Session mới',
         ...currentState,
       });
 
       setLastSavedAt(Date.now());
       updateCurrentSession(session);
+      setNeedsNameInput(false);
       await refreshSessions();
 
-      console.log(`[SessionManager] 💾 Đã tạo session mới (${source}):`, session.name);
+      console.log('[SessionManager] 💾 Đã tạo session:', session.name);
       return session;
     } catch (error) {
-      console.error(`[SessionManager] ❌ Lỗi lưu session (${source}):`, error);
+      console.error('[SessionManager] ❌ Lỗi tạo session:', error);
       return null;
     }
-  }, [collectCurrentState]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshSessions stable (useCallback([]))
+  }, [collectCurrentState, updateCurrentSession]);
 
-  // Wrapper cho Ctrl+S (giữ interface cũ)
-  const saveManualSession = useCallback(async (): Promise<SessionData | null> => {
-    return saveCurrentSession('manual');
-  }, [saveCurrentSession]);
+  /** Hủy prompt đặt tên */
+  const cancelNameInput = useCallback(() => {
+    setNeedsNameInput(false);
+  }, []);
+
+  // ===== LƯU SESSION (Ctrl+S + Auto-save đều dùng) =====
+
+  /**
+   * Lưu session hiện tại:
+   * - Đã có session → UPDATE đè lên (không tạo mới)
+   * - Chưa có session → báo UI hiện prompt đặt tên
+   */
+  const saveCurrentSession = useCallback(async (): Promise<SessionData | null> => {
+    // Lấy ID session đang active
+    const activeId = currentSessionRef.current?.id || null;
+
+    if (!activeId) {
+      // Chưa có session → yêu cầu user đặt tên
+      setNeedsNameInput(true);
+      console.log('[SessionManager] 📝 Chưa có session → hiện prompt đặt tên');
+      return null;
+    }
+
+    // Đã có session → UPDATE (đè lên bản cũ)
+    try {
+      const currentState = collectCurrentState();
+      const updated = await updateSession(activeId, currentState);
+
+      if (updated) {
+        setLastSavedAt(Date.now());
+        updateCurrentSession(updated);
+        await refreshSessions();
+        console.log('[SessionManager] 💾 Đã cập nhật session:', updated.name);
+        return updated;
+      }
+
+      // Session bị xóa rồi → yêu cầu đặt tên mới
+      console.warn('[SessionManager] ⚠️ Session không còn tồn tại → hiện prompt đặt tên');
+      updateCurrentSession(null);
+      setNeedsNameInput(true);
+      return null;
+    } catch (error) {
+      console.error('[SessionManager] ❌ Lỗi cập nhật session:', error);
+      return null;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshSessions stable (useCallback([]))
+  }, [collectCurrentState, updateCurrentSession]);
 
   // ===== TỰ ĐỘNG LƯU (MỖI 5 PHÚT) =====
 
@@ -252,13 +251,27 @@ export function useSessionManager(callbacks?: SessionRestoreCallbacks) {
     // Bỏ qua nếu auto-save tắt
     if (!stateRef.current.autoSaveEnabled) return;
 
-    // Bỏ qua nếu không có dữ liệu gì để lưu
-    if (stateRef.current.subtitles.length === 0 && !stateRef.current.timelineInfo?.timelineId) {
+    // ⭐ Bỏ qua nếu CHƯA CÓ session → không tự tạo mới
+    // User phải Ctrl+S lần đầu để tạo session
+    if (!currentSessionRef.current) {
+      return;
+    }
+
+    // ⭐ Kiểm tra có dữ liệu gì để lưu không (fix Bug #3)
+    const state = stateRef.current;
+    const hasSubtitles = state.subtitles.length > 0;
+    const hasTimeline = !!state.timelineInfo?.timelineId;
+    const hasProjectData = !!(state.project?.matchingSentences?.length
+      || state.project?.masterSrt?.length
+      || state.project?.scriptText?.trim());
+
+    if (!hasSubtitles && !hasTimeline && !hasProjectData) {
       console.log('[SessionManager] ⏭️ Bỏ qua auto-save: không có dữ liệu');
       return;
     }
 
-    await saveCurrentSession('auto');
+    // Đã có session → cập nhật (đè lên, không tạo mới)
+    await saveCurrentSession();
   }, [saveCurrentSession]);
 
   // ===== DEBOUNCED AUTO-SAVE KHI PROJECT DATA THAY ĐỔI =====
@@ -303,7 +316,7 @@ export function useSessionManager(callbacks?: SessionRestoreCallbacks) {
     // Debounce 10 giây — đủ thời gian cho data ổn định
     debounceSaveRef.current = setTimeout(() => {
       console.log('[SessionManager] 🔄 Project data thay đổi → auto-save debounced (10s)');
-      saveCurrentSession('auto');
+      saveCurrentSession();
     }, 10000);
 
     return () => {
@@ -336,8 +349,20 @@ export function useSessionManager(callbacks?: SessionRestoreCallbacks) {
 
       // ⭐ Khôi phục toàn bộ project data (Music, SFX, VoicePacing, Media Import...)
       if (session.projectData) {
-        setProjectData(session.projectData as ProjectData);
+        const pd = session.projectData as ProjectData;
+        // Debug: log chi tiết để bắt lỗi mất dữ liệu
+        console.log('[SessionManager] 📦 Restore projectData:', {
+          matchingSentences: pd.matchingSentences?.length ?? 'null/undefined',
+          matchingFolder: pd.matchingFolder || 'null',
+          scriptText: pd.scriptText ? `${pd.scriptText.length} ký tự` : 'null',
+          masterSrt: pd.masterSrt?.length ?? 'null',
+          mediaImport_matched: pd.mediaImport?.matchedSentences?.length ?? 'null',
+          mediaImport_files: pd.mediaImport?.mediaFiles?.length ?? 'null',
+        });
+        setProjectData(pd);
         console.log('[SessionManager] 📦 Đã khôi phục project data');
+      } else {
+        console.warn('[SessionManager] ⚠️ session.projectData = null/undefined → KHÔNG khôi phục');
       }
 
       // ⭐ Khôi phục debug logs (request/response từ Debug Panel)
@@ -370,7 +395,7 @@ export function useSessionManager(callbacks?: SessionRestoreCallbacks) {
       console.error('[SessionManager] ❌ Lỗi khôi phục session:', error);
       return false;
     }
-  }, [setSubtitles, setSpeakers, setCurrentTranscriptFilename, callbacks]);
+  }, [setSubtitles, setSpeakers, setCurrentTranscriptFilename, setProjectData, updateCurrentSession, callbacks]);
 
   // ===== XÓA SESSION =====
 
@@ -434,7 +459,7 @@ export function useSessionManager(callbacks?: SessionRestoreCallbacks) {
       performAutoSave();
     }, AUTO_SAVE_INTERVAL_MS);
 
-    console.log('[SessionManager] ⏰ Bắt đầu auto-save timer (5 phút)');
+    console.log('[SessionManager] ⏰ Auto-save timer bật (5 phút, chỉ update session hiện tại)');
 
     return () => {
       clearInterval(timer);
@@ -449,8 +474,8 @@ export function useSessionManager(callbacks?: SessionRestoreCallbacks) {
       // Ctrl+S (Windows/Linux) hoặc Cmd+S (macOS)
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault(); // Ngăn hành vi mặc định của trình duyệt
-        console.log('[SessionManager] ⌨️ Ctrl+S detected — lưu session thủ công');
-        saveManualSession();
+        console.log('[SessionManager] ⌨️ Ctrl+S → lưu session');
+        saveCurrentSession();
       }
     };
 
@@ -459,7 +484,7 @@ export function useSessionManager(callbacks?: SessionRestoreCallbacks) {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [saveManualSession]);
+  }, [saveCurrentSession]);
 
   // ===== RETURN =====
 
@@ -470,7 +495,10 @@ export function useSessionManager(callbacks?: SessionRestoreCallbacks) {
     lastSavedAt,
     autoSaveEnabled,
     setAutoSaveEnabled,
-    saveManualSession,
+    needsNameInput,
+    createNamedSession,
+    saveSession: saveCurrentSession,
+    cancelNameInput,
     restoreSession,
     removeSession,
     renameSessionById,

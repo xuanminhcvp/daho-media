@@ -29,8 +29,8 @@ const INTENSITY_LEVELS = [
 // ======================== COMPONENT ========================
 
 export function EffectsTab() {
-    // State UI
-    const [trackIndex, setTrackIndex] = React.useState("1")
+    // State UI — Track cố định V1 (Video AI), không cần chọn
+    const trackIndex = "1" // V1 — Video AI (cố định)
     const [effectType, setEffectType] = React.useState<string>("kenburns")
     const [intensity, setIntensity] = React.useState<string>("subtle")
     const [fadeEnabled, setFadeEnabled] = React.useState(true)     // Bật Fade In/Out mặc định
@@ -76,7 +76,7 @@ export function EffectsTab() {
         } finally {
             setIsApplying(false)
         }
-    }, [trackIndex, effectType, intensity, fadeEnabled, fadeDuration])
+    }, [effectType, intensity, fadeEnabled, fadeDuration])
 
     return (
         <div className="flex flex-col gap-4 p-4 overflow-y-auto h-full">
@@ -89,21 +89,11 @@ export function EffectsTab() {
                 Thêm Ken Burns (zoom + pan) và Camera Shake cho ảnh tĩnh trên timeline
             </p>
 
-            {/* Chọn Track */}
+            {/* Track cố định V1 — chỉ hiện label, không cho chọn */}
             <div className="space-y-1.5">
                 <Label className="text-xs font-medium">Track áp dụng</Label>
-                <div className="flex gap-1.5">
-                    {["1", "2", "3", "4"].map(t => (
-                        <Button
-                            key={t}
-                            variant={trackIndex === t ? "secondary" : "outline"}
-                            size="sm"
-                            className="h-7 px-3 text-xs"
-                            onClick={() => setTrackIndex(t)}
-                        >
-                            V{t}
-                        </Button>
-                    ))}
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-md border bg-muted/30 text-xs text-muted-foreground">
+                    📹 Track V1 — Video AI (cố định)
                 </div>
             </div>
 

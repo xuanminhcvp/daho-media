@@ -61,7 +61,7 @@ export function generateSrt(subtitles: Subtitle[], includeSpeakerLabels: boolean
 // --- Helper function for robust SRT parsing ---
 export function parseSrt(srtData: string) {
     const regex = /(\d+)\s*\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\s*\n([\s\S]*?)(?=\n{2,}|$)/g;
-    const segments: { id: string; start: number; end: number; text: string }[] = [];
+    const segments: { id: number; start: number; end: number; text: string }[] = [];
     let match;
     let idx = 0;
     while ((match = regex.exec(srtData)) !== null) {
@@ -69,7 +69,7 @@ export function parseSrt(srtData: string) {
         const startInSeconds = srtTimeToSeconds(start);
         const endInSeconds = srtTimeToSeconds(end);
         segments.push({
-            id: idx.toString(),
+            id: idx, // ⚠️ Bug fix: dùng number (khớp interface Subtitle.id: number)
             start: startInSeconds,
             end: endInSeconds,
             text: text.replace(/\n/g, ' ').trim(),

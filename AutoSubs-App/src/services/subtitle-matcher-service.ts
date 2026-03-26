@@ -16,7 +16,7 @@ import { join } from "@tauri-apps/api/path";
 // ======================== CẤU HÌNH AI ========================
 const AI_CONFIG = {
     baseUrl: "https://ezaiapi.com/v1",
-    apiKey: "sk-570848c49fda787c748cd58f3a21a1d95f00afd87a5cba6e",
+    // apiKey: đã chuyển sang nhập qua Settings UI (không hardcode)
     model: "claude-sonnet-4-6",
     batchCount: 6,        // Documentary 25-27min: 6 phần (ngắn hơn Stories → ít batch hơn)
     maxConcurrent: 5,     // Tối đa 5 request đồng thời (API giới hạn 6, chừa 1 buffer)

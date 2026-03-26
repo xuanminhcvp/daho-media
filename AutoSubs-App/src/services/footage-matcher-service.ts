@@ -19,7 +19,7 @@ const BATCH_SIZE = 50;
 // Claude config — cùng cấu hình với audio-director-service
 const CLAUDE_CONFIG = {
     baseUrl: "https://ezaiapi.com/v1",
-    apiKey: "sk-570848c49fda787c748cd58f3a21a1d95f00afd87a5cba6e",
+    // apiKey: đã chuyển sang nhập qua Settings UI (không hardcode)
     model: "claude-sonnet-4-6",
     timeoutMs: 900000,  // 15 phút
     maxTokens: 16000,
