@@ -4,7 +4,7 @@
 // Tích hợp Session Manager: auto-save mỗi 5 phút, Ctrl+S lưu session, khôi phục session
 
 import * as React from "react"
-import { FileVideo, Subtitles, Mic, Music, Image as ImageIcon, Save } from "lucide-react"
+import { FileVideo, Subtitles, Mic, Music, Image as ImageIcon, Save, Bot, PenLine } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
@@ -26,6 +26,8 @@ import { ImageImportPanel } from "@/components/media/image-import-panel"
 import { VoicePacingPanel } from "@/components/voice/voice-pacing-panel"
 import { PostProductionPanel } from "@/components/postprod/post-production-panel"
 import { MasterSrtTab } from "@/components/postprod/master-srt-tab"
+import { GeminiScanPanel } from "@/components/gemini-scan/GeminiScanPanel"
+import GeminiManualScanPanel from "@/components/gemini-scan/GeminiManualScanPanel"
 import { DebugPanel } from "@/components/debug/debug-panel"
 import { useSessionManager } from "@/hooks/useSessionManager"
 import { SessionManagerDialog } from "@/components/dialogs/session-manager-dialog"
@@ -33,7 +35,7 @@ import { useProject } from "@/contexts/ProjectContext"
 import { useTranscript } from "@/contexts/TranscriptContext"
 
 // Các tab có sẵn trong panel bên phải
-type RightPanelTab = "subtitles" | "master-srt" | "media-import" | "image-import" | "voice-pacing" | "post-production"
+type RightPanelTab = "subtitles" | "master-srt" | "media-import" | "image-import" | "voice-pacing" | "post-production" | "gemini-scan" | "manual-scan"
 
 // ======================== LIVE DATA SUMMARY ========================
 // Hiển thị tổng quan dữ liệu hiện đang có trong app (lấy từ context live)
@@ -374,6 +376,40 @@ export function RightPanelTabs() {
                     <TooltipContent side="bottom">Nhạc nền, SFX, auto ducking — AI tự động</TooltipContent>
                 </Tooltip>
 
+                {/* Tab Gemini Scan — scan ảnh/audio qua Gemini browser (không cần API key) */}
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <Button
+                            variant={activeTab === "gemini-scan" ? "secondary" : "ghost"}
+                            size="sm"
+                            className="h-8 px-3 gap-1.5 text-xs"
+                            onClick={() => setActiveTab("gemini-scan")}
+                            style={activeTab === "gemini-scan" ? { color: '#a855f7' } : undefined}
+                        >
+                            <Bot className="h-3.5 w-3.5" />
+                            Gemini Scan
+                        </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">Scan ảnh/audio qua Gemini browser — không cần API key</TooltipContent>
+                </Tooltip>
+
+                {/* Tab Scan Thủ Công — tự upload Gemini, paste JSON về */}
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <Button
+                            variant={activeTab === "manual-scan" ? "secondary" : "ghost"}
+                            size="sm"
+                            className="h-8 px-3 gap-1.5 text-xs"
+                            onClick={() => setActiveTab("manual-scan")}
+                            style={activeTab === "manual-scan" ? { color: '#fbbf24' } : undefined}
+                        >
+                            <PenLine className="h-3.5 w-3.5" />
+                            Scan Thủ Công
+                        </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">Tự upload lên Gemini → paste JSON về → lưu metadata</TooltipContent>
+                </Tooltip>
+
                 {/* Spacer đẩy indicator session sang phải */}
                 <div className="flex-1" />
 
@@ -464,6 +500,17 @@ export function RightPanelTabs() {
                 {activeTab === "image-import" && <ImageImportPanel />}
                 {activeTab === "voice-pacing" && <VoicePacingPanel />}
                 {activeTab === "post-production" && <PostProductionPanel />}
+                {/* Tab Gemini Scan (auto) */}
+                {activeTab === "gemini-scan" && <GeminiScanPanel />}
+                {/* Tab Scan Thủ Công — user tự upload Gemini, paste JSON */}
+                {activeTab === "manual-scan" && (
+                    <div style={{
+                        height: '100%', overflowY: 'auto',
+                        padding: '12px 16px',
+                    }}>
+                        <GeminiManualScanPanel />
+                    </div>
+                )}
             </div>
             {/* Debug Panel — chỉ hiển thị khi dev, ẩn hoàn toàn khi build production */}
             {import.meta.env.DEV && <DebugPanel />}
