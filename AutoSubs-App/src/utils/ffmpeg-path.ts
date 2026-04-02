@@ -20,9 +20,11 @@ import { appCacheDir, join } from "@tauri-apps/api/path";
  * Thứ tự: Bundled → Homebrew ARM → Homebrew Intel → System
  */
 const FFMPEG_CANDIDATES = [
-    // Bundled trong app (Tauri sidecar — tên có suffix architecture)
+    // === DahoMedia.app (tên app mới — ưu tiên cao nhất) ===
+    "/Applications/DahoMedia.app/Contents/MacOS/ffmpeg-aarch64-apple-darwin",
+    "/Applications/DahoMedia.app/Contents/MacOS/ffmpeg",
+    // === AutoSubs_Media.app (tên app cũ — backward compatibility) ===
     "/Applications/AutoSubs_Media.app/Contents/MacOS/ffmpeg-aarch64-apple-darwin",
-    // Bundled trong app (tên ngắn — có khi Tauri export tên ngắn)
     "/Applications/AutoSubs_Media.app/Contents/MacOS/ffmpeg",
     // Homebrew ARM (M1/M2/M3/M4)
     "/opt/homebrew/bin/ffmpeg",
@@ -33,9 +35,11 @@ const FFMPEG_CANDIDATES = [
 ];
 
 const FFPROBE_CANDIDATES = [
-    // Bundled trong app (Tauri sidecar — tên có suffix architecture)
+    // === DahoMedia.app (tên app mới — ưu tiên cao nhất) ===
+    "/Applications/DahoMedia.app/Contents/MacOS/ffprobe-aarch64-apple-darwin",
+    "/Applications/DahoMedia.app/Contents/MacOS/ffprobe",
+    // === AutoSubs_Media.app (tên app cũ — backward compatibility) ===
     "/Applications/AutoSubs_Media.app/Contents/MacOS/ffprobe-aarch64-apple-darwin",
-    // Bundled trong app (tên ngắn)
     "/Applications/AutoSubs_Media.app/Contents/MacOS/ffprobe",
     // Homebrew ARM (M1/M2/M3/M4)
     "/opt/homebrew/bin/ffprobe",
