@@ -76,8 +76,8 @@ function AppContent() {
         )}
       </div>
 
-      {/* Bug Reporter + Annotation Mode — floating, zài nọi trên toàn app */}
-      <BugReporterPanel />
+      {/* Bug Reporter + Annotation Mode — CHỈ hiện trong DEV mode, ẩn khi build production */}
+      {import.meta.env.DEV && <BugReporterPanel />}
     </TooltipProvider>
   )
 }

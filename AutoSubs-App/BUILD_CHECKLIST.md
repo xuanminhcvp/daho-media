@@ -1,7 +1,7 @@
-# 🔧 BUILD CHECKLIST — AutoSubs Media (macOS)
+# 🔧 BUILD CHECKLIST — DahoMedia (macOS)
 
-> Tài liệu ghi nhớ các lỗi đã gặp khi build app cho máy khác.
-> **Mỗi lần build `.pkg` cho người dùng, đọc lại file này trước!**
+> Tài liệu ghi nhớ tất cả các bước khi build app cho user.
+> **Mỗi lần build `.pkg`, đọc lại file này trước!**
 
 ---
 
@@ -9,7 +9,7 @@
 
 ### 1. FFmpeg binary — Patch dylib paths
 
-**Lỗi gặp:** App trên máy user báo `Library not loaded: /opt/homebrew/...` vì ffmpeg binary
+**Lỗi thường gặp:** App trên máy user báo `Library not loaded: /opt/homebrew/...` vì ffmpeg binary
 vẫn trỏ tới đường dẫn Homebrew của máy dev.
 
 **Quy tắc:**
@@ -26,88 +26,169 @@ otool -L src-tauri/binaries/ffmpeg-aarch64-apple-darwin | grep homebrew
 
 ### 2. FFprobe — Phải bundle cùng app
 
-**Lỗi gặp:** Frontend không tìm thấy `ffprobe` → footage scan hiện `0s / Unknown`,
-audio convert .wav → .mp3 thất bại.
-
 **Quy tắc:**
 - File `binaries/ffprobe-aarch64-apple-darwin` phải tồn tại
 - Phải patch dylib paths giống ffmpeg (bước 1)
-- Phải có trong `tauri.conf.json` → `externalBin`:
-  ```json
-  "externalBin": [
-    "binaries/ffmpeg",
-    "binaries/ffprobe"
-  ]
-  ```
+- Phải có trong `tauri.conf.json` → `externalBin`
 
 **Kiểm tra:**
 ```bash
 ls src-tauri/binaries/ff*
 # Phải thấy cả: ffmpeg-aarch64-apple-darwin VÀ ffprobe-aarch64-apple-darwin
-
-otool -L src-tauri/binaries/ffprobe-aarch64-apple-darwin | grep homebrew
-# Kết quả phải TRỐNG
 ```
 
-### 3. Frontend ffmpeg path — Phải có đường dẫn bundled
+### 3. AutoSubs.lua — Đường dẫn phải là Production
 
-**Lỗi gặp:** `src/utils/ffmpeg-path.ts` chỉ tìm Homebrew paths → máy user không có Homebrew
-→ `command not found`.
-
-**Quy tắc:**
-- `FFMPEG_CANDIDATES` phải có: `/Applications/AutoSubs_Media.app/Contents/MacOS/ffmpeg`
-- `FFPROBE_CANDIDATES` phải có: `/Applications/AutoSubs_Media.app/Contents/MacOS/ffprobe`
-- Đường dẫn bundled phải đứng **ĐẦU TIÊN** trong danh sách (ưu tiên cao nhất)
-
-### 4. VAD — Không feed audio quá dài vào 1 lần
-
-**Lỗi gặp:** Audio 53 phút (3210s) → `segments_from_samples()` treo vô hạn trên máy mới.
-Máy dev chạy được vì đã có cache/model compiled sẵn.
+**Lỗi thường gặp:** Script Lua vẫn để `DEV_MODE = true` → tìm app ở binary dev thay vì `/Applications/`
 
 **Quy tắc:**
-- VAD phải chia audio thành chunks (hiện tại: 5 phút / chunk)
-- Mỗi chunk phải emit progress về frontend
-- Code nằm trong `src-tauri/crates/transcription-engine/src/vad.rs`
+- Mở file `src-tauri/resources/AutoSubs.lua`
+- Đảm bảo `DEV_MODE = false`
+- Đảm bảo `app_executable = "/Applications/DahoMedia.app/Contents/MacOS/DahoMedia"`
+- **KHÔNG có đường dẫn cứng** kiểu `/Users/may1/...` trong file
 
-### 5. Dylib frameworks — Phải đầy đủ
+**Kiểm tra:**
+```bash
+grep -n "DEV_MODE\|/Users/" src-tauri/resources/AutoSubs.lua
+# DEV_MODE phải = false
+# Không được có /Users/may1 hay bất kỳ đường dẫn cứng nào
+```
+
+### 4. BugReporter + Annotation Mode — Phải ẩn trong production
 
 **Quy tắc:**
-- Tất cả `.dylib` mà ffmpeg/ffprobe cần phải có trong `tauri.conf.json` → `frameworks`
-- Kiểm tra bằng:
-  ```bash
-  otool -L src-tauri/binaries/ffmpeg-aarch64-apple-darwin
-  # Mỗi lib @executable_path/../Frameworks/xxx.dylib phải tồn tại trong binaries/ffmpeg-dylibs/
-  ```
+- File `src/App.tsx` → BugReporterPanel được wrap bằng `import.meta.env.DEV`
+- Khi build production → tự động bị loại bỏ
+- Debug Panel trong `right-panel-tabs.tsx` cũng chỉ hiện khi DEV
+
+**Kiểm tra sau build:**
+```bash
+# Tìm BugReporter trong output JS → phải không có hoặc bị tree-shake
+grep -r "BugReporter" dist/assets/ | wc -l
+# Kết quả nên = 0
+```
+
+### 5. License System — Thống nhất BLAUTO
+
+**Quy tắc:**
+- Chỉ có **1 hệ thống license duy nhất**: `license-gate.tsx` trong `App.tsx`
+- **KHÔNG** có license gate cũ trong `main.tsx` (đã xóa)
+- Rust backend (`license.rs`): SECRET_KEY = `BlackAuto_2026_Internal_Team_Secret_DO_NOT_SHARE`
+- Prefix key: `BLAUTO`
+- Key format: `BLAUTO-{email_hex}-{device_fp_8}-{hmac_16}`
+- Mỗi key **ràng buộc mã máy** (device fingerprint) — không dùng trên máy khác được
+
+**Kiểm tra:**
+```bash
+# Đảm bảo không có license gate cũ trong main.tsx
+grep -n "LicenseGate\|isLicenseActivated" src/main.tsx
+# Kết quả phải TRỐNG
+
+# Đảm bảo Rust dùng đúng SECRET_KEY
+grep "SECRET_KEY" src-tauri/src/license.rs
+# Phải thấy: BlackAuto_2026_Internal_Team_Secret_DO_NOT_SHARE
+```
+
+### 6. Profile Manager — Mật khẩu Admin riêng
+
+**Quy tắc:**
+- PasswordGate dùng mật khẩu cố định (không phải license key)
+- Mật khẩu: `Daho@2026`
+- User bình thường không vào được phần chỉnh sửa Prompt/Profile
+
+### 7. Obfuscation + Xóa debug logs
+
+**Đã cấu hình sẵn (tự động khi build production):**
+- ✅ `vite.config.ts` → `vite-plugin-obfuscator`: mã hóa tên biến, string literals
+- ✅ `vite.config.ts` → `esbuild.drop`: xóa sạch `console.log()` và `debugger`
+- ✅ `debug-logger.ts` → `addDebugLog()` return sớm khi production
 
 ---
 
-## 📝 Quy trình build hoàn chỉnh
+## 📝 Quy trình build PRODUCTION hoàn chỉnh
 
 ```bash
-# 1. Kill tiến trình cũ
+# 1. Kill tiến trình cũ (nếu đang chạy dev)
 pkill -f "target/debug/autosubs" 2>/dev/null
+pkill -f "target/release/autosubs" 2>/dev/null
 
-# 2. Patch ffmpeg (nếu copy mới từ Homebrew)
+# 2. Kiểm tra đường dẫn trong Lua script
+grep -n "DEV_MODE\|/Users/" src-tauri/resources/AutoSubs.lua
+
+# 3. Kiểm tra không còn license gate cũ trong main.tsx
+grep -n "LicenseGate\|isLicenseActivated" src/main.tsx
+
+# 4. Patch ffmpeg (nếu copy mới từ Homebrew)
 ./scripts/patch_ffmpeg_macos.sh
 
-# 3. Verify
-otool -L src-tauri/binaries/ffmpeg-aarch64-apple-darwin | grep homebrew  # phải trống
-otool -L src-tauri/binaries/ffprobe-aarch64-apple-darwin | grep homebrew # phải trống
+# 5. Verify ffmpeg
+otool -L src-tauri/binaries/ffmpeg-aarch64-apple-darwin | grep homebrew   # phải trống
+otool -L src-tauri/binaries/ffprobe-aarch64-apple-darwin | grep homebrew  # phải trống
 
-# 4. Build
-npm run tauri build -- --target aarch64-apple-darwin
+# 6. Build production
+npm run tauri build
 
-# 5. Verify app bundle
-ls src-tauri/target/aarch64-apple-darwin/release/bundle/macos/AutoSubs_Media.app/Contents/MacOS/
-# Phải thấy: autosubs, ffmpeg, ffprobe
-
-# 6. Tạo .pkg
+# 7. Tạo file .pkg
 pkgbuild \
-  --root src-tauri/target/aarch64-apple-darwin/release/bundle/macos/AutoSubs_Media.app \
-  --install-location /Applications/AutoSubs_Media.app \
-  --identifier com.autosubs-media \
-  --version X.Y.Z \
-  ~/Downloads/AutoSubs-Mac-ARM.X.Y.Z.pkg
+  --component src-tauri/target/release/bundle/macos/DahoMedia.app \
+  --install-location /Applications \
+  src-tauri/target/release/bundle/macos/DahoMedia_X.Y.Z.pkg
+
+# 8. Upload lên GitHub Release
+gh release upload vX.Y.Z src-tauri/target/release/bundle/macos/DahoMedia_X.Y.Z.pkg --clobber
+```
+
+---
+
+## 🔑 Cấp License Key cho user
+
+**Quy trình:**
+1. User mở app → thấy **Mã thiết bị** (8 ký tự hex) + nút Copy
+2. User gửi **Mã thiết bị** + **Email** cho Admin
+3. Admin chạy lệnh tạo key:
+
+```bash
+node -e "
+const crypto = require('crypto');
+const SECRET_KEY = 'BlackAuto_2026_Internal_Team_Secret_DO_NOT_SHARE';
+const email = 'EMAIL_CUA_USER';
+const deviceFp = 'MA_THIET_BI';
+const hex = Buffer.from(email, 'utf8').toString('hex').toUpperCase();
+const chunks = [];
+for(let i=0; i<hex.length; i+=8) chunks.push(hex.slice(i, i+8));
+const dataString = chunks.join('-') + '-' + deviceFp;
+const sig = crypto.createHmac('sha256', SECRET_KEY).update(dataString).digest('hex').substring(0, 16).toUpperCase();
+console.log('BLAUTO-' + dataString + '-' + sig);
+"
+```
+
+4. Gửi key cho user → user dán vào app → Kích hoạt
+
+**Lưu ý:**
+- Mỗi key chỉ hoạt động trên đúng 1 máy (ràng buộc device fingerprint)
+- Key mang sang máy khác → bị chặn
+- Nếu user đổi máy → cần cấp key mới với mã máy mới
+
+---
+
+## 🧹 Xóa sạch app trên máy user (nếu cần cài lại)
+
+```bash
+# Xóa app
+sudo rm -rf /Applications/DahoMedia.app
+
+# Xóa dữ liệu hệ thống (License, config)
+rm -rf ~/Library/Application\ Support/com.dahomedia.app
+rm -rf ~/Library/Caches/com.dahomedia.app
+rm -rf ~/Library/WebKit/com.dahomedia.app
+rm -f ~/Library/Preferences/com.dahomedia.app.plist
+
+# Xóa script DaVinci Resolve (nếu có)
+rm -f ~/Library/Application\ Support/Blackmagic\ Design/DaVinci\ Resolve/Fusion/Scripts/Utility/AutoSubs.lua
+rm -f ~/Library/Application\ Support/Blackmagic\ Design/DaVinci\ Resolve/Fusion/Scripts/Utility/AutoSubs.py
+
+# (TÙY CHỌN) Xóa thư mục Media — CẢNH BÁO: mất hết ảnh/nhạc đã lưu
+# rm -rf ~/Desktop/Auto_media
 ```
 
 ---
@@ -118,112 +199,17 @@ pkgbuild \
 |-----|------------|------------|
 | `Library not loaded: /opt/homebrew/...` | ffmpeg chưa patch dylib | Chạy `patch_ffmpeg_macos.sh` |
 | `__LINKEDIT segment` error | Strip signature trước khi patch | **KHÔNG** strip signature trước |
-| `ffprobe: command not found` | Chưa bundle ffprobe | Thêm vào `externalBin` + patch |
-| `durationSec: 0` trên máy user | Thiếu ffprobe | Bundle ffprobe |
-| VAD treo với audio dài | Feed cả file vào 1 lần | Chia chunks 5 phút |
-| Progress event x2 | Listener đăng ký 2 lần | Check unlisten() khi unmount |
-| `install_name_tool` im lặng | File read-only | `chmod u+w` trước |
+| BugReporter hiện trên màn hình user | Quên wrap `import.meta.env.DEV` | Kiểm tra `App.tsx` dòng BugReporterPanel |
+| User phải nhập license 2 lần | Có 2 LicenseGate (main.tsx + App.tsx) | Xóa LicenseGate cũ trong `main.tsx` |
+| Key không khớp máy | SECRET_KEY khác nhau giữa script và Rust | Đảm bảo cùng 1 SECRET_KEY |
+| `DEV_MODE = true` trong Lua | Quên đổi sang production | Grep kiểm tra trước build |
+| Đường dẫn cứng `/Users/may1/...` | Hardcode path máy dev | Dùng `os.getenv("HOME")` hoặc dynamic path |
+| Profile Manager hỏi license lần 2 | PasswordGate dùng validateLicenseKey cũ | Dùng mật khẩu cứng `Daho@2026` |
 
 ---
 
-## 📅 Lịch sử lỗi
+## 📅 Lịch sử build
 
-| Version | Ngày | Lỗi | Fix |
-|---------|------|------|-----|
-| 3.0.10 | 2026-03-16 | ffmpeg dylib trỏ Homebrew | Patch install_name_tool |
-| 3.0.12 | 2026-03-17 | Không có log debug transcription | Thêm log chi tiết |
-| 3.0.13 | 2026-03-17 | VAD treo 53 phút audio | Không đủ log |
-| 3.0.14 | 2026-03-17 | VAD treo + thiếu ffprobe | Chunk VAD + bundle ffprobe |
-| 3.0.15 | 2026-03-17 | Tổng hợp tất cả fix | Build ổn định |
-
----
-
-## 🔒 Checklist bảo mật production
-
-### 6. Obfuscation + Xóa debug logs
-
-**Mục đích:** User không đọc được source code JS, không thấy console.log, không thấy Debug Panel.
-
-**Đã cấu hình sẵn (tự động khi build production):**
-- ✅ `vite.config.ts` → `vite-plugin-obfuscator`: mã hóa tên biến, string literals, thêm dead code
-- ✅ `vite.config.ts` → `esbuild.drop`: xóa sạch `console.log()` và `debugger`
-- ✅ `right-panel-tabs.tsx` → Debug Panel chỉ hiện khi `import.meta.env.DEV`
-- ✅ `debug-logger.ts` → `addDebugLog()` return sớm khi production
-
-**Kiểm tra sau build:**
-```bash
-# Kiểm tra output JS không còn console.log
-grep -r "console.log" dist/assets/ | head -5
-# Kết quả phải TRỐNG (hoặc chỉ có code rối)
-
-# Kiểm tra code đã được obfuscate
-cat dist/assets/index-*.js | head -20
-# Phải thấy code rối, không đọc được
-```
-
-### 7. License Key — Xác thực nội bộ
-
-**Mục đích:** Chỉ người có key mới mở được app. Không cần internet, không cần server.
-
-**Cách tạo key cho team member:**
-```bash
-# Chạy script tạo key (trên máy admin)
-python3 scripts/generate_license_key.py "Nguyen Van A"
-# Output: ASUBS-4E67-7579-656E-2056-616E-2041-XXXXXXXXXXXXXXXX
-
-python3 scripts/generate_license_key.py "editor_team_02"
-# Output: ASUBS-6564-6974-6F72-5F74-6561-6D5F-3032-XXXXXXXXXXXXXXXX
-```
-
-**⚠️ QUAN TRỌNG:**
-- Secret key nằm trong `src-tauri/src/license.rs` (dòng `SECRET_KEY`)
-- Secret key trong `scripts/generate_license_key.py` phải **GIỐNG HỆT** với `license.rs`
-- Nếu đổi secret → phải đổi CẢ HAI file + build lại app + tạo key mới
-
-**Kiểm tra:**
-```bash
-# Tạo 1 key test
-python3 scripts/generate_license_key.py "test_user"
-# Nhập key này vào app → phải được kích hoạt
-
-# Thử nhập key sai → app phải báo lỗi
-```
-
----
-
-## 📝 Quy trình build PRODUCTION hoàn chỉnh (cập nhật)
-
-```bash
-# 1. Kill tiến trình cũ
-pkill -f "target/debug/autosubs" 2>/dev/null
-
-# 2. Patch ffmpeg (nếu copy mới từ Homebrew)
-./scripts/patch_ffmpeg_macos.sh
-
-# 3. Verify ffmpeg
-otool -L src-tauri/binaries/ffmpeg-aarch64-apple-darwin | grep homebrew  # phải trống
-otool -L src-tauri/binaries/ffprobe-aarch64-apple-darwin | grep homebrew # phải trống
-
-# 4. Build (NODE_ENV=production tự động bật obfuscation + drop console.log)
-NODE_ENV=production npm run tauri build -- --target aarch64-apple-darwin
-
-# 5. Verify app bundle
-ls src-tauri/target/aarch64-apple-darwin/release/bundle/macos/AutoSubs_Media.app/Contents/MacOS/
-# Phải thấy: autosubs, ffmpeg, ffprobe
-
-# 6. Verify bảo mật
-grep -r "console.log" dist/assets/ | wc -l  # phải = 0 hoặc rất ít
-cat dist/assets/index-*.js | head -5        # phải thấy code rối
-
-# 7. Tạo .pkg
-pkgbuild \
-  --root src-tauri/target/aarch64-apple-darwin/release/bundle/macos/AutoSubs_Media.app \
-  --install-location /Applications/AutoSubs_Media.app \
-  --scripts Mac-Package/Scripts \
-  --identifier com.autosubs-media \
-  --version X.Y.Z \
-  ~/Downloads/AutoSubs-Mac-ARM.X.Y.Z.pkg
-
-# 7. Tạo key cho team
-python3 scripts/generate_license_key.py "Tên người dùng"
-```
+| Version | Ngày | Thay đổi |
+|---------|------|----------|
+| 3.0.10 | 2026-04-02 | Thống nhất License BLAUTO + device fingerprint, ẩn BugReporter production, sửa 2 cổng license, tách PasswordGate dùng mật khẩu admin riêng |
