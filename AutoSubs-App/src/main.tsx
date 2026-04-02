@@ -6,9 +6,6 @@ import { GlobalProvider } from "@/contexts/GlobalProvider";
 import { Toaster } from "@/components/ui/sonner";
 // Import service để bắt mọi lỗi tự động
 import { bugReportService } from "@/services/bugReportService";
-import LicenseGate from "@/components/LicenseGate";
-import { isLicenseActivated } from "@/services/licenseService";
-import { useState } from "react";
 
 type FatalState = {
   error: Error | null;
@@ -219,17 +216,9 @@ if (!rootElement) {
   throw new Error("Root element #root was not found in index.html");
 }
 
+// License Gate duy nhất nằm trong App.tsx (Tauri Store-based)
+// Không cần gate thứ 2 ở đây nữa
 function Root() {
-  // Dev mode: bỏ qua license để không bị chặn khi làm việc
-  // Production: kiểm tra localStorage xem đã kích hoạt chưa
-  const [activated, setActivated] = useState(
-    import.meta.env.DEV || isLicenseActivated()
-  );
-
-  if (!activated) {
-    return <LicenseGate onActivated={() => setActivated(true)} />;
-  }
-
   return (
     <AppErrorBoundary>
       <GlobalProvider>

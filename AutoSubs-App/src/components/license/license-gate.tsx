@@ -137,7 +137,7 @@ export function LicenseGate({ children }: LicenseGateProps) {
                                     value={inputKey}
                                     onChange={(e) => setInputKey(e.target.value.toUpperCase())}
                                     onKeyDown={handleKeyDown}
-                                    placeholder="DAHO-XXXX-XXXX-XXXX"
+                                    placeholder="BLAUTO-XXXX-XXXX-XXXX"
                                     disabled={validating}
                                     className="w-full rounded-lg border bg-background px-10 py-3 text-sm font-mono tracking-wider placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 disabled:opacity-50 transition-all"
                                     autoFocus
