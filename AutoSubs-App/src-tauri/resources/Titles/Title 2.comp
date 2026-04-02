@@ -218,7 +218,6 @@ Composition {
 			},
 			Paths = {
 				Map = {
-					["ResolveCaches:"] = "/Users/may1/Movies/CacheClip/fb090391-e3f2-4657-b6b7-05613b98e3e7/a37b7302-c771-4f27-a05c-d46eacf7f718/c835ff03-8bc6-4ae8-a4a9-d6a55a43fc2c/Fusion",
 				},
 			},
 			FrameFormat = {

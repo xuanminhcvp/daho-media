@@ -112,7 +112,7 @@ const StepCard: React.FC<StepCardProps> = ({ step, onClickScreenshot }) => {
                     borderRadius: '6px', flexShrink: 0,
                     backgroundColor: 'rgba(0,0,0,0.2)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: '20px', color: '#475569',
+                    fontSize: '1.25rem', color: '#475569',
                 }}>
                     📷
                 </div>
@@ -121,12 +121,12 @@ const StepCard: React.FC<StepCardProps> = ({ step, onClickScreenshot }) => {
             {/* Info */}
             <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '3px' }}>
                 {/* Label */}
-                <div style={{ fontSize: '12px', fontWeight: 500, color: step.is_error ? '#f87171' : '#e2e8f0' }}>
+                <div style={{ fontSize: '0.85rem', fontWeight: 500, color: step.is_error ? '#f87171' : '#e2e8f0' }}>
                     {getStepLabel(step.step)}
                 </div>
 
                 {/* Job + time */}
-                <div style={{ fontSize: '10px', color: '#64748b' }}>
+                <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
                     {step.job_id && <span>[{step.job_id}] </span>}
                     {new Date(step.timestamp * 1000).toLocaleTimeString('vi-VN', {
                         hour: '2-digit', minute: '2-digit', second: '2-digit',
@@ -169,7 +169,7 @@ const StepCard: React.FC<StepCardProps> = ({ step, onClickScreenshot }) => {
                 {/* Gemini response preview */}
                 {dom.gemini_response_preview && (
                     <div style={{
-                        fontSize: '10px', color: '#a78bfa',
+                        fontSize: '0.7rem', color: '#a78bfa',
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                     }} title={dom.gemini_response_preview}>
                         💬 {dom.gemini_response_preview.slice(0, 100)}...
@@ -179,7 +179,7 @@ const StepCard: React.FC<StepCardProps> = ({ step, onClickScreenshot }) => {
                 {/* Message tóm tắt */}
                 {step.message && (
                     <div style={{
-                        fontSize: '10px', color: '#94a3b8',
+                        fontSize: '0.7rem', color: '#94a3b8',
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                     }} title={step.message}>
                         {step.message}
@@ -188,7 +188,7 @@ const StepCard: React.FC<StepCardProps> = ({ step, onClickScreenshot }) => {
 
                 {/* Extra info (nếu có) */}
                 {step.extra && Object.keys(step.extra).length > 0 && (
-                    <div style={{ fontSize: '10px', color: '#64748b' }}>
+                    <div style={{ fontSize: '0.7rem', color: '#64748b' }}>
                         {JSON.stringify(step.extra).slice(0, 100)}
                     </div>
                 )}
@@ -212,7 +212,7 @@ const Badge: React.FC<{ color: string; children: React.ReactNode }> = ({ color, 
     return (
         <span style={{
             padding: '1px 6px', borderRadius: '4px',
-            fontSize: '10px', fontWeight: 500,
+            fontSize: '0.7rem', fontWeight: 500,
             backgroundColor: c.bg, color: c.color,
             whiteSpace: 'nowrap',
         }}>
@@ -241,7 +241,7 @@ const BugReportPanel: React.FC<{ report: GeminiBugReport }> = ({ report }) => {
                 style={{ display: 'flex', justifyContent: 'space-between', cursor: 'pointer' }}
                 onClick={() => setExpanded(e => !e)}
             >
-                <span style={{ fontSize: '12px', fontWeight: 600, color: '#e2e8f0' }}>
+                <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#e2e8f0' }}>
                     🐛 Bug Report
                     {report.total_errors > 0 && (
                         <span style={{ color: '#ef4444', marginLeft: '6px' }}>
@@ -254,7 +254,7 @@ const BugReportPanel: React.FC<{ report: GeminiBugReport }> = ({ report }) => {
                         </span>
                     )}
                 </span>
-                <span style={{ fontSize: '11px', color: '#64748b' }}>
+                <span style={{ fontSize: '0.8rem', color: '#64748b' }}>
                     {expanded ? '▲ Thu gọn' : '▼ Xem chi tiết'}
                 </span>
             </div>
@@ -264,12 +264,12 @@ const BugReportPanel: React.FC<{ report: GeminiBugReport }> = ({ report }) => {
                 <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                     {report.errors.map((e, idx) => (
                         <div key={idx} style={{
-                            fontSize: '11px', padding: '4px 8px', borderRadius: '4px',
+                            fontSize: '0.8rem', padding: '4px 8px', borderRadius: '4px',
                             backgroundColor: 'rgba(239,68,68,0.1)', color: '#f87171',
                         }}>
                             <strong>[{e.code}]</strong> {e.message}
                             {Object.keys(e.context || {}).length > 0 && (
-                                <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: '2px' }}>
+                                <div style={{ fontSize: '0.7rem', color: '#94a3b8', marginTop: '2px' }}>
                                     {JSON.stringify(e.context).slice(0, 150)}
                                 </div>
                             )}
@@ -277,7 +277,7 @@ const BugReportPanel: React.FC<{ report: GeminiBugReport }> = ({ report }) => {
                     ))}
                     {report.warnings.map((w, idx) => (
                         <div key={idx} style={{
-                            fontSize: '11px', padding: '4px 8px', borderRadius: '4px',
+                            fontSize: '0.8rem', padding: '4px 8px', borderRadius: '4px',
                             backgroundColor: 'rgba(245,158,11,0.1)', color: '#fbbf24',
                         }}>
                             <strong>[{w.code}]</strong> {w.message}
@@ -320,12 +320,12 @@ const GeminiDebugTimeline: React.FC<GeminiDebugTimelineProps> = ({
                 display: 'flex', alignItems: 'center',
                 justifyContent: 'space-between', marginBottom: '8px',
             }}>
-                <span style={{ fontSize: '13px', fontWeight: 600, color: '#e2e8f0' }}>
+                <span style={{ fontSize: '1.1rem', fontWeight: 600, color: '#e2e8f0' }}>
                     📸 Debug Timeline
                 </span>
                 <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                     <span style={{
-                        fontSize: '11px', color: '#64748b',
+                        fontSize: '0.8rem', color: '#64748b',
                         padding: '2px 8px', borderRadius: '10px',
                         backgroundColor: 'rgba(255,255,255,0.06)',
                     }}>
@@ -340,7 +340,7 @@ const GeminiDebugTimeline: React.FC<GeminiDebugTimelineProps> = ({
                         <button
                             onClick={onClear}
                             style={{
-                                padding: '2px 8px', borderRadius: '6px', fontSize: '10px',
+                                padding: '2px 8px', borderRadius: '6px', fontSize: '0.7rem',
                                 backgroundColor: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
                                 color: '#64748b', cursor: 'pointer',
                             }}
@@ -358,7 +358,7 @@ const GeminiDebugTimeline: React.FC<GeminiDebugTimelineProps> = ({
             {debugSteps.length === 0 && (
                 <div style={{
                     textAlign: 'center', padding: '20px',
-                    color: '#475569', fontSize: '12px',
+                    color: '#475569', fontSize: '0.85rem',
                 }}>
                     📸 Screenshots sẽ hiện ở đây khi Gemini Scan chạy
                 </div>
@@ -405,12 +405,12 @@ const GeminiDebugTimeline: React.FC<GeminiDebugTimelineProps> = ({
                         transform: 'translateX(-50%)',
                         backgroundColor: 'rgba(0,0,0,0.75)',
                         color: '#e2e8f0', padding: '8px 16px',
-                        borderRadius: '8px', fontSize: '13px',
+                        borderRadius: '8px', fontSize: '1.1rem',
                         textAlign: 'center', maxWidth: '600px',
                     }}>
                         <strong>{getStepLabel(fullscreenStep.step)}</strong>
                         {fullscreenStep.message && (
-                            <><br /><span style={{ fontSize: '12px', color: '#94a3b8' }}>{fullscreenStep.message}</span></>
+                            <><br /><span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>{fullscreenStep.message}</span></>
                         )}
                         {fullscreenStep.dom_info.url && (
                             <><br /><small style={{ color: '#64748b' }}>{fullscreenStep.dom_info.url}</small></>

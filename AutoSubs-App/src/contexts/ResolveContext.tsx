@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useRef, useEffect } from 'react';
+import React, { createContext, useContext, useState, useRef } from 'react';
 import { TimelineInfo } from '@/types/interfaces';
 import { getTimelineInfo, cancelExport, addSubtitlesToTimeline } from '@/api/resolve-api';
 
@@ -27,27 +27,8 @@ export function ResolveProvider({ children }: { children: React.ReactNode }) {
   const [exportProgress, setExportProgress] = useState<number>(0);
   const cancelRequestedRef = useRef<boolean>(false);
 
-  // Initialize timeline info
-  useEffect(() => {
-    async function initializeTimeline() {
-      try {
-        console.log('Fetching timeline info...');
-        const info = await getTimelineInfo().catch((err) => {
-          console.error('[DEBUG] Link to Resolve is offline. Error:', err);
-          return null;
-        });
-
-        if (info && info.timelineId) {
-          console.log('Timeline info received:', info);
-          setTimelineInfo(info);
-        }
-      } catch (error) {
-        console.error('Error initializing timeline:', error);
-      }
-    }
-
-    initializeTimeline();
-  }, []);
+  // KHÔNG auto-poll — user tự kết nối khi cần bằng nút Refresh trên titlebar.
+  // Lý do: polling liên tục gây spam log "Connection refused" khi DaVinci chưa mở.
 
   async function refresh() {
     try {

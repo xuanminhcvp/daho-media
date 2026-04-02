@@ -211,7 +211,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                       <textarea
                         placeholder={"Nhập Claude API Keys (ezaiapi)...\nMỗi dòng 1 key\nVí dụ: sk-abc123..."}
                         className="w-full min-h-[80px] px-3 py-2 rounded-md border border-input bg-background text-xs font-mono placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
-                        style={{ fontFamily: "monospace", fontSize: "11px" }}
+                        style={{ fontFamily: "monospace", fontSize: "0.8rem" }}
                         value={showClaudeKey ? claudeKeysText : claudeKeysText.split("\n").map(k => k ? "••••••••" + k.slice(-6) : "").join("\n")}
                         onFocus={() => {
                           // Tự động hiện key khi focus vào textarea → gõ tự nhiên
@@ -298,7 +298,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                       <textarea
                         placeholder={"Nhập Gemini API Keys...\nMỗi dòng 1 key\nVí dụ: AIzaSy..."}
                         className="w-full min-h-[100px] px-3 py-2 rounded-md border border-input bg-background text-xs font-mono placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
-                        style={{ fontFamily: "monospace", fontSize: "11px" }}
+                        style={{ fontFamily: "monospace", fontSize: "0.8rem" }}
                         value={showKey ? audioApiKey : audioApiKey.split("\n").map(k => k ? "••••••••" + k.slice(-6) : "").join("\n")}
                         onFocus={() => {
                           // Tự động hiện key khi focus vào textarea → gõ tự nhiên

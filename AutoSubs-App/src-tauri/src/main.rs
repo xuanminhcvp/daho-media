@@ -27,6 +27,8 @@ mod transcription_api;
 mod transcript_types;
 mod logging;
 mod license;
+mod resolve_bridge;  // Tauri Command proxy HTTP → Lua server (bypass plugin-http mismatch)
+mod ai_stream;       // Tauri Command gọi Claude API với stream:true qua Rust reqwest
 
 // Include integration-like tests that need crate visibility
 #[cfg(test)]
@@ -178,7 +180,9 @@ fn main() {
             logging::clear_backend_logs,
             logging::get_log_dir,
             logging::export_backend_logs,
-            license::validate_license_key
+            license::validate_license_key,
+            resolve_bridge::call_lua_server,  // ← Command gọi Lua HTTP server qua Rust reqwest
+            ai_stream::call_claude_stream     // ← Command gọi Claude API streaming qua Rust reqwest
         ])
         .build(tauri::generate_context!())
         .expect("error while building Tauri application")

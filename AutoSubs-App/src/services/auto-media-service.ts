@@ -22,7 +22,6 @@ import { MIN_SCANNED_FILES, TRACK_LAYOUT } from '@/types/auto-media-types'
 // ======================== IMPORTS TỪ SERVICES HIỆN CÓ ========================
 
 import { aiMatchScriptToTimeline, saveMatchingResults } from '@/services/ai-matcher'
-import { aiSubtitleMatch } from '@/services/subtitle-matcher-service'
 import { analyzeScriptForMusic, analyzeScriptForSFX } from '@/services/audio-director-service'
 import { matchFootageToScript } from '@/services/footage-matcher-service'
 import { addSfxClipsToTimeline, addMediaToTimeline } from '@/api/resolve-api'
@@ -30,8 +29,9 @@ import { normalizeSfxVolume } from '@/services/audio-ffmpeg-service'
 import { readTranscript } from '@/utils/file-utils'
 import { matchWordsToTimestamps } from '@/utils/whisper-words-matcher'
 import { getAudioScanApiKey } from '@/services/saved-folders-service'
-import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
+const tauriFetch = window.fetch; // fix tauri-apps/plugin-http streamChannel bug
 import { join } from '@tauri-apps/api/path'
+import { writeTextFile, exists, mkdir } from '@tauri-apps/plugin-fs'
 import {
     isStillImage,
     convertImagesToVideo,
@@ -58,6 +58,8 @@ export interface AutoMediaDependencies {
     timelineId: string
     /** Subtitles từ TranscriptContext (chứa whisper word-level timestamps) */
     subtitles: Subtitle[]
+    /** Master SRT từ ProjectContext — ưu tiên dùng để tạo phụ đề chuẩn và làm nguồn map time */
+    masterSrt?: any[]
 
     // === Data từ ProjectContext ===
     /** Folder ảnh */
@@ -87,6 +89,8 @@ export interface AutoMediaDependencies {
     setMatchingSentences: (data: ScriptSentence[] | null) => void
     /** Cập nhật matchingFolder trong ProjectContext */
     setMatchingFolder: (folder: string) => void
+    /** Cập nhật Master SRT vào ProjectContext */
+    setMasterSrt: (words: any[], createdAt: string) => void
     /** Cập nhật image import data */
     updateImageImport: (data: any) => void
     /** Cập nhật subtitle data */
@@ -260,6 +264,17 @@ export async function runAutoMedia(
     console.log('[AutoMedia] 🚀 Bắt đầu pipeline...')
 
     try {
+        // ====== BƯỚC 0: SETUP TIMELINE TRACKS ======
+        onStepUpdate('transcribe', 'running', '🛠️ Đang khởi tạo cấu trúc 7 Video + 5 Audio Tracks...')
+        try {
+            const { setupTimelineTracks } = await import('@/api/resolve-api')
+            await setupTimelineTracks(TRACK_LAYOUT)
+            console.log('[AutoMedia] ✅ Tự động Setup Timeline Tracks OK')
+        } catch (err) {
+            console.warn('[AutoMedia] ⚠️ Lỗi khi setup tracks DaVinci:', err)
+            onStepUpdate('transcribe', 'running', '⚠️ Không thể khởi tạo track động, bỏ qua bước Setup...')
+        }
+
         // ====== BƯỚC 1: TRANSCRIBE ======
         onStepUpdate('transcribe', 'running', 'Đang kiểm tra transcript...')
 
@@ -291,6 +306,46 @@ export async function runAutoMedia(
         }
 
         // ====== BƯỚC 2: AI SO CHIẾU SCRIPT ↔ VOICE TIMING ======
+        // ======================== TẠO MASTER SRT TỰ ĐỘNG CỦA AUTO MEDIA ========================
+        let verifiedMasterSrt = deps.masterSrt
+
+        if (config.enableMasterSrt && (!verifiedMasterSrt || verifiedMasterSrt.length === 0)) {
+            onStepUpdate('aiMatch', 'running', '🌟 Đang tự động tạo Master SRT từ Whisper...')
+            const transcript = await readTranscript(`${deps.timelineId}.json`)
+            if (!transcript) {
+                throw new Error('Không tìm thấy transcript file để tạo Master SRT')
+            }
+
+            const segments = transcript.originalSegments || transcript.segments || []
+            const { extractWhisperWords } = await import('@/utils/media-matcher')
+            const whisperWords = extractWhisperWords({ segments } as any)
+            
+            if (whisperWords.length > 0) {
+                const wordsText = whisperWords.map(w => `[${parseFloat(w.start as any).toFixed(2)}] ${w.word}`).join(" ")
+                
+                const { createMasterSrt } = await import('@/services/master-srt-service')
+                const result = await createMasterSrt(
+                    wordsText,
+                    deps.scriptText,
+                    (msg) => onStepUpdate('aiMatch', 'running', `🌟 Đang tự động tạo Master SRT: ${msg}`)
+                )
+
+                verifiedMasterSrt = result.words
+                deps.masterSrt = verifiedMasterSrt // ✅ Dùng Master SRT mới tạo cho các bước sau
+                
+                // Cập nhật lại context project
+                if (deps.setMasterSrt) {
+                    deps.setMasterSrt(result.words, result.createdAt)
+                }
+
+                onStepUpdate('aiMatch', 'running', `✅ Đã tạo Master SRT tự động (${result.totalWords} từ)`)
+            } else {
+                onStepUpdate('aiMatch', 'running', '⚠️ Transcript không có word-level timing, bỏ qua khâu tạo Master SRT.')
+            }
+        } else if (!config.enableMasterSrt) {
+            onStepUpdate('aiMatch', 'running', '⏭️ Bỏ qua tạo Master SRT do đã tắt trong cài đặt.')
+        }
+
         // Sub-step 2a: Parse script
         onStepUpdate('aiMatch', 'running', '📝 Đang parse script text...')
 
@@ -301,12 +356,21 @@ export async function runAutoMedia(
         }
         onStepUpdate('aiMatch', 'running', `📝 ${sentences.length} câu script → đọc transcript...`)
 
-        // Sub-step 2b: Đọc transcript
-        const transcript = await readTranscript(`${deps.timelineId}.json`)
+        // Sub-step 2b: Đọc transcript (dùng Master SRT nếu có)
+        let transcript: any = null
+        if (verifiedMasterSrt && verifiedMasterSrt.length > 0) {
+            onStepUpdate('aiMatch', 'running', '🌟 Xác định Master SRT → dùng làm nguồn timing chuẩn...')
+            const { masterSrtToTranscript } = await import('@/utils/master-srt-utils')
+            transcript = masterSrtToTranscript(verifiedMasterSrt)
+        } else {
+            transcript = await readTranscript(`${deps.timelineId}.json`)
+        }
+        
         if (!transcript) {
             onStepUpdate('aiMatch', 'error', 'Không tìm thấy transcript file', `${deps.timelineId}.json`)
             throw new Error('Không tìm thấy transcript file')
         }
+        
         onStepUpdate('aiMatch', 'running', `📝 ${sentences.length} câu script + transcript → gọi AI matching...`)
 
         // Sub-step 2c: Gọi AI match (logic hiện có — có retry 2 vòng)
@@ -388,7 +452,7 @@ export async function runAutoMedia(
                 name: 'subtitle',
                 enabled: config.enableSubtitle && !!deps.scriptText.trim(),
                 skipReason: 'Bỏ qua — thiếu script',
-                run: () => runSubtitlePipeline(deps, onStepUpdate),
+                run: () => runSubtitlePipeline(deps, matchedSentences, onStepUpdate, config),
             },
             {
                 name: 'music',
@@ -596,28 +660,55 @@ async function runImagePipeline(
  */
 async function runSubtitlePipeline(
     deps: AutoMediaDependencies,
-    onStepUpdate: OnStepUpdate
+    matchedSentences: MatchingSentence[],
+    onStepUpdate: OnStepUpdate,
+    config: AutoMediaConfig
 ): Promise<void> {
-    onStepUpdate('subtitle', 'running', '📝 Đang đọc transcript file...')
+    onStepUpdate('subtitle', 'running', '📝 Đang đọc transcript / sentence data...')
 
     try {
         checkAbort()
 
-        // Đọc transcript
-        const transcriptData = await readTranscript(`${deps.timelineId}.json`)
-        if (!transcriptData) {
-            onStepUpdate('subtitle', 'error', 'Không tìm thấy transcript', `${deps.timelineId}.json`)
-            return
-        }
+        checkAbort()
 
-        onStepUpdate('subtitle', 'running', '🤖 AI đang so khớp phụ đề với whisper...')
-        const subtitleLines = await aiSubtitleMatch(
-            deps.scriptText,
-            transcriptData,
-            (progress) => {
-                onStepUpdate('subtitle', 'running', `🤖 Phụ đề: ${progress.message} (${progress.current}/${progress.total})`)
+        let subtitleLines: any[] = [];
+        
+        if (matchedSentences && matchedSentences.length > 0) {
+            onStepUpdate('subtitle', 'running', '🤖 AI đang chia nhỏ phụ đề từ danh sách câu (MatchingSentences)...')
+            const { aiSubtitleMatchFromSentences } = await import('@/services/subtitle-matcher-service')
+            subtitleLines = await aiSubtitleMatchFromSentences(
+                matchedSentences,
+                deps.masterSrt || null,
+                (progress: any) => {
+                    onStepUpdate('subtitle', 'running', `🤖 Phụ đề: ${progress.message}`)
+                }
+            )
+        } else {
+            // Đọc transcript
+            let transcriptData: any = null
+            if (deps.masterSrt && deps.masterSrt.length > 0) {
+                onStepUpdate('subtitle', 'running', '🌟 Dùng Master SRT cho phụ đề...')
+                const { masterSrtToTranscript } = await import('@/utils/master-srt-utils')
+                transcriptData = masterSrtToTranscript(deps.masterSrt)
+            } else {
+                transcriptData = await readTranscript(`${deps.timelineId}.json`)
             }
-        )
+
+            if (!transcriptData) {
+                onStepUpdate('subtitle', 'error', 'Không tìm thấy transcript', `${deps.timelineId}.json`)
+                return
+            }
+
+            onStepUpdate('subtitle', 'running', '🤖 AI đang so khớp phụ đề với whisper...')
+            const { aiSubtitleMatch } = await import('@/services/subtitle-matcher-service')
+            subtitleLines = await aiSubtitleMatch(
+                deps.scriptText,
+                transcriptData,
+                (progress) => {
+                    onStepUpdate('subtitle', 'running', `🤖 Phụ đề: ${progress.message}`)
+                }
+            )
+        }
 
         // Cập nhật ProjectContext
         onStepUpdate('subtitle', 'running', `💾 Lưu ${subtitleLines.length} dòng phụ đề...`)
@@ -628,36 +719,90 @@ async function runSubtitlePipeline(
 
         checkAbort()
 
-        // Import lên DaVinci — giống hệt tab Subtitle
-        // Track fallback: nếu selectedTrack = "0" → dùng track 3 (giống tab)
         const trackToUse = TRACK_LAYOUT.TEXT_ONSCREEN_TRACK
-        onStepUpdate('subtitle', 'running', `📥 Đang import ${subtitleLines.length} phụ đề lên Track V${trackToUse}...`)
 
-        const response = await tauriFetch('http://127.0.0.1:56003/', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                func: 'AddSimpleSubtitles',
-                clips: subtitleLines.map(line => ({
-                    text: line.text,
-                    start: line.start,
-                    end: line.end,
-                })),
-                // ★ ĐỒNG BỘ TAB: dùng template + fontSize từ ProjectContext
-                templateName: deps.subtitleTemplate || 'Subtitle Default',
-                trackIndex: trackToUse,
-                fontSize: deps.subtitleFontSize || 0.04,
-            }),
-        })
+        if (config.subtitleMode === 'srt') {
+            // ======================== MẠNG SRT NATIVE (Siêu nhẹ) ========================
+            onStepUpdate('subtitle', 'running', `📝 Đang tạo file SRT cho ${subtitleLines.length} câu...`)
+            
+            // 1. Convert sang nội dung SRT
+            let srtContent = ''
+            subtitleLines.forEach((line, index) => {
+                const formatTime = (secs: number) => {
+                    const h = Math.floor(secs / 3600).toString().padStart(2, '0')
+                    const m = Math.floor((secs % 3600) / 60).toString().padStart(2, '0')
+                    const s = Math.floor(secs % 60).toString().padStart(2, '0')
+                    const ms = Math.floor((secs % 1) * 1000).toString().padStart(3, '0')
+                    return `${h}:${m}:${s},${ms}`
+                }
+                const startTc = formatTime(line.start)
+                const endTc = formatTime(line.end)
+                const text = (line.text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
+                if (text && line.end > line.start) {
+                    srtContent += `${index + 1}\n`
+                    srtContent += `${startTc} --> ${endTc}\n`
+                    srtContent += `${text}\n\n`
+                }
+            })
 
-        // ★ ĐỒNG BỘ TAB: Check response lỗi (tab có check, auto trước đây không)
-        const result = await response.json() as any
-        if (result.error) {
-            throw new Error(result.message || 'Lỗi import phụ đề từ DaVinci')
+            // 2. Lưu file SRT vào Desktop/Auto_media/
+            const { desktopDir } = await import('@tauri-apps/api/path')
+            const pDesktop = await desktopDir()
+            const autoMediaDir = await join(pDesktop, 'Auto_media')
+            if (!(await exists(autoMediaDir))) {
+                await mkdir(autoMediaDir, { recursive: true })
+            }
+            const srtPath = await join(autoMediaDir, `Autosubs_${deps.timelineId || 'phude'}.srt`)
+            await writeTextFile(srtPath, srtContent)
+            
+            onStepUpdate('subtitle', 'running', `📥 Đang import SRT vào Media Pool...`)
+
+            // 3. Gọi server import SRT vào Media Pool (bù lại việc chưa thả auto xuống timeline được)
+            const response = await tauriFetch('http://127.0.0.1:56003/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    func: 'ImportSrtToMediaPool',
+                    filePath: srtPath
+                }),
+            })
+            
+            const result = await response.json() as any
+            if (result.error) {
+                throw new Error(result.message || 'Lỗi import SRT vào DaVinci')
+            }
+
+            const debugSub = `Saved to: ${srtPath}\nImported to Media Pool.\nPlease drag & drop to Subtitle Track natively.`
+            onStepUpdate('subtitle', 'done', `✅ Đã lưu ${subtitleLines.length} câu ra SRT & Import Media Pool. VUI LÒNG KÉO THẢ XUỐNG TIMELINE!`, undefined, debugSub)
+            
+        } else {
+            // ======================== CHẾ ĐỘ FUSION TEXT+ (Nặng/Đẹp) ========================
+            onStepUpdate('subtitle', 'running', `📥 Đang import ${subtitleLines.length} phụ đề Fusion lên Track V${trackToUse}...`)
+
+            const response = await tauriFetch('http://127.0.0.1:56003/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    func: 'AddSimpleSubtitles',
+                    clips: subtitleLines.map(line => ({
+                        text: line.text,
+                        start: line.start,
+                        end: line.end,
+                    })),
+                    templateName: deps.subtitleTemplate || 'Subtitle Default',
+                    trackIndex: trackToUse,
+                    fontSize: deps.subtitleFontSize || 0.04,
+                }),
+            })
+
+            const result = await response.json() as any
+            if (result.error) {
+                throw new Error(result.message || 'Lỗi import phụ đề từ DaVinci')
+            }
+
+            const debugSub = `mode=fusion | subtitleLines=${subtitleLines.length} | template=${deps.subtitleTemplate} | fontSize=${deps.subtitleFontSize}`
+            onStepUpdate('subtitle', 'done', `✅ Import ${subtitleLines.length} phụ đề lên V${trackToUse}`, undefined, debugSub)
         }
-
-        const debugSub = `subtitleLines=${subtitleLines.length} | template=${deps.subtitleTemplate} | fontSize=${deps.subtitleFontSize} | scriptLen=${deps.scriptText?.length || 0} | sample: ${subtitleLines.slice(0, 2).map(l => `"${l.text?.substring(0, 25)}..." ${l.start?.toFixed(1)}-${l.end?.toFixed(1)}`).join(' | ')}`
-        onStepUpdate('subtitle', 'done', `✅ Import ${subtitleLines.length} phụ đề lên V${trackToUse}`, undefined, debugSub)
 
     } catch (err) {
         if (String(err).includes('Pipeline đã bị dừng')) {
@@ -727,7 +872,7 @@ async function runMusicPipeline(
                 outputFolder: deps.matchingFolder || deps.imageFolder,
                 scenes: ffmpegScenes,
                 sentences: matchingSentences,
-                duckingVolume: 0.15, // Đồng bộ tab Music — nhạc nền nhỏ nhẹ khi có giọng nói
+                duckingVolume: 0.30, // Đồng bộ tab Music — nhạc nền không bị nhỏ quá sâu khi có giọng nói
                 onProgress: (p) => onStepUpdate('music', 'running', `🎶 FFmpeg: ${p}`)
             })
 
@@ -796,10 +941,19 @@ async function runSfxPipeline(
             matchedWhisper: s.matchedWhisper || '',
         }))
 
-        // Tạo whisper words từ subtitles (giống logic trong sfx-library-tab)
+        // Tạo whisper words từ Master SRT (hoặc subtitles nếu thiếu) (giống logic trong sfx-library-tab)
         let whisperWords: Array<{ t: number; w: string; e: number }> | undefined
-        if (deps.subtitles && deps.subtitles.length > 0) {
-            const allWords: Array<{ t: number; w: string; e: number }> = []
+        const allWords: Array<{ t: number; w: string; e: number }> = []
+
+        if (deps.masterSrt && deps.masterSrt.length > 0) {
+            for (const mw of deps.masterSrt) {
+                allWords.push({
+                    t: Math.round(mw.start * 100) / 100,
+                    w: mw.word || '',
+                    e: Math.round(mw.end * 100) / 100,
+                })
+            }
+        } else if (deps.subtitles && deps.subtitles.length > 0) {
             for (const seg of deps.subtitles) {
                 if (!(seg as any).words || (seg as any).words.length === 0) continue
                 for (const word of (seg as any).words) {
@@ -816,6 +970,9 @@ async function runSfxPipeline(
                     }
                 }
             }
+        }
+
+        if (allWords.length > 0) {
             allWords.sort((a, b) => a.t - b.t)
             // Fill end times
             for (let i = 0; i < allWords.length; i++) {

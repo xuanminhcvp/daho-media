@@ -178,6 +178,18 @@ export interface AppSettings {
     geminiModel?: string
     /** Provider ưu tiên user đã chọn: "claude" | "gemini" | "auto" */
     preferredProvider?: "claude" | "gemini" | "auto"
+
+    // ===== AI Performance Settings =====
+    /** Số từ tối đa mỗi batch phân tích kịch bản (mặc định: 500) */
+    aiWordsPerBatch?: number
+    /** Số Footage item mỗi batch quét (mặc định: 50) */
+    footageBatchSize?: number
+    /** Số luồng API song song tối đa (mặc định: 3) */
+    aiMaxConcurrency?: number
+    /** Nhiệt độ AI (mặc định: 0.7) */
+    aiTemperature?: number
+    /** Thời gian cấm chèn B-Roll ở đầu video (giây, mặc định: 60) */
+    bRollStartTime?: number
 }
 
 /**

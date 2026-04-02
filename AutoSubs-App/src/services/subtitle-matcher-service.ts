@@ -9,7 +9,6 @@
 
 import { SubtitleLine } from "@/types/audio-types";
 import { extractWhisperWords } from "@/utils/media-matcher";
-import { buildSubtitleMatchPrompt, buildSubtitleRetryPrompt } from "@/prompts/subtitle-match-prompt";
 import { writeTextFile, readTextFile, exists } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 
@@ -19,12 +18,39 @@ const AI_CONFIG = {
     // apiKey: đã chuyển sang nhập qua Settings UI (không hardcode)
     model: "claude-sonnet-4-6",
     batchCount: 6,        // Documentary 25-27min: 6 phần (ngắn hơn Stories → ít batch hơn)
-    maxConcurrent: 5,     // Tối đa 5 request đồng thời (API giới hạn 6, chừa 1 buffer)
     timeoutMs: 900000,    // 15 phút timeout per request
     maxTokens: 8000,      // Batch nhỏ → cần ít token hơn
     retryCount: 3,        // Retry tối đa 3 lần khi lỗi 524/429/5xx
     retryBaseMs: 5000,    // Retry delay cơ sở: 5s → 10s → 20s (exponential)
 };
+
+/** Đọc aiMaxConcurrency từ Tauri store (global setting) — mặc định 3 nếu chưa set */
+async function getMaxConcurrent(): Promise<number> {
+    try {
+        const { load } = await import('@tauri-apps/plugin-store');
+        const store = await load('autosubs-store.json');
+        const stored = await store.get<any>('settings');
+        return stored?.aiMaxConcurrency ?? 3;
+    } catch {
+        return 3; // Fallback
+    }
+}
+
+
+/** Thêm hàm lấy config cho Subtitles */
+export async function getSubtitleAIConfig(): Promise<{ batches: number, maxConcurrent: number }> {
+    try {
+        const { load } = await import('@tauri-apps/plugin-store');
+        const store = await load('autosubs-store.json');
+        const stored = await store.get<any>('settings');
+        return {
+            batches: stored?.aiSubtitleBatches ?? 6,
+            maxConcurrent: stored?.aiMaxConcurrency ?? 3
+        };
+    } catch {
+        return { batches: 6, maxConcurrent: 3 };
+    }
+}
 
 // ======================== CONCURRENCY LIMITER ========================
 /**
@@ -452,10 +478,11 @@ export async function aiSubtitleMatch(
         console.log(`  Phần ${i + 1}: ${p.startTime.toFixed(0)}s → ${p.endTime.toFixed(0)}s (~${(p.text.length / 1000).toFixed(0)}KB)`)
     );
 
+    const maxConcurrent = await getMaxConcurrent(); // Đọc từ aiMaxConcurrency (global setting)
     onProgress?.({
         current: 0,
         total: N,
-        message: `Đang gửi ${N} batch (tối đa ${AI_CONFIG.maxConcurrent} đồng thời)...`,
+        message: `Đang gửi ${N} batch (tối đa ${maxConcurrent} đồng thời)...`,
     });
 
     // ⚡ Gửi batch với giới hạn concurrency (API cho phép tối đa 6 đồng thời)
@@ -464,6 +491,8 @@ export async function aiSubtitleMatch(
         const timeRange = `${part.startTime.toFixed(0)}s → ${part.endTime.toFixed(0)}s`;
 
         try {
+            const { getActiveProfileId } = await import('@/config/activeProfile');
+            const { buildSubtitleMatchPrompt } = await import(`../prompts/${getActiveProfileId()}/subtitle-match-prompt`);
             const prompt = buildSubtitleMatchPrompt(
                 scriptBatches[i],
                 part.text,
@@ -495,7 +524,7 @@ export async function aiSubtitleMatch(
         }
     });
 
-    const batchResults = await runWithConcurrency(batchTasks, AI_CONFIG.maxConcurrent);
+    const batchResults = await runWithConcurrency(batchTasks, maxConcurrent);
 
     // ======================== MERGE KẾT QUẢ ========================
     // Gộp tất cả dòng phụ đề từ N batch → sort theo start time
@@ -584,7 +613,6 @@ export async function aiSubtitleMatch(
 
         // Buffer time rộng dần: 5s → 10s
         const timeBuffer = round === 1 ? 5 : 10;
-        // Context lines tăng dần: 3 → 5
         const contextSize = round === 1 ? 3 : 5;
         const isForceMode = round >= 2;
 
@@ -657,6 +685,8 @@ export async function aiSubtitleMatch(
                 console.log(`[Subtitle] Round ${round} cụm ${ci + 1}: dòng ${clusterFirst + 1}-${clusterLast + 1}, transcript ${timeRange}, ${relevantWords.length} words`);
 
                 // Tạo prompt retry
+                const { getActiveProfileId } = await import('@/config/activeProfile');
+                const { buildSubtitleRetryPrompt } = await import(`../prompts/${getActiveProfileId()}/subtitle-match-prompt`);
                 let prompt = buildSubtitleRetryPrompt(
                     scriptChunk,
                     whisperSlice,
@@ -692,7 +722,7 @@ OUTPUT: Return JSON array for ALL ${missingTexts.length} lines. Do NOT skip any.
             }
         });
 
-        const retryResults = await runWithConcurrency(retryTasks, AI_CONFIG.maxConcurrent);
+        const retryResults = await runWithConcurrency(retryTasks, maxConcurrent);
 
         // Merge retry results — chỉ thêm dòng chưa trùng
         let retryAdded = 0;
@@ -762,5 +792,122 @@ OUTPUT: Return JSON array for ALL ${missingTexts.length} lines. Do NOT skip any.
     });
 
     console.log(`[Subtitle] ✅ Hoàn tất: ${allLines.length} dòng phụ đề, timing ${allLines[0]?.start.toFixed(1)}s → ${allLines[allLines.length - 1]?.end.toFixed(1)}s`);
+    return allLines;
+}
+
+// ======================== MỚI: TẠO PHỤ ĐỀ TỪ MATCHING SENTENCE ========================
+
+/**
+ * Tạo phụ đề từ Matching Sentences (đã chia câu và có start/end rõ ràng).
+ * Cắt matchingSentences làm N batches theo cấu hình, gọi AI, và gộp lại.
+ */
+export async function aiSubtitleMatchFromSentences(
+    matchingSentences: any[],
+    masterSrtWords: any[] | null,
+    onProgress?: (progress: SubtitleMatchProgress) => void,
+    saveFolder?: string
+): Promise<SubtitleLine[]> {
+    if (!matchingSentences || matchingSentences.length === 0) {
+        throw new Error("matchingSentences rỗng!");
+    }
+
+    const { batches, maxConcurrent } = await getSubtitleAIConfig();
+    const cleanBatches = Math.max(1, Math.min(batches, matchingSentences.length)); // Không chia số đợt lớn hơn số câu
+    
+    console.log(`[Subtitle] Dùng Matching_sequence: ${matchingSentences.length} câu → chia ${cleanBatches} batch`);
+
+    // Chia mảng matchingSentences thành N batch
+    const batchSize = Math.ceil(matchingSentences.length / cleanBatches);
+    const sentenceBatches = [];
+    for (let i = 0; i < matchingSentences.length; i += batchSize) {
+        sentenceBatches.push(matchingSentences.slice(i, i + batchSize));
+    }
+
+    onProgress?.({
+        current: 0,
+        total: cleanBatches,
+        message: `Đang gửi ${cleanBatches} batch (tối đa ${maxConcurrent} đồng thời)...`,
+    });
+
+    const batchTasks = sentenceBatches.map((batchSentences, i) => async () => {
+        const batchNum = i + 1;
+        try {
+            const { getActiveProfileId } = await import('@/config/activeProfile');
+            const { buildSubtitleMatchFromSentencesPrompt } = await import(`../prompts/${getActiveProfileId()}/subtitle-match-prompt`);
+            
+            // Format sentences cho Prompt
+            const sentencesJson = JSON.stringify(
+                batchSentences.map(s => ({
+                    text: s.text,
+                    start: s.start,
+                    end: s.end
+                })),
+                null,
+                2
+            );
+
+            // Cắt Whisper Data (Master SRT) tương ứng với batch này
+            let whisperPart = "";
+            if (masterSrtWords && masterSrtWords.length > 0) {
+                const startT = Number(batchSentences[0].start);
+                const endT = Number(batchSentences[batchSentences.length - 1].end);
+                // Lấy words dư 1 giây mỗi đầu để ngừa sai số
+                const batchWords = masterSrtWords.filter(w => Number(w.start) >= startT - 1.0 && Number(w.end) <= endT + 1.0);
+                whisperPart = batchWords.map(w => `[${Number(w.start).toFixed(2)}] ${w.word}`).join(" ");
+                console.log(`[Subtitle] Batch ${batchNum} WhisperPart length:`, whisperPart.length);
+            } else {
+                console.warn(`[Subtitle] Batch ${batchNum} masterSrtWords is empty or null!`);
+            }
+
+            const prompt = buildSubtitleMatchFromSentencesPrompt(
+                sentencesJson,
+                whisperPart,
+                batchNum,
+                cleanBatches,
+                45 // max chars
+            );
+
+            console.log(`[Subtitle] Batch ${batchNum}: AI from matchingSentences (${batchSentences.length} câu)`);
+
+            const response = await callAI(
+                prompt,
+                `Batch ${batchNum}/${cleanBatches} (${batchSentences.length} câu)`
+            );
+
+            const lines = parseSubtitleResponse(response);
+            console.log(`[Subtitle] Batch ${batchNum}: ${lines.length} dòng phụ đề ✅`);
+
+            onProgress?.({
+                current: batchNum,
+                total: cleanBatches,
+                message: `Batch ${batchNum}/${cleanBatches} xong (${lines.length} dòng)`,
+            });
+
+            return { batchNum, lines };
+        } catch (error) {
+            console.error(`[Subtitle] Batch ${batchNum} LỖI:`, error);
+            return { batchNum, lines: [] as SubtitleLine[] };
+        }
+    });
+
+    const batchResults = await runWithConcurrency(batchTasks, maxConcurrent);
+
+    // Merge kết quả
+    const allLines: SubtitleLine[] = [];
+    for (const { lines } of batchResults.sort((a, b) => a.batchNum - b.batchNum)) {
+        for (const line of lines) {
+            allLines.push(line);
+        }
+    }
+
+    allLines.sort((a, b) => a.start - b.start);
+
+    console.log(`[Subtitle] Sau merge MatchingSentences: ${allLines.length} dòng phụ đề`);
+
+    // Lưu cache nếu có
+    if (saveFolder) {
+        await saveSubtitleLines(saveFolder, allLines);
+    }
+
     return allLines;
 }

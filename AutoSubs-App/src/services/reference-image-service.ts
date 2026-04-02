@@ -72,7 +72,7 @@ export async function analyzeScriptForRefImages(
     }
 
     // Import prompt builder
-    const { buildRefImagePrompt, buildRefImageCustomPrompt } = await import("@/prompts/reference-image-prompt")
+    const { buildRefImagePrompt, buildRefImageCustomPrompt } = await import("../prompts/documentary/reference-image-prompt")
 
     // Build prompt 
     let prompt = "";
@@ -88,23 +88,90 @@ export async function analyzeScriptForRefImages(
     // Gọi AI (round-robin Claude/Gemini)
     const { callAIMultiProvider } = await import("@/utils/ai-provider")
 
-    let content: string
+    let suggestions: any[] = [];
+    
+    // Đọc cài đặt batch từ Tauri Store
+    let REF_BATCH_COUNT = 1;
+    let MAX_CONCURRENCY = 6;
     try {
-        content = await callAIMultiProvider(
-            prompt,
-            "AI Gợi Ý Ảnh Tham Khảo",
-            "auto",
-            900000 // 15 phút timeout
-        )
+        const { load } = await import('@tauri-apps/plugin-store');
+        const store = await load('autosubs-store.json');
+        const storedSettings = await store.get<any>('settings');
+        if (storedSettings?.aiRefImageBatches) {
+            REF_BATCH_COUNT = storedSettings.aiRefImageBatches;
+            MAX_CONCURRENCY = storedSettings.aiMaxConcurrency ?? 6;
+        }
+    } catch {
+        console.warn('[RefImage] Không đọc được settings, dùng mặc định 1 batch');
+    }
+
+    try {
+        if (isCustom || REF_BATCH_COUNT <= 1) {
+            // Chạy 1 batch (như cũ)
+            onProgress?.(`Đang phân tích 1 batch toàn cục...`)
+            const content = await callAIMultiProvider(
+                prompt,
+                "AI Gợi Ý Ảnh Tham Khảo",
+                "auto",
+                900000 
+            );
+            suggestions = parseRefImageResponse(content, sentences);
+        } else {
+            // Chạy multi-batch song song
+            onProgress?.(`Đang chia kịch bản thành ${REF_BATCH_COUNT} batch để tìm ảnh...`)
+            const batchSize = Math.max(1, Math.ceil(sentences.length / REF_BATCH_COUNT));
+            const batches: MatchingSentence[][] = [];
+            for (let i = 0; i < sentences.length; i += batchSize) {
+                batches.push(sentences.slice(i, i + batchSize));
+            }
+
+            let batchIdx = 0;
+            let activeTasks = 0;
+            const allContents: string[] = [];
+
+            await new Promise<void>((resolve, reject) => {
+                const runNext = () => {
+                    while (activeTasks < MAX_CONCURRENCY && batchIdx < batches.length) {
+                        const currentIdx = batchIdx;
+                        const batchSentences = batches[batchIdx];
+                        batchIdx++;
+                        activeTasks++;
+
+                        const batchPrompt = buildRefImagePrompt(batchSentences, whisperWordsText || undefined);
+                        
+                        callAIMultiProvider(
+                            batchPrompt,
+                            `AI Ảnh Tham Khảo (Batch ${currentIdx + 1}/${batches.length})`,
+                            "auto",
+                            900000
+                        ).then(content => {
+                            allContents.push(content);
+                            activeTasks--;
+                            if (batchIdx < batches.length) runNext();
+                            else if (activeTasks === 0) resolve();
+                        }).catch(err => {
+                            activeTasks--;
+                            reject(err);
+                        });
+                    }
+                };
+                runNext();
+            });
+
+            // Parse tất cả kết quả và gộp lại
+            for (const content of allContents) {
+                suggestions.push(...parseRefImageResponse(content, sentences));
+            }
+            
+            // Lọc bớt nếu quá nhiều ảnh rác (giữ giới hạn ~15-20 cái)
+            if (suggestions.length > 20) {
+                suggestions = suggestions.slice(0, 20);
+            }
+        }
     } catch (err) {
         console.error("[RefImage] ❌ Lỗi gọi AI:", err)
         throw new Error(`AI phân tích thất bại: ${String(err)}`)
     }
-
-    // Parse response
-    onProgress?.("📋 Đang xử lý kết quả AI...")
-
-    const suggestions = parseRefImageResponse(content, sentences)
 
     // Nếu không phải custom manual add thì mới lưu cache toàn bộ kịch bản
     let result: AIRefImageResult;

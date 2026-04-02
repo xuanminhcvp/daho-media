@@ -31,7 +31,7 @@ import {
 
 export function MasterSrtTab() {
     // === Contexts ===
-    const { project, setMasterSrt } = useProject()
+    const { project, setMasterSrt, setScriptText: setGlobalScriptText } = useProject()
     const { subtitles } = useTranscript()
     const { settings } = useSettings()
     const { timelineInfo } = useResolve()
@@ -139,6 +139,10 @@ export function MasterSrtTab() {
             // Trước đây guard isMountedRef → nếu HMR hoặc chuyển tab → mất toàn bộ kết quả!
             console.log("[DEBUG-Tab] ▶ gọi setMasterSrt...")
             setMasterSrt(result.words, result.createdAt)
+            
+            // Đồng bộ kịch bản ra Global cho các tab phụ thuộc (tránh gõ lại)
+            setGlobalScriptText(scriptText.trim())
+            
             console.log("[DEBUG-Tab] ★ setMasterSrt XONG")
 
             // 6. Verify kết quả — chỉ update UI nếu component vẫn mounted
@@ -183,6 +187,8 @@ export function MasterSrtTab() {
             if (!isMountedRef.current) return
 
             setMasterSrt(result.words, result.createdAt)
+            setGlobalScriptText(scriptText.trim())
+            
             const vr = verifyMasterSrt(result.words, scriptText.trim())
             safeSetVerify(vr)
 

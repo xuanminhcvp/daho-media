@@ -28,8 +28,9 @@ if not timeline then
     return
 end
 
--- Thư mục output cho .comp files
-local OUTPUT_DIR = "/Users/may1/Documents/src_code/autosubs_documentary/AutoSubs-App/src-tauri/resources/Titles"
+-- Điền đường dẫn tuyệt đối tới thư mục Titles để xuất file .comp
+-- Ví dụ: "/Users/TenCuaBan/Documents/.../AutoSubs-App/src-tauri/resources/Titles"
+local OUTPUT_DIR = "/Thay/Bang/Duong/Dan/Cua/Ban/Titles"
 
 -- Danh sách template cần convert
 local TITLES = { "Title 1", "Title 2", "Title 3", "Title 4", "Title 5", "Title 6", "Title 7", "Title 8" }

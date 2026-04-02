@@ -8,7 +8,7 @@ import * as React from "react"
 import { Clapperboard, Play, Loader2, CheckCircle2, AlertCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http"
+const tauriFetch = window.fetch; // Bypass streamChannel bug
 
 // ======================== CẤU HÌNH HIỆU ỨNG ========================
 

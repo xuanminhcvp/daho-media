@@ -13,21 +13,20 @@
 // ============================================================
 
 import { Command } from "@tauri-apps/plugin-shell";
-import { fetch } from "@tauri-apps/plugin-http";
+// Dùng fetch mặc định browser thay thế tauri plugin để tránh bug streamChannel
 import { appCacheDir, join, resourceDir, resolveResource } from "@tauri-apps/api/path";
 import { readFile, exists } from "@tauri-apps/plugin-fs";
 import { getFFmpegPath } from "@/utils/ffmpeg-path";
 import { getAudioScanApiKey } from "@/services/saved-folders-service";
 import { addDebugLog, updateDebugLog, generateLogId } from "@/services/debug-logger";
 import {
-    buildFrameAnalysisPrompt,
     validateFrameResult,
     DEFAULT_PRIMARIES,
     type PrimariesValues,
     type FrameAnalysisResult,
     type ColorSession,
     type CDLData,
-} from "@/prompts/auto-color-prompt";
+} from "@/prompts/documentary/auto-color-prompt";
 import type { AutoColorClip } from "@/api/auto-color-api";
 
 
@@ -183,6 +182,10 @@ export async function analyzeFrameForPrimaries(args: {
 
         // Build parts cho Gemini
         const hasRefImages = !!(refBase64List && refBase64List.length > 0);
+        
+        const { getActiveProfileId } = await import('@/config/activeProfile');
+        const { buildFrameAnalysisPrompt } = await import(`../prompts/${getActiveProfileId()}/auto-color-prompt`);
+        
         const promptText = buildFrameAnalysisPrompt(historyContext, clipName);
         const parts: any[] = [{ text: promptText }];
         

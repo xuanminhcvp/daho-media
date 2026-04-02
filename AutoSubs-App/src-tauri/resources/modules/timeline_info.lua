@@ -197,7 +197,7 @@ end
 -- ===== SETUP TIMELINE TRACKS =====
 -- Tự động tạo đủ 7 Video + 5 Audio tracks và đặt tên chuẩn
 -- AN TOÀN: chỉ dùng AddTrack + SetTrackName, KHÔNG xoá track/clip
-function M.SetupTimelineTracks(state, helpers)
+function M.SetupTimelineTracks(state, helpers, data)
     print("[AutoSubs] ========== SetupTimelineTracks START ==========")
 
     -- Refresh project state
@@ -210,6 +210,26 @@ function M.SetupTimelineTracks(state, helpers)
 
     local tlName = timeline:GetName() or "Unknown"
     print("[AutoSubs] Timeline: " .. tlName)
+
+    -- ═══ AUTO-CONFIGURE PROJECT SETTINGS ═══
+    if data and data.config then
+        local cfg = data.config
+        if cfg.width and cfg.height then
+            local pcallOk = pcall(function()
+                timeline:SetSetting("timelineResolutionWidth", tostring(cfg.width))
+                timeline:SetSetting("timelineResolutionHeight", tostring(cfg.height))
+                
+                -- Support DaVinci 18+ useVerticalResolution flag if explicitly needed
+                if cfg.useVertical == true then
+                     timeline:SetSetting("useVerticalResolution", "1")
+                elseif cfg.useVertical == false then
+                     timeline:SetSetting("useVerticalResolution", "0")
+                end
+                print(string.format("[AutoSubs] Set Timeline Resolution to %dx%d (Vertical: %s)", cfg.width, cfg.height, tostring(cfg.useVertical)))
+            end)
+            if not pcallOk then print("[AutoSubs] ⚠️ Set Resolution failed, ignoring.") end
+        end
+    end
 
     -- ═══ CẤU HÌNH TRACK CHUẨN ═══
     local VIDEO_TRACKS = {

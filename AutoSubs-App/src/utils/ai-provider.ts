@@ -10,7 +10,6 @@
 // - Audio scan / Footage scan (media) → CHỈ Gemini (vì cần inline_data)
 // ============================================================
 
-import { fetch } from "@tauri-apps/plugin-http";
 import { addDebugLog, updateDebugLog, generateLogId } from "@/services/debug-logger";
 
 // ======================== CẤU HÌNH ========================
@@ -109,25 +108,6 @@ function pickProvider(hasGeminiKey: boolean, hasClaudeKey: boolean): "claude" | 
     // Không có Claude key → bắt buộc dùng Gemini
     if (!hasClaudeKey && hasGeminiKey) return "gemini";
 
-    // User đã chọn cụ thể trên UI
-    if (preferredProviderSetting === "claude") {
-        // Rate limit fallback: nếu Claude bị lock → tạm thời dùng Gemini
-        if (claudeRateLimited) {
-            console.warn("[AI Provider] Claude rate limited, tạm fallback Gemini");
-            return "gemini";
-        }
-        return "claude";
-    }
-
-    if (preferredProviderSetting === "gemini") {
-        // Rate limit fallback: nếu Gemini bị lock → tạm thời dùng Claude
-        if (geminiRateLimited) {
-            console.warn("[AI Provider] Gemini rate limited, tạm fallback Claude");
-            return "claude";
-        }
-        return "gemini";
-    }
-
     // "auto": round-robin Claude/Gemini luân phiên
     requestCounter++;
     if (requestCounter % 2 === 0) {
@@ -137,26 +117,33 @@ function pickProvider(hasGeminiKey: boolean, hasClaudeKey: boolean): "claude" | 
     }
 }
 
-// ======================== HÀM GỌI AI ========================
-
 /**
- * Gọi Claude API (qua ezaiapi — OpenAI compatible format)
+ * Gọi Claude API (qua Rust reqwest streaming — bypass plugin-http hoàn toàn)
+ *
+ * Flow:
+ * 1. Frontend gọi invoke('call_claude_stream', params)
+ * 2. Rust gửi POST tới Claude API với stream: true
+ * 3. Rust đọc SSE chunks, nối thành full text
+ * 4. Trả full text về frontend
+ *
+ * Lợi ích:
+ * - Không bị ReadableStream treo (bug plugin-http)
+ * - Tránh Cloudflare 524 timeout (connection alive liên tục)
+ * - Ổn định với response dài
  */
 async function callClaude(
     prompt: string,
     logId: string,
     label: string,
     timeoutMs: number,
-    claudeApiKey: string  // ← Key truyền vào, KHÔNG hardcode
+    claudeApiKey: string,
+    temperature: number = 0.7
 ): Promise<string> {
-    const url = `${CLAUDE_CONFIG.baseUrl}/chat/completions`;
-    const requestBody = JSON.stringify({
-        model: CLAUDE_CONFIG.model,
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: CLAUDE_CONFIG.maxTokens,
-        stream: false,
-    });
+    const { invoke } = await import("@tauri-apps/api/core");
 
+    const url = `${CLAUDE_CONFIG.baseUrl}/chat/completions`;
+
+    // Log request vào Debug Panel (trước khi gửi)
     addDebugLog({
         id: logId,
         timestamp: new Date(),
@@ -166,85 +153,78 @@ async function callClaude(
             "Content-Type": "application/json",
             Authorization: `Bearer ${claudeApiKey.slice(0, 8)}...`,
         },
-        requestBody,
+        requestBody: JSON.stringify({
+            model: CLAUDE_CONFIG.model,
+            max_tokens: CLAUDE_CONFIG.maxTokens,
+            temperature,
+            stream: true,
+            messages: [
+                { role: "user", content: prompt }
+            ]
+        }, null, 2),
         status: null,
         responseHeaders: {},
-        responseBody: "(đang chờ Claude...)",
+        responseBody: "(đang chờ Claude stream qua Rust...)",
         duration: 0,
         error: null,
-        label: `[Claude] ${label}`,
+        label: `[Claude Stream] ${label}`,
     });
 
-    // Lưu thời điểm bắt đầu để tính duration chính xác
-    // (không dùng parseInt(logId) vì logId có prefix "log-" → NaN)
     const startTime = Date.now();
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-        const response = await fetch(url, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${claudeApiKey}`,
+        // Gọi Rust command — Rust xử lý stream, trả full text
+        const result = await invoke<{
+            text: string;
+            status: number;
+            chunk_count: number;
+        }>("call_claude_stream", {
+            params: {
+                url,
+                api_key: claudeApiKey,
+                model: CLAUDE_CONFIG.model,
+                prompt,
+                max_tokens: CLAUDE_CONFIG.maxTokens,
+                temperature,
+                timeout_secs: Math.ceil(timeoutMs / 1000),
             },
-            body: requestBody,
-            signal: controller.signal,
         });
 
-        // Bắt lỗi 524 riêng — thông báo rõ ràng
-        if (response.status === 524) {
-            const duration = Date.now() - startTime;
-            updateDebugLog(logId, {
-                status: 524,
-                responseBody: "Cloudflare 524 timeout",
-                duration,
-                error: "HTTP 524",
-            });
-            throw new Error(
-                `Claude API bị Cloudflare 524 timeout. ` +
-                `Thử giảm số câu/batch hoặc giảm max_tokens.`
-            );
-        }
-
-        if (response.status === 429 || response.status === 529) {
-            claudeRateLimited = true;
-            claudeRateLimitResetTime = Date.now() + 60000;
-            throw new Error(`Claude rate limited (${response.status})`);
-        }
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            const duration = Date.now() - startTime;
-            updateDebugLog(logId, {
-                status: response.status,
-                responseBody: errorText,
-                duration,
-                error: `HTTP ${response.status}`,
-            });
-            throw new Error(`Claude API error ${response.status}: ${errorText}`);
-        }
-
-        // ═══ ĐỌC RESPONSE NON-STREAM ═══
-        // tauri-plugin-http không hỗ trợ ReadableStream đúng cách —
-        // reader.read() bị treo vĩnh viễn trong môi trường Tauri.
-        // Dùng response.json() — đơn giản, ổn định, không bị hang.
-        const data = await response.json() as {
-            choices?: Array<{ message?: { content?: string } }>
-        };
-        const fullText = data.choices?.[0]?.message?.content ?? "";
-
         const duration = Date.now() - startTime;
+        const fullText = result.text;
+
+        // Cập nhật Debug Panel — response đã nhận đủ
         updateDebugLog(logId, {
-            status: response.status,
-            responseBody: fullText.slice(0, 2000) + (fullText.length > 2000 ? "..." : ""),
+            status: result.status,
+            responseHeaders: { "Rust-Stream": "True", "Chunk-Count": result.chunk_count.toString() },
+            responseBody: JSON.stringify({
+                model: CLAUDE_CONFIG.model,
+                choices: [{ message: { content: fullText } }]
+            }, null, 2),
             duration,
-            error: null,
         });
 
         return fullText;
-    } finally {
-        clearTimeout(timeout);
+    } catch (error) {
+        const duration = Date.now() - startTime;
+        const errMsg = String(error);
+
+        // Phân loại lỗi để xử lý rate limit
+        if (errMsg.includes("429") || errMsg.includes("529")) {
+            claudeRateLimited = true;
+            claudeRateLimitResetTime = Date.now() + 60000;
+        }
+
+        updateDebugLog(logId, {
+            status: errMsg.match(/HTTP (\d+)/)?.[1]
+                ? parseInt(errMsg.match(/HTTP (\d+)/)![1])
+                : 0,
+            responseBody: errMsg,
+            duration,
+            error: errMsg.slice(0, 200),
+        });
+
+        throw new Error(errMsg);
     }
 }
 
@@ -256,7 +236,8 @@ async function callGemini(
     logId: string,
     label: string,
     timeoutMs: number,
-    geminiApiKey: string
+    geminiApiKey: string,
+    temperature: number = 0.7  // ← Nhận temperature từ caller
 ): Promise<string> {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_CONFIG.model}:generateContent?key=${geminiApiKey}`;
     const requestBody = JSON.stringify({
@@ -264,6 +245,7 @@ async function callGemini(
         generationConfig: {
             responseMimeType: "application/json",
             maxOutputTokens: GEMINI_CONFIG.maxTokens,
+            temperature,  // ← Gửi temperature lên Gemini API
         },
     });
 
@@ -288,7 +270,7 @@ async function callGemini(
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-        const response = await fetch(url, {
+        const response = await window.fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: requestBody,
@@ -343,9 +325,23 @@ export async function callAIMultiProvider(
     prompt: string,
     label: string,
     preferredProvider: AIProvider = "auto",
-    timeoutMs?: number
+    timeoutMs?: number,
+    temperature?: number  // ← Nhận từ caller (mặc định lấy từ AppSettings)
 ): Promise<string> {
     const actualTimeout = timeoutMs || CLAUDE_CONFIG.timeoutMs;
+    
+    // Lấy temperature từ Tauri Store (cùng nơi SettingsContext lưu) nếu caller không truyền
+    let actualTemp = temperature;
+    if (actualTemp === undefined) {
+        try {
+            const { load } = await import('@tauri-apps/plugin-store');
+            const store = await load('autosubs-store.json');
+            const storedSettings = await store.get<any>('settings');
+            actualTemp = storedSettings?.aiTemperature ?? 0.7;
+        } catch {
+            actualTemp = 0.7;
+        }
+    }
 
     // ═══ Lấy TẤT CẢ keys của cả 2 provider ═══
     const allClaudeKeys = await getAllClaudeKeys();
@@ -360,14 +356,35 @@ export async function callAIMultiProvider(
         );
     }
 
+    // Đọc preferred provider từ Tauri Store — đây là source of truth
+    // Biến module preferredProviderSetting có thể chưa được sync sau HMR reload
+    try {
+        const { load } = await import('@tauri-apps/plugin-store');
+        const store = await load('autosubs-store.json');
+        const storedSettings = await store.get<any>('settings');
+        if (storedSettings?.preferredProvider) {
+            preferredProviderSetting = storedSettings.preferredProvider;
+        }
+    } catch {
+        // Không đọc được → giữ biến module hiện tại
+    }
+
+    // Dùng preferredProviderSetting (từ settings/ui) lấn át argument preferredProvider nếu nó không phải auto
+    const effectiveProvider = preferredProvider !== "auto" ? preferredProvider : preferredProviderSetting;
+
     // Chọn provider ưu tiên
     let provider: "claude" | "gemini";
-    if (preferredProvider === "auto") {
+    if (effectiveProvider === "auto") {
         provider = pickProvider(hasGeminiKey, hasClaudeKey);
     } else {
-        provider = preferredProvider;
-        if (provider === "gemini" && !hasGeminiKey) provider = "claude";
-        if (provider === "claude" && !hasClaudeKey) provider = "gemini";
+        provider = effectiveProvider;
+        // User ép buộc chọn 1 model cụ thể → không cho fallback nếu thiếu key
+        if (provider === "gemini" && !hasGeminiKey) {
+            throw new Error("❌ Bạn đã chọn Gemini nhưng chưa nhập API Key cho Gemini! Hãy kiểm tra lại Settings.");
+        }
+        if (provider === "claude" && !hasClaudeKey) {
+            throw new Error("❌ Bạn đã chọn Claude nhưng chưa nhập API Key cho Claude! Hãy kiểm tra lại Settings.");
+        }
     }
 
     console.log(`[AI Provider] 🔀 ${label} → ${provider.toUpperCase()} (counter: ${requestCounter})`);
@@ -375,7 +392,9 @@ export async function callAIMultiProvider(
     // ═══ BỂ XOAY TUA: thử từng key cùng provider, rồi fallback ═══
     const primaryKeys = provider === "claude" ? allClaudeKeys : allGeminiKeys;
     const fallbackProvider = provider === "claude" ? "gemini" : "claude";
-    const fallbackKeys = provider === "claude" ? allGeminiKeys : allClaudeKeys;
+    
+    // YÊU CẦU: Nếu user chọn đích danh 1 model, tuyệt đối KHÔNG đổi chéo sang model kia kể cả khi rate limit.
+    const fallbackKeys = effectiveProvider === "auto" ? (provider === "claude" ? allGeminiKeys : allClaudeKeys) : [];
 
     // Bước 1: Thử từng key của provider chính
     for (let i = 0; i < primaryKeys.length; i++) {
@@ -383,14 +402,14 @@ export async function callAIMultiProvider(
         const logId = generateLogId();
         try {
             if (provider === "claude") {
-                return await callClaude(prompt, logId, label, actualTimeout, key);
+                return await callClaude(prompt, logId, label, actualTimeout, key, actualTemp);
             } else {
-                return await callGemini(prompt, logId, label, actualTimeout, key);
+                return await callGemini(prompt, logId, label, actualTimeout, key, actualTemp);
             }
         } catch (error) {
             const errMsg = String(error);
-            // Chỉ retry key khác nếu lỗi rate limit / server error
-            if (errMsg.includes("429") || errMsg.includes("529") || errMsg.includes("500") || errMsg.includes("rate limit")) {
+            // Chỉ retry key khác nếu lỗi rate limit / server error / timeout
+            if (errMsg.includes("429") || errMsg.includes("529") || errMsg.includes("500") || errMsg.includes("rate limit") || errMsg.includes("timeout") || errMsg.includes("timed out")) {
                 console.warn(`[AI Provider] ⚠️ ${provider} key #${i + 1} lỗi: ${errMsg.slice(0, 100)}`);
                 if (i < primaryKeys.length - 1) {
                     console.log(`[AI Provider] 🔄 Thử key #${i + 2}...`);
@@ -413,13 +432,13 @@ export async function callAIMultiProvider(
             const fallbackLogId = generateLogId();
             try {
                 if (fallbackProvider === "claude") {
-                    return await callClaude(prompt, fallbackLogId, `[Fallback] ${label}`, actualTimeout, key);
+                    return await callClaude(prompt, fallbackLogId, `[Fallback] ${label}`, actualTimeout, key, actualTemp);
                 } else {
-                    return await callGemini(prompt, fallbackLogId, `[Fallback] ${label}`, actualTimeout, key);
+                    return await callGemini(prompt, fallbackLogId, `[Fallback] ${label}`, actualTimeout, key, actualTemp);
                 }
             } catch (error) {
                 const errMsg = String(error);
-                if (errMsg.includes("429") || errMsg.includes("529") || errMsg.includes("500") || errMsg.includes("rate limit")) {
+                if (errMsg.includes("429") || errMsg.includes("529") || errMsg.includes("500") || errMsg.includes("rate limit") || errMsg.includes("timeout") || errMsg.includes("timed out")) {
                     console.warn(`[AI Provider] ⚠️ ${fallbackProvider} key #${i + 1} cũng lỗi`);
                     continue;
                 }

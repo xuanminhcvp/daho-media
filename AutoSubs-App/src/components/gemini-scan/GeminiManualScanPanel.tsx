@@ -1,575 +1,437 @@
 /**
  * GeminiManualScanPanel.tsx
  * =========================
- * Tab "Scan Thủ Công" — không cần Python server hay Chrome automation.
+ * Tab "Manual Intelligence" — Scan thủ công file chưa có metadata.
  *
  * Luồng:
- *   BƯỚC 1  → Chọn loại scan + chọn file
- *   BƯỚC 2  → Copy prompt → mở Gemini → upload file → paste prompt → chạy
- *   BƯỚC 3  → Copy JSON từ Gemini → paste vào ô → Parse → Lưu vào Metadata
- *
- * Hỗ trợ batch: thêm nhiều file, xử lý từng file một.
+ *   1. Chọn Tab (Nhạc / SFX / Footage / Ảnh) → Bấm Scan
+ *   2. Bấm file trong danh sách → Copy Prompt → Mở Gemini → Upload → Chạy
+ *   3. Paste JSON về → Bấm "BƠM JSON" → Auto Parse + Lưu
  */
 
-import React, { useRef, useState, useCallback } from 'react';
-import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { open as openUrl } from '@tauri-apps/plugin-shell';
-import { desktopDir, join as pathJoin } from '@tauri-apps/api/path';  // lấy đường dẫn Desktop
+import { useRef, useState, useCallback, useEffect } from 'react';
+import { open as openUrl, Command } from '@tauri-apps/plugin-shell';
 import { useManualScan, ManualScanType } from '@/hooks/useManualScan';
+import { useProject } from '@/contexts/ProjectContext';
+import { scanAudioFolder, loadAudioItemsFromFolder, findNewFiles } from '@/services/audio-library-service';
+import { scanFootageFolder, loadFootageMetadata } from '@/services/footage-library-service';
+import { ensureAutoMediaFolders, getMusicFolderPath, getSfxFolderPath, getFootageFolderPath, getRefImagesFolderPath } from '@/services/auto-media-storage';
 
 // ═══════════════════════════════════════════════════
-// STYLES (dùng inline style cho nhất quán với codebase)
-// ═══════════════════════════════════════════════════
-const colors = {
-    bg:       'rgba(0,0,0,0)',
-    card:     'rgba(255,255,255,0.04)',
-    cardHov:  'rgba(255,255,255,0.07)',
-    border:   'rgba(255,255,255,0.06)',
-    borderAct:'rgba(139,92,246,0.4)',   // tím khi active
-    text:     '#e2e8f0',
-    textMuted:'#64748b',
-    textSub:  '#94a3b8',
-    purple:   '#a78bfa',
-    green:    '#4ade80',
-    red:      '#f87171',
-    yellow:   '#fbbf24',
-    blue:     '#60a5fa',
-};
-
-const btn = (variant: 'primary' | 'secondary' | 'ghost' | 'danger'): React.CSSProperties => ({
-    padding: '6px 14px', borderRadius: '8px',
-    fontSize: '12px', fontWeight: 500,
-    cursor: 'pointer', border: 'none',
-    display: 'inline-flex', alignItems: 'center', gap: '6px',
-    transition: 'all 0.15s',
-    ...(variant === 'primary' && {
-        background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
-        color: '#fff', boxShadow: '0 2px 8px rgba(124,58,237,0.3)',
-    }),
-    ...(variant === 'secondary' && {
-        backgroundColor: 'rgba(255,255,255,0.08)',
-        color: colors.text, border: `1px solid ${colors.border}`,
-    }),
-    ...(variant === 'ghost' && {
-        backgroundColor: 'transparent',
-        color: colors.textMuted, border: `1px solid rgba(255,255,255,0.05)`,
-    }),
-    ...(variant === 'danger' && {
-        backgroundColor: 'rgba(239,68,68,0.1)',
-        color: colors.red, border: '1px solid rgba(239,68,68,0.2)',
-    }),
-});
-
-const section: React.CSSProperties = {
-    borderRadius: '12px',
-    backgroundColor: colors.card,
-    border: `1px solid ${colors.border}`,
-    padding: '14px 16px',
-    display: 'flex', flexDirection: 'column', gap: '10px',
-};
-
-const stepLabel = (): React.CSSProperties => ({
-    display: 'inline-flex', alignItems: 'center',
-    gap: '8px', fontSize: '12px', fontWeight: 600, color: colors.text,
-});
-
-const stepNumber = (color: string): React.CSSProperties => ({
-    width: '22px', height: '22px', borderRadius: '50%',
-    backgroundColor: color, color: '#fff',
-    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-    fontSize: '11px', fontWeight: 700, flexShrink: 0,
-});
-
-// ═══════════════════════════════════════════════════
-// COMPONENT: PILL CHỌN SCAN TYPE
+// CONSTANTS
 // ═══════════════════════════════════════════════════
 const SCAN_TYPE_OPTIONS: { value: ManualScanType; label: string; emoji: string }[] = [
-    { value: 'music', label: 'Nhạc nền', emoji: '🎵' },
-    { value: 'sfx',   label: 'SFX',      emoji: '🔊' },
-    { value: 'image', label: 'Ảnh',      emoji: '🖼️' },
+    { value: 'music',   label: 'Nhạc Nền', emoji: '🎵' },
+    { value: 'sfx',     label: 'SFX',      emoji: '🔊' },
+    { value: 'footage', label: 'Footage',  emoji: '📽️' },
+    { value: 'image',   label: 'Ảnh',      emoji: '🖼️' },
 ];
 
 // ═══════════════════════════════════════════════════
-// COMPONENT: FILE LIST (sidebar trái)
+// MAIN COMPONENT
 // ═══════════════════════════════════════════════════
-const FileList: React.FC<{
-    items: ReturnType<typeof useManualScan>['items'];
-    activeId: string | null;
-    onSelect: (id: string) => void;
-    onRemove: (id: string) => void;
-}> = ({ items, activeId, onSelect, onRemove }) => {
-    if (items.length === 0) return null;
-
-    return (
-        <div style={{
-            display: 'flex', flexDirection: 'column', gap: '4px',
-            maxHeight: '160px', overflowY: 'auto',
-        }}>
-            {items.map(item => (
-                <div
-                    key={item.id}
-                    onClick={() => onSelect(item.id)}
-                    style={{
-                        display: 'flex', alignItems: 'center', gap: '8px',
-                        padding: '6px 10px', borderRadius: '8px', cursor: 'pointer',
-                        backgroundColor: item.id === activeId ? 'rgba(139,92,246,0.12)' : 'rgba(255,255,255,0.03)',
-                        border: `1px solid ${item.id === activeId ? colors.borderAct : 'transparent'}`,
-                        transition: 'all 0.15s',
-                    }}
-                >
-                    {/* Status icon */}
-                    <span style={{ fontSize: '14px', flexShrink: 0 }}>
-                        {item.savedOk ? '✅' : item.parseError ? '❌' : item.parsedData ? '📋' : '⏳'}
-                    </span>
-                    {/* Tên file */}
-                    <span style={{
-                        flex: 1, minWidth: 0, fontSize: '11px', color: colors.textSub,
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }} title={item.filePath}>
-                        {item.fileName}
-                    </span>
-                    {/* Loại scan */}
-                    <span style={{ fontSize: '10px', color: colors.textMuted, flexShrink: 0 }}>
-                        {item.scanType}
-                    </span>
-                    {/* Nút xoá */}
-                    <button
-                        onClick={e => { e.stopPropagation(); onRemove(item.id); }}
-                        style={{
-                            background: 'none', border: 'none', cursor: 'pointer',
-                            color: colors.textMuted, fontSize: '12px', padding: '0 2px',
-                            flexShrink: 0,
-                        }}
-                        title="Xoá"
-                    >×</button>
-                </div>
-            ))}
-        </div>
-    );
-};
-
-// ═══════════════════════════════════════════════════
-// COMPONENT CHÍNH
-// ═══════════════════════════════════════════════════
-const GeminiManualScanPanel: React.FC = () => {
+export default function GeminiManualScanPanel() {
     const {
         items, activeItem, activeItemId, defaultScanType,
         setDefaultScanType, setActiveItemId,
-        addFiles, removeItem,
-        updateRawJson, parseJson, saveMetadata, saveAll, clearAll,
+        setFilesForType, removeItem, updateRawJson,
+        parseAndSave, saveAll, clearAll,
     } = useManualScan();
 
-    // State copy feedback
     const [copiedPrompt, setCopiedPrompt] = useState(false);
-    const [copiedJson,   setCopiedJson]   = useState(false);
+    const [isAutoLoading, setIsAutoLoading] = useState(false);
+    const [scanMsg, setScanMsg] = useState<string | null>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const { project } = useProject();
 
-    // ── Chọn file (mặc định mở ~/Desktop/auto-media) ──────────
-    const handlePickFiles = useCallback(async () => {
-        const isImage = defaultScanType === 'image';
-
-        // Tính đường dẫn ~/Desktop/auto-media làm thư mục mặc định
-        let defaultPath: string | undefined;
-        try {
-            const desktop = await desktopDir();
-            defaultPath = await pathJoin(desktop, 'Auto_media');
-        } catch {
-            defaultPath = undefined; // fallback: mở ở vị trí mặc định nếu lỗi
-        }
-
-        const selected = await openDialog({
-            multiple: true,
-            defaultPath,   // <-- mở thẳng vào auto-media
-            filters: isImage
-                ? [{ name: 'Ảnh', extensions: ['jpg','jpeg','png','webp','gif'] }]
-                : [{ name: 'Audio', extensions: ['mp3','wav','aac','m4a','ogg','flac','aiff'] }],
-        });
-        if (!selected) return;
-        const paths = Array.isArray(selected) ? selected : [selected];
-        addFiles(paths, defaultScanType);
-    }, [defaultScanType, addFiles]);
-
-    // ── Copy prompt ───────────────────────────────
-    const handleCopyPrompt = useCallback(async () => {
-        if (!activeItem) return;
-        await navigator.clipboard.writeText(activeItem.prompt);
-        setCopiedPrompt(true);
-        setTimeout(() => setCopiedPrompt(false), 2000);
-    }, [activeItem]);
-
-    // ── Copy JSON (để xem lại) ────────────────────
-    const handleCopyJson = useCallback(async () => {
-        if (!activeItem?.rawJson) return;
-        await navigator.clipboard.writeText(activeItem.rawJson);
-        setCopiedJson(true);
-        setTimeout(() => setCopiedJson(false), 2000);
-    }, [activeItem]);
-
-    // ── Mở Gemini trên trình duyệt ────────────────
-    const handleOpenGemini = useCallback(async () => {
-        await openUrl('https://gemini.google.com/app');
+    // ── Khởi tạo Auto_media khi mount ─────────────────────
+    useEffect(() => {
+        // Tự tạo folder Auto_media đầy đủ khi mởi mở tab
+        ensureAutoMediaFolders()
+            .catch(err => console.warn('[ManualScan] Không thể tạo Auto_media:', err));
     }, []);
 
-    // ── Parse ─────────────────────────────────────
-    const handleParse = useCallback(() => {
-        if (!activeItemId) return;
-        parseJson(activeItemId);
-    }, [activeItemId, parseJson]);
+    // ── Scan tự động — THAY THẾ list của type đang chọn ──
+    const handleScan = useCallback(async () => {
+        setScanMsg(null);
+        setIsAutoLoading(true);
+        try {
+            if (defaultScanType === 'music') {
+                // Project folder ưu tiên, fallback vào ~/Desktop/Auto_media/nhac_nen (động)
+                const folder = project?.musicLibrary?.musicFolder || await getMusicFolderPath();
+                console.log('[ManualScan] music folder:', folder);
+                const scanned = await scanAudioFolder(folder, 'music');
+                const existing = await loadAudioItemsFromFolder(folder);
+                
+                // TỰ ĐỘNG DỌN DẸP
+                const currentPaths = new Set(scanned.map(i => i.filePath));
+                const cleanedExisting = existing.filter(item => currentPaths.has(item.filePath));
+                if (existing.length - cleanedExisting.length > 0) {
+                    const { saveAudioItemsToFolder } = await import('@/services/audio-library-service');
+                    await saveAudioItemsToFolder(folder, cleanedExisting);
+                }
 
-    // ── Lưu 1 item ────────────────────────────────
-    const handleSave = useCallback(async () => {
-        if (!activeItemId) return;
-        await saveMetadata(activeItemId);
-    }, [activeItemId, saveMetadata]);
+                const newFiles = findNewFiles(scanned, cleanedExisting);
+                console.log('[ManualScan] music scanned:', scanned.length, 'new:', newFiles.length);
+                setFilesForType(newFiles.map((f: any) => f.filePath), 'music');
+                setScanMsg(newFiles.length > 0
+                    ? `✅ Tìm thấy ${newFiles.length} file chưa scan trong nhac_nen/`
+                    : '✅ Tất cả nhạc đã được scan');
+            }
+            else if (defaultScanType === 'sfx') {
+                const folder = project?.sfxLibrary?.sfxFolder || await getSfxFolderPath();
+                console.log('[ManualScan] sfx folder:', folder);
+                const scanned = await scanAudioFolder(folder, 'sfx');
+                const existing = await loadAudioItemsFromFolder(folder);
+                
+                // TỰ ĐỘNG DỌN DẸP
+                const currentPaths = new Set(scanned.map(i => i.filePath));
+                const cleanedExisting = existing.filter(item => currentPaths.has(item.filePath));
+                if (existing.length - cleanedExisting.length > 0) {
+                    const { saveAudioItemsToFolder } = await import('@/services/audio-library-service');
+                    await saveAudioItemsToFolder(folder, cleanedExisting);
+                }
 
-    // Đếm items đã parse, đã lưu
-    const parsedCount = items.filter(i => i.parsedData).length;
-    const savedCount  = items.filter(i => i.savedOk).length;
+                const newFiles = findNewFiles(scanned, cleanedExisting);
+                console.log('[ManualScan] sfx scanned:', scanned.length, 'new:', newFiles.length);
+                setFilesForType(newFiles.map((f: any) => f.filePath), 'sfx');
+                setScanMsg(newFiles.length > 0
+                    ? `✅ Tìm thấy ${newFiles.length} SFX chưa scan trong sfx/`
+                    : '✅ Tất cả SFX đã được scan');
+            }
+            else if (defaultScanType === 'footage') {
+                const folder = project?.mediaImport?.mediaFolder || await getFootageFolderPath();
+                console.log('[ManualScan] footage folder:', folder);
+                const scanned = await scanFootageFolder(folder);
+                const existing = await loadFootageMetadata(folder);
+                
+                // TỰ ĐỘNG DỌN DẸP FOOTAGE
+                const currentPaths = new Set(scanned.map(i => i.filePath));
+                const cleanedExisting = existing.filter((item: any) => currentPaths.has(item.filePath));
+                if (existing.length - cleanedExisting.length > 0) {
+                    const { saveFootageMetadata } = await import('@/services/footage-library-service');
+                    await saveFootageMetadata(folder, cleanedExisting);
+                }
+
+                const existingMap = new Map(cleanedExisting.map((i: any) => [i.filePath, i]));
+                const newFiles = scanned.filter((s: any) => {
+                    const ex = existingMap.get(s.filePath);
+                    return !(ex && ex.aiDescription && ex.aiMood !== 'Error' && ex.durationSec > 0 && ex.fileHash === s.fileHash);
+                });
+                console.log('[ManualScan] footage scanned:', scanned.length, 'new:', newFiles.length);
+                setFilesForType(newFiles.map((f: any) => f.filePath), 'footage');
+                setScanMsg(newFiles.length > 0
+                    ? `✅ Tìm thấy ${newFiles.length} footage chưa scan trong footage/`
+                    : '✅ Tất cả footage đã được scan');
+            }
+            else if (defaultScanType === 'image') {
+                const refPath = await getRefImagesFolderPath();
+                setScanMsg(`ℹ️ Nếu muốn scan ảnh, hãy thêm file từ: ${refPath}`);
+            }
+        } catch (err) {
+            console.error('[ManualScan] Lỗi:', err);
+            setScanMsg(`❌ Lỗi: ${String(err)}`);
+        } finally {
+            setIsAutoLoading(false);
+        }
+    }, [project, setFilesForType, defaultScanType]);
+
+    // ── Parse + Lưu 1 cú bấm (atomic, không race condition) ────────
+    const handleBoomJson = useCallback(async () => {
+        if (!activeItemId) return;
+        // parseAndSave: parse ngay từ rawJson + lưu file trong 1 async call
+        await parseAndSave(activeItemId);
+    }, [activeItemId, parseAndSave]);
+
+    // ── Filtered list theo tab hiện tại ──────────
+    const visibleItems = items.filter(i => i.scanType === defaultScanType);
+    const savedCount   = visibleItems.filter(i => i.savedOk).length;
+    const parsedCount  = visibleItems.filter(i => i.parsedData).length;
 
     return (
-        <div style={{
-            display: 'flex', flexDirection: 'column', gap: '12px',
-            padding: '2px 0',
-        }}>
-            {/* ═══ HEADER ═══ */}
-            <div style={{
-                display: 'flex', alignItems: 'center',
-                justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px',
-            }}>
+        <div className="flex flex-col h-full bg-background text-foreground overflow-hidden">
+
+            {/* ── HEADER ── */}
+            <div className="flex-none px-5 py-3 border-b border-border/40 bg-card/30 backdrop-blur flex justify-between items-center">
                 <div>
-                    <div style={{ fontSize: '13px', fontWeight: 600, color: colors.text }}>
-                        ✍️ Scan Thủ Công
-                    </div>
-                    <div style={{ fontSize: '11px', color: colors.textMuted, marginTop: '2px' }}>
-                        Tự upload lên Gemini → paste JSON về đây → lưu metadata
-                    </div>
+                    <h2 className="text-base font-bold text-foreground flex items-center gap-2">
+                        ✨ Scan Thủ Công
+                    </h2>
                 </div>
-                {items.length > 0 && (
-                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                        <span style={{ fontSize: '11px', color: colors.textMuted }}>
-                            {savedCount}/{items.length} đã lưu
+                {visibleItems.length > 0 && (
+                    <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground bg-muted px-3 py-1 rounded-md border border-border/50">
+                            {savedCount}/{visibleItems.length} đã lưu
                         </span>
                         {parsedCount > savedCount && (
-                            <button style={btn('primary')} onClick={saveAll}>
-                                💾 Lưu tất cả ({parsedCount - savedCount})
+                            <button onClick={saveAll} className="px-3 py-1 bg-primary text-primary-foreground text-xs font-bold rounded-lg hover:-translate-y-0.5 transition-all shadow shadow-primary/30">
+                                💾 Lưu Tất Cả
                             </button>
                         )}
-                        <button style={btn('ghost')} onClick={clearAll} title="Xoá tất cả">
+                        <button onClick={clearAll} className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg transition-colors" title="Xoá hết">
                             🗑
                         </button>
                     </div>
                 )}
             </div>
 
-            {/* ═══ BƯỚC 1: Loại scan + Chọn file ═══ */}
-            <div style={section}>
-                <div style={stepLabel()}>
-                    <span style={stepNumber('rgba(139,92,246,0.8)')}>1</span>
-                    Chọn loại scan &amp; file
-                </div>
+            {/* ── MAIN 2-COLUMN LAYOUT ── */}
+            <div className="flex-1 overflow-hidden flex gap-5 p-5">
 
-                {/* Pill chọn loại */}
-                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                    {SCAN_TYPE_OPTIONS.map(opt => (
-                        <button
-                            key={opt.value}
-                            onClick={() => setDefaultScanType(opt.value)}
-                            style={{
-                                padding: '5px 12px', borderRadius: '20px',
-                                fontSize: '12px', fontWeight: 500, cursor: 'pointer',
-                                border: 'none', transition: 'all 0.15s',
-                                background: defaultScanType === opt.value
-                                    ? 'linear-gradient(135deg, #7c3aed, #a855f7)'
-                                    : 'rgba(255,255,255,0.06)',
-                                color: defaultScanType === opt.value ? '#fff' : colors.textSub,
-                                boxShadow: defaultScanType === opt.value
-                                    ? '0 2px 8px rgba(124,58,237,0.3)' : 'none',
-                            }}
-                        >
-                            {opt.emoji} {opt.label}
-                        </button>
-                    ))}
-                </div>
+                {/* ═══ CỘT TRÁI: CHỌN TYPE + DANH SÁCH ═══ */}
+                <div className="w-[240px] flex-none flex flex-col gap-4">
 
-                {/* Nút chọn file */}
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                    <button style={btn('secondary')} onClick={handlePickFiles}>
-                        📂 Chọn file {defaultScanType === 'image' ? 'ảnh' : 'audio'}
-                    </button>
-                    {items.length > 0 && (
-                        <span style={{ fontSize: '11px', color: colors.textMuted }}>
-                            {items.length} file đã thêm
-                        </span>
-                    )}
-                </div>
-
-                {/* Danh sách file đã chọn */}
-                <FileList
-                    items={items}
-                    activeId={activeItemId}
-                    onSelect={setActiveItemId}
-                    onRemove={removeItem}
-                />
-            </div>
-
-            {/* ═══ BƯỚC 2: Prompt ═══ (chỉ hiện khi có file active) */}
-            {activeItem && (
-                <div style={section}>
-                    <div style={stepLabel()}>
-                        <span style={stepNumber('rgba(59,130,246,0.8)')}>2</span>
-                        Copy prompt → Upload lên Gemini → Chạy
-                    </div>
-
-                    {/* File đang xử lý */}
-                    <div style={{
-                        fontSize: '11px', color: colors.purple,
-                        padding: '4px 10px', borderRadius: '6px',
-                        backgroundColor: 'rgba(139,92,246,0.1)',
-                        border: '1px solid rgba(139,92,246,0.2)',
-                        display: 'flex', alignItems: 'center', gap: '6px',
-                    }}>
-                        📄 <span style={{ fontWeight: 500 }}>{activeItem.fileName}</span>
-                        <span style={{ color: colors.textMuted }}>({activeItem.scanType})</span>
-                    </div>
-
-                    {/* Prompt box */}
-                    <div style={{
-                        borderRadius: '8px', backgroundColor: 'rgba(0,0,0,0.25)',
-                        border: `1px solid ${colors.border}`,
-                        padding: '10px 12px',
-                        fontSize: '11px', color: colors.textSub,
-                        fontFamily: 'monospace', lineHeight: '1.5',
-                        maxHeight: '120px', overflowY: 'auto',
-                        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                    }}>
-                        {activeItem.prompt}
-                    </div>
-
-                    {/* Actions */}
-                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                        <button style={btn('primary')} onClick={handleCopyPrompt}>
-                            {copiedPrompt ? '✅ Đã copy!' : '📋 Copy Prompt'}
-                        </button>
-                        <button style={btn('secondary')} onClick={handleOpenGemini}>
-                            🌐 Mở Gemini
-                        </button>
-                    </div>
-
-                    <div style={{
-                        fontSize: '10px', color: colors.textMuted,
-                        padding: '6px 10px', borderRadius: '6px',
-                        backgroundColor: 'rgba(255,255,255,0.02)',
-                        lineHeight: '1.6',
-                    }}>
-                        💡 <strong>Hướng dẫn:</strong> Copy prompt → Mở Gemini → Upload file{' '}
-                        <code style={{ fontSize: '10px', backgroundColor: 'rgba(255,255,255,0.06)', padding: '1px 4px', borderRadius: '3px' }}>
-                            {activeItem.fileName}
-                        </code>
-                        {' '}→ Paste prompt → Enter → Copy toàn bộ JSON phản hồi
-                    </div>
-                </div>
-            )}
-
-            {/* ═══ BƯỚC 3: Paste JSON ═══ */}
-            {activeItem && (
-                <div style={section}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <div style={stepLabel()}>
-                            <span style={stepNumber('rgba(34,197,94,0.8)')}>3</span>
-                            Paste JSON từ Gemini → Parse → Lưu
+                    {/* Segmented Control */}
+                    <div className="bg-card/40 border border-border/50 rounded-2xl p-3 space-y-3">
+                        <p className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest px-1">Khu Vực</p>
+                        <div className="grid grid-cols-2 gap-1 p-1 bg-muted/60 rounded-xl border border-border/40">
+                            {SCAN_TYPE_OPTIONS.map(opt => (
+                                <button
+                                    key={opt.value}
+                                    onClick={() => setDefaultScanType(opt.value)}
+                                    className={`flex flex-col items-center py-2.5 rounded-lg transition-all duration-200 text-center ${
+                                        defaultScanType === opt.value
+                                            ? 'bg-background shadow text-foreground ring-1 ring-border'
+                                            : 'text-muted-foreground hover:bg-muted-foreground/10 hover:text-foreground'
+                                    }`}
+                                >
+                                    <span className="text-xl mb-1">{opt.emoji}</span>
+                                    <span className="text-[10px] font-semibold leading-none">{opt.label}</span>
+                                </button>
+                            ))}
                         </div>
-                        {activeItem.rawJson && (
-                            <button style={btn('ghost')} onClick={handleCopyJson}>
-                                {copiedJson ? '✅ Copied' : '📋 Copy lại'}
+
+                        {/* Nút Scan + Thông báo */}
+                        <div className="flex flex-col gap-2">
+                            <button
+                                onClick={handleScan}
+                                disabled={isAutoLoading}
+                                className="w-full flex items-center justify-center gap-2 py-2.5 bg-primary/10 text-primary border border-primary/20 rounded-xl font-semibold text-sm hover:bg-primary/20 transition-all disabled:opacity-50"
+                            >
+                                <span>{isAutoLoading ? '⏳' : '🔍'}</span>
+                                {isAutoLoading ? 'Đang Scan...' : `Scan ${SCAN_TYPE_OPTIONS.find(o => o.value === defaultScanType)?.label}`}
                             </button>
-                        )}
+                            {/* Thông báo kết quả scan */}
+                            {scanMsg && (
+                                <div className={`text-xs px-3 py-2 rounded-lg font-medium ${
+                                    scanMsg.startsWith('✅') ? 'bg-green-500/10 text-green-600 border border-green-500/20'
+                                    : scanMsg.startsWith('⚠') || scanMsg.startsWith('ℹ') ? 'bg-amber-500/10 text-amber-600 border border-amber-500/20'
+                                    : 'bg-destructive/10 text-destructive border border-destructive/20'
+                                }`}>
+                                    {scanMsg}
+                                </div>
+                            )}
+                        </div>
                     </div>
 
-                    {/* Textarea paste JSON */}
-                    <textarea
-                        ref={textareaRef}
-                        placeholder={`Paste JSON từ Gemini vào đây...\n\nGemini sẽ trả về dạng:\n{\n  "emotion": [...],\n  "intensity": "...",\n  "description": "...",\n  ...\n}`}
-                        value={activeItem.rawJson}
-                        onChange={e => updateRawJson(activeItem.id, e.target.value)}
-                        style={{
-                            width: '100%', minHeight: '140px',
-                            backgroundColor: 'rgba(0,0,0,0.3)',
-                            border: `1px solid ${activeItem.parseError ? 'rgba(239,68,68,0.4)' : colors.border}`,
-                            borderRadius: '8px', padding: '10px 12px',
-                            color: colors.text, fontSize: '11px',
-                            fontFamily: 'monospace', lineHeight: '1.5',
-                            resize: 'vertical', outline: 'none',
-                            boxSizing: 'border-box',
-                        }}
-                        onFocus={e => (e.target.style.borderColor = 'rgba(139,92,246,0.5)')}
-                        onBlur={e => (e.target.style.borderColor = activeItem.parseError
-                            ? 'rgba(239,68,68,0.4)' : colors.border)}
-                    />
+                    {/* File Queue */}
+                    {visibleItems.length > 0 ? (
+                        <div className="flex-1 bg-card/40 border border-border/50 rounded-2xl p-3 flex flex-col overflow-hidden">
+                            <p className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest mb-2 px-1 flex justify-between">
+                                <span>Chưa Scan ({visibleItems.length})</span>
+                                <span className="text-green-500">{savedCount > 0 ? `✓ ${savedCount} xong` : ''}</span>
+                            </p>
+                            <div className="flex-1 overflow-y-auto space-y-1">
+                                {visibleItems.map(item => (
+                                    <div
+                                        key={item.id}
+                                        onClick={() => setActiveItemId(item.id)}
+                                        className={`group flex items-center gap-2.5 p-2.5 rounded-xl border cursor-pointer transition-all ${
+                                            item.id === activeItemId
+                                                ? 'bg-primary/10 border-primary/30'
+                                                : 'bg-muted/20 border-transparent hover:bg-muted/60 hover:border-border/50'
+                                        }`}
+                                    >
+                                        {/* Status Dot */}
+                                        <div className={`shrink-0 w-2.5 h-2.5 rounded-full ${
+                                            item.savedOk ? 'bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]'
+                                            : item.parseError ? 'bg-destructive shadow-[0_0_6px_rgba(239,68,68,0.6)]'
+                                            : item.parsedData ? 'bg-blue-400 animate-pulse'
+                                            : 'bg-amber-400'
+                                        }`} />
+                                        <span className={`flex-1 text-xs font-medium truncate ${item.id === activeItemId ? 'text-primary' : 'text-foreground/80'}`}
+                                              title={item.filePath}>
+                                            {item.fileName}
+                                        </span>
+                                        <button
+                                            onClick={e => { e.stopPropagation(); removeItem(item.id); }}
+                                            className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive text-xs px-1 transition-all"
+                                        >✕</button>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="flex-1 flex flex-col gap-2 p-1">
+                            <div className="flex flex-col items-center justify-center text-center opacity-40 py-4">
+                                <span className="text-3xl mb-2">📂</span>
+                                <p className="text-xs text-muted-foreground">Bấm <strong>Scan</strong> để tải danh sách<br/>file chưa có metadata</p>
+                            </div>
 
-                    {/* Lỗi parse */}
-                    {activeItem.parseError && (
-                        <div style={{
-                            fontSize: '11px', color: colors.red,
-                            padding: '6px 10px', borderRadius: '6px',
-                            backgroundColor: 'rgba(239,68,68,0.08)',
-                            border: '1px solid rgba(239,68,68,0.2)',
-                        }}>
-                            ❌ {activeItem.parseError}
+                            {/* Hint: để file ở folder chính, không để trong sub-folder */}
+                            <div className="bg-amber-500/8 border border-amber-500/20 rounded-xl p-3 space-y-1.5">
+                                <p className="text-[10px] font-bold text-amber-600/80 uppercase tracking-widest">⚠ Lưu ý cấu trúc folder</p>
+                                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                                    Để file <span className="font-semibold text-foreground">trực tiếp trong folder</span>, không đặt vào sub-folder nhỏ hơn:
+                                </p>
+                                {/* Ví dụ động theo tab đang chọn */}
+                                <div className="font-mono text-[10px] bg-muted/60 rounded-lg px-3 py-2 text-muted-foreground leading-relaxed">
+                                    {defaultScanType === 'music' && (<>
+                                        <span className="text-primary">nhac_nen/</span><br/>
+                                        <span className="text-green-500">✓ nhac_nen/bai_hat.mp3</span><br/>
+                                        <span className="text-destructive">✗ nhac_nen/album/bai_hat.mp3</span>
+                                    </>)}
+                                    {defaultScanType === 'sfx' && (<>
+                                        <span className="text-primary">sfx/</span><br/>
+                                        <span className="text-green-500">✓ sfx/tieng_gio.wav</span><br/>
+                                        <span className="text-destructive">✗ sfx/nature/tieng_gio.wav</span>
+                                    </>)}
+                                    {defaultScanType === 'footage' && (<>
+                                        <span className="text-primary">footage/</span><br/>
+                                        <span className="text-green-500">✓ footage/clip_001.mp4</span><br/>
+                                        <span className="text-destructive">✗ footage/project/clip_001.mp4</span>
+                                    </>)}
+                                    {defaultScanType === 'image' && (<>
+                                        <span className="text-primary">ref_images/</span><br/>
+                                        <span className="text-green-500">✓ ref_images/anh_01.jpg</span><br/>
+                                        <span className="text-destructive">✗ ref_images/batch1/anh_01.jpg</span>
+                                    </>)}
+                                </div>
+                            </div>
                         </div>
                     )}
+                </div>
 
-                    {/* Nút Parse */}
-                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                        <button
-                            style={btn('secondary')}
-                            onClick={handleParse}
-                            disabled={!activeItem.rawJson.trim()}
-                        >
-                            🔍 Parse JSON
-                        </button>
-                        {activeItem.parsedData && !activeItem.savedOk && (
-                            <button style={btn('primary')} onClick={handleSave}>
-                                💾 Lưu vào Metadata
-                            </button>
-                        )}
-                        {activeItem.savedOk && (
-                            <span style={{
-                                fontSize: '12px', color: colors.green,
-                                display: 'flex', alignItems: 'center', gap: '4px',
-                            }}>
-                                ✅ Đã lưu vào metadata!
-                            </span>
-                        )}
-                    </div>
+                {/* ═══ CỘT PHẢI: WORKSPACE ═══ */}
+                <div className="flex-1 min-w-0 bg-card/60 border border-border/50 rounded-3xl shadow-xl backdrop-blur overflow-hidden flex flex-col">
 
-                    {/* Preview kết quả parsed */}
-                    {activeItem.parsedData && (
-                        <ParsedPreview data={activeItem.parsedData} scanType={activeItem.scanType} />
+                    {!activeItem ? (
+                        /* Empty State */
+                        <div className="flex-1 flex flex-col items-center justify-center text-center opacity-50">
+                            <div className="w-20 h-20 rounded-full bg-muted flex items-center justify-center mb-4 border border-border shadow-inner">
+                                <span className="text-3xl">🪄</span>
+                            </div>
+                            <h3 className="font-bold text-foreground">Chọn file bên trái</h3>
+                            <p className="text-sm text-muted-foreground max-w-60 mt-1.5 leading-relaxed">
+                                Bấm vào một file trong danh sách để bắt đầu quy trình fix thủ công
+                            </p>
+                        </div>
+                    ) : (
+                        /* Workspace khi có file active */
+                        <div className="flex-1 flex flex-col overflow-hidden">
+                            {/* File Info Bar */}
+                            <div className="flex-none flex items-center justify-between px-5 py-3 border-b border-border/40 bg-muted/20">
+                                <div className="flex items-center gap-3 overflow-hidden">
+                                    <div className="w-9 h-9 rounded-lg bg-background flex items-center justify-center border border-border shadow-sm shrink-0 text-lg">
+                                        {activeItem.scanType === 'music' ? '🎵' : activeItem.scanType === 'sfx' ? '🔊' : activeItem.scanType === 'footage' ? '📽️' : '🖼️'}
+                                    </div>
+                                    <div className="overflow-hidden">
+                                        <p className="text-sm font-bold truncate text-foreground/90" title={activeItem.fileName}>
+                                            {activeItem.fileName}
+                                        </p>
+                                        <p className="text-[10px] text-muted-foreground uppercase tracking-widest font-semibold">{activeItem.scanType}</p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2 shrink-0">
+                                    <button
+                                        onClick={async () => {
+                                            try { await Command.create('exec-sh', ['-c', `open -R "${activeItem.filePath}"`]).execute(); }
+                                            catch (e) { console.error(e); }
+                                        }}
+                                        className="px-3 py-1.5 bg-background border border-border rounded-lg text-xs font-semibold hover:bg-muted transition-colors shadow-sm"
+                                    >
+                                        📂 Finder
+                                    </button>
+                                    <button
+                                        onClick={() => openUrl('https://gemini.google.com/app')}
+                                        className="px-3 py-1.5 bg-blue-500/10 text-blue-500 border border-blue-500/20 rounded-lg text-xs font-bold hover:bg-blue-500/20 transition-colors shadow-sm"
+                                    >
+                                        ✦ Gemini
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* 2-pane: Prompt | JSON */}
+                            <div className="flex-1 flex overflow-hidden">
+
+                                {/* Trái: Prompt */}
+                                <div className="w-1/2 border-r border-border/40 flex flex-col overflow-hidden">
+                                    <div className="flex-none flex items-center justify-between px-4 py-2.5 bg-muted/30 border-b border-border/30">
+                                        <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">1. Copy Prompt này</p>
+                                        <button
+                                            onClick={async () => {
+                                                await navigator.clipboard.writeText(activeItem.prompt);
+                                                setCopiedPrompt(true);
+                                                setTimeout(() => setCopiedPrompt(false), 2000);
+                                            }}
+                                            className={`px-3 py-1 rounded-md text-[10px] font-bold transition-all ${
+                                                copiedPrompt
+                                                    ? 'bg-green-500/20 text-green-500 border border-green-500/30'
+                                                    : 'bg-primary text-primary-foreground shadow shadow-primary/30 hover:-translate-y-0.5'
+                                            }`}
+                                        >
+                                            {copiedPrompt ? '✓ ĐÃ COPY' : '📋 COPY'}
+                                        </button>
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto p-4">
+                                        <pre className="text-[11px] leading-relaxed font-mono text-muted-foreground/80 whitespace-pre-wrap">{activeItem.prompt}</pre>
+                                    </div>
+                                </div>
+
+                                {/* Phải: JSON Drop + Action */}
+                                <div className="w-1/2 flex flex-col overflow-hidden">
+                                    <div className="flex-none flex items-center justify-between px-4 py-2.5 bg-muted/30 border-b border-border/30">
+                                        <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">2. Paste JSON vào đây</p>
+                                        {activeItem.rawJson && !activeItem.savedOk && (
+                                            <button onClick={() => updateRawJson(activeItem.id, '')} className="text-[10px] text-destructive hover:underline font-bold">Xoá</button>
+                                        )}
+                                    </div>
+
+                                    <div className="relative flex-1 overflow-hidden">
+                                        <textarea
+                                            ref={textareaRef}
+                                            placeholder={`Paste JSON từ Gemini vào đây...\n\n${activeItem.scanType === 'music' || activeItem.scanType === 'sfx'
+                                                ? '{\n  "emotion": [...],\n  "intensity": "...",\n  "description": "..."\n}'
+                                                : '{\n  "description": "...",\n  "tags": [...],\n  "mood": "..."\n}'
+                                            }`}
+                                            value={activeItem.rawJson}
+                                            onChange={e => updateRawJson(activeItem.id, e.target.value)}
+                                            className={`w-full h-full p-4 bg-transparent border-none outline-none resize-none text-xs font-mono leading-relaxed ${
+                                                activeItem.savedOk ? 'text-green-500/80'
+                                                : activeItem.parseError ? 'text-destructive/80'
+                                                : 'text-foreground/80'
+                                            }`}
+                                        />
+                                        {/* Lỗi parse */}
+                                        {activeItem.parseError && (
+                                            <div className="absolute bottom-3 left-3 right-3 p-2.5 bg-destructive/90 text-white text-xs font-medium rounded-lg shadow-xl backdrop-blur animate-in slide-in-from-bottom-2">
+                                                🚨 {activeItem.parseError}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* BIG Action Button */}
+                                    <div className="flex-none p-4 border-t border-border/30">
+                                        <button
+                                            onClick={handleBoomJson}
+                                            disabled={!activeItem.rawJson.trim() || activeItem.savedOk}
+                                            className={`w-full py-3.5 rounded-xl font-bold text-sm tracking-wide transition-all border ${
+                                                activeItem.savedOk
+                                                    ? 'bg-green-500/10 text-green-500 border-green-500/20 cursor-default'
+                                                    : !activeItem.rawJson.trim()
+                                                        ? 'bg-muted text-muted-foreground border-border/50 opacity-40 cursor-not-allowed'
+                                                        : 'bg-gradient-to-r from-primary to-purple-500 text-white border-transparent shadow-lg shadow-primary/30 hover:shadow-primary/50 hover:-translate-y-0.5'
+                                            }`}
+                                        >
+                                            {activeItem.savedOk ? '✅ Đã lưu metadata' : '💾 Thêm vào metadata'}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     )}
                 </div>
-            )}
-
-            {/* ═══ EMPTY STATE ═══ */}
-            {items.length === 0 && (
-                <div style={{
-                    textAlign: 'center', padding: '32px 16px',
-                    color: colors.textMuted, fontSize: '12px',
-                    border: `2px dashed ${colors.border}`,
-                    borderRadius: '12px',
-                }}>
-                    <div style={{ fontSize: '32px', marginBottom: '10px' }}>✍️</div>
-                    <div style={{ fontWeight: 500, color: colors.textSub, marginBottom: '6px' }}>
-                        Chưa có file nào
-                    </div>
-                    <div style={{ lineHeight: '1.6' }}>
-                        Chọn loại scan → bấm <strong>Chọn file</strong> để bắt đầu
-                    </div>
-                </div>
-            )}
-        </div>
-    );
-};
-
-// ═══════════════════════════════════════════════════
-// SUB-COMPONENT: PREVIEW KẾT QUẢ PARSE
-// ═══════════════════════════════════════════════════
-const ParsedPreview: React.FC<{ data: any; scanType: ManualScanType }> = ({ data, scanType }) => {
-    const [showRaw, setShowRaw] = useState(false);
-
-    return (
-        <div style={{
-            borderRadius: '8px', backgroundColor: 'rgba(34,197,94,0.05)',
-            border: '1px solid rgba(34,197,94,0.15)',
-            padding: '10px 12px',
-            display: 'flex', flexDirection: 'column', gap: '8px',
-        }}>
-            {/* Header */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: '12px', fontWeight: 600, color: colors.green }}>
-                    ✅ Parse thành công
-                </span>
-                <button
-                    onClick={() => setShowRaw(s => !s)}
-                    style={{
-                        fontSize: '10px', color: colors.textMuted, cursor: 'pointer',
-                        background: 'none', border: 'none', padding: 0,
-                    }}
-                >
-                    {showRaw ? 'Ẩn JSON thô' : 'Xem JSON thô'}
-                </button>
             </div>
-
-            {/* Hiển thị theo loại scan */}
-            {scanType !== 'image' ? (
-                // Audio preview
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                    {data.description && (
-                        <PreviewRow label="Mô tả" value={data.description} />
-                    )}
-                    {data.emotion && (
-                        <PreviewRow label="Cảm xúc" value={[].concat(data.emotion).join(', ')} />
-                    )}
-                    {data.intensity && (
-                        <PreviewRow label="Cường độ" value={data.intensity} />
-                    )}
-                    {data.tags && (
-                        <PreviewRowTags label="Tags" tags={[].concat(data.tags)} />
-                    )}
-                    {data.bestFor && (
-                        <PreviewRowTags label="Dùng cho" tags={[].concat(data.bestFor)} />
-                    )}
-                    {data.totalDurationSec !== undefined && (
-                        <PreviewRow label="Thời lượng" value={`${data.totalDurationSec}s`} />
-                    )}
-                </div>
-            ) : (
-                // Image preview
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                    {Object.entries(data).slice(0, 6).map(([k, v]) => (
-                        <PreviewRow key={k} label={k} value={
-                            typeof v === 'object' ? JSON.stringify(v).slice(0, 80) : String(v)
-                        } />
-                    ))}
-                </div>
-            )}
-
-            {/* JSON thô */}
-            {showRaw && (
-                <pre style={{
-                    fontSize: '10px', color: colors.textSub,
-                    backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '6px',
-                    padding: '8px', margin: 0, overflowX: 'auto',
-                    maxHeight: '180px', overflowY: 'auto',
-                }}>
-                    {JSON.stringify(data, null, 2)}
-                </pre>
-            )}
         </div>
     );
-};
-
-const PreviewRow: React.FC<{ label: string; value: string }> = ({ label, value }) => (
-    <div style={{ display: 'flex', gap: '6px', fontSize: '11px' }}>
-        <span style={{ color: colors.textMuted, flexShrink: 0, minWidth: '75px' }}>{label}:</span>
-        <span style={{ color: colors.textSub, flex: 1, wordBreak: 'break-word' }}>{value}</span>
-    </div>
-);
-
-const PreviewRowTags: React.FC<{ label: string; tags: string[] }> = ({ label, tags }) => (
-    <div style={{ display: 'flex', gap: '6px', fontSize: '11px', alignItems: 'flex-start' }}>
-        <span style={{ color: colors.textMuted, flexShrink: 0, minWidth: '75px' }}>{label}:</span>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-            {tags.slice(0, 8).map((t, i) => (
-                <span key={i} style={{
-                    padding: '1px 8px', borderRadius: '10px',
-                    backgroundColor: 'rgba(139,92,246,0.12)',
-                    color: colors.purple, fontSize: '10px',
-                }}>
-                    {t}
-                </span>
-            ))}
-        </div>
-    </div>
-);
-
-export default GeminiManualScanPanel;
+}

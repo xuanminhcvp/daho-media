@@ -833,4 +833,163 @@ function M.AddSfxClipsToTimeline(state, helpers, clips, trackName)
     }
 end
 
+-- ===== IMPORT SRT TO MEDIA POOL =====
+-- Import file SRT vào subfolder "AutoSubs Subtitles" trong Media Pool
+-- Dùng cho flow "Kéo thả thủ công" trong DaVinci Resolve
+function M.ImportSrtToMediaPool(state, helpers, filePath)
+    if not filePath or filePath == "" then
+        return {
+            error = true,
+            message = "Missing filePath"
+        }
+    end
+
+    local project = state.project
+    local mediaPool = state.mediaPool
+
+    if not project then
+        return {
+            error = true,
+            message = "No current project"
+        }
+    end
+
+    if not mediaPool then
+        return {
+            error = true,
+            message = "MediaPool not found"
+        }
+    end
+
+    local rootFolder = mediaPool:GetRootFolder()
+    if not rootFolder then
+        return {
+            error = true,
+            message = "Root folder not found"
+        }
+    end
+
+    -- Tìm subfolder "AutoSubs Subtitles" nếu đã tồn tại, không thì tạo mới
+    local targetFolder = nil
+    local subfolders = rootFolder:GetSubFolderList() or {}
+    for _, folder in ipairs(subfolders) do
+        if folder and folder:GetName() == "AutoSubs Subtitles" then
+            targetFolder = folder
+            break
+        end
+    end
+
+    if not targetFolder then
+        targetFolder = mediaPool:AddSubFolder(rootFolder, "AutoSubs Subtitles")
+        if not targetFolder then
+            return {
+                error = true,
+                message = "Failed to create Media Pool subfolder: AutoSubs Subtitles"
+            }
+        end
+    end
+
+    -- Set current folder để ImportMedia đặt vào đúng chỗ
+    local setFolderOk = mediaPool:SetCurrentFolder(targetFolder)
+    if setFolderOk == false then
+        return {
+            error = true,
+            message = "Failed to set current folder to AutoSubs Subtitles"
+        }
+    end
+
+    -- Import file SRT vào Media Pool
+    local imported = mediaPool:ImportMedia({ filePath })
+    if not imported or (type(imported) == "table" and #imported == 0) then
+        return {
+            error = true,
+            message = "Failed to import SRT into Media Pool: " .. tostring(filePath)
+        }
+    end
+
+    print("[AutoSubs] ✅ SRT imported vào Media Pool: " .. tostring(filePath))
+    return {
+        success = true,
+        message = "SRT imported into Media Pool folder 'AutoSubs Subtitles'",
+        filePath = filePath
+    }
+end
+
+-- ===== IMPORT SRT TO TIMELINE =====
+-- Import file SRT vào Media Pool (subfolder AutoSubs Subtitles) rồi append lên timeline hiện tại
+-- Dùng cho nút "Import SRT Native" — tạo native subtitle track trong DaVinci Resolve
+function M.ImportSrtToTimeline(state, helpers, filePath)
+    print("[AutoSubs] ImportSrtToTimeline: " .. tostring(filePath))
+
+    if not filePath or filePath == "" then
+        return { error = true, message = "Missing filePath" }
+    end
+
+    local project  = state.project
+    local mediaPool = state.mediaPool
+
+    if not project  then return { error = true, message = "No current project" } end
+    if not mediaPool then return { error = true, message = "MediaPool not found" } end
+
+    local timeline = project:GetCurrentTimeline()
+    if not timeline then return { error = true, message = "No current timeline" } end
+
+    print("[AutoSubs] Current timeline: " .. tostring(timeline:GetName()))
+
+    -- Tạo/tìm subfolder AutoSubs Subtitles
+    local rootFolder = mediaPool:GetRootFolder()
+    local targetFolder = nil
+    if rootFolder then
+        local subfolders = rootFolder:GetSubFolderList() or {}
+        for _, folder in ipairs(subfolders) do
+            if folder and folder:GetName() == "AutoSubs Subtitles" then
+                targetFolder = folder
+                break
+            end
+        end
+    end
+
+    if not targetFolder then
+        targetFolder = mediaPool:AddSubFolder(rootFolder, "AutoSubs Subtitles")
+    end
+    if targetFolder then mediaPool:SetCurrentFolder(targetFolder) end
+
+    -- Import file SRT vào Media Pool
+    local imported = mediaPool:ImportMedia({ filePath })
+    print("[AutoSubs] ImportMedia result: " .. tostring(imported and #imported or "nil"))
+
+    if not imported or type(imported) ~= "table" or #imported == 0 then
+        return { error = true, message = "Failed to import SRT into Media Pool: " .. tostring(filePath) }
+    end
+
+    local mediaPoolItem = imported[1]
+    print("[AutoSubs] MediaPoolItem: " .. tostring(mediaPoolItem))
+
+    -- Cách 1: AppendToTimeline với item trực tiếp (một số API chấp nhận array of items)
+    local appendOk = mediaPool:AppendToTimeline({ mediaPoolItem })
+    print("[AutoSubs] Append (direct) result: " .. tostring(appendOk))
+
+    -- Cách 2 (fallback): AppendToTimeline với object table chuẩn
+    if not appendOk or (type(appendOk) == "table" and #appendOk == 0) then
+        print("[AutoSubs] Fallback: AppendToTimeline với object table")
+        appendOk = mediaPool:AppendToTimeline({ { mediaPoolItem = mediaPoolItem } })
+        print("[AutoSubs] Append (table) result: " .. tostring(appendOk))
+    end
+
+    if not appendOk or (type(appendOk) == "table" and #appendOk == 0) then
+        return {
+            error = true,
+            message = "SRT imported into Media Pool nhưng không thể append lên timeline. Kéo thả thủ công từ Media Pool.",
+            filePath = filePath
+        }
+    end
+
+    print("[AutoSubs] ✅ SRT appended to timeline: " .. tostring(filePath))
+    return {
+        success = true,
+        message = "SRT imported and appended to current timeline",
+        filePath = filePath
+    }
+end
+
 return M

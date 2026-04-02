@@ -4,18 +4,16 @@
 // UI: chọn matching folder → AI so khớp → preview list → chọn template → import
 
 
-import { useState, useCallback } from "react"
-import {
-    Subtitles,
+import { useState, useCallback, useEffect } from "react"
+import { 
+    Subtitles, 
+    AlertCircle, 
     FolderOpen,
+    Loader2,
     Sparkles,
     Download,
     ChevronDown,
     ChevronUp,
-    Loader2,
-    AlertCircle,
-    X,
-    FileText,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -24,14 +22,24 @@ import { useResolve } from "@/contexts/ResolveContext"
 import { open } from "@tauri-apps/plugin-dialog"
 
 import {
-    aiSubtitleMatch,
+    aiSubtitleMatchFromSentences,
     loadSubtitleLines,
 } from "@/services/subtitle-matcher-service"
 import type { SubtitleMatchProgress } from "@/services/subtitle-matcher-service"
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http"
-import { masterSrtToTranscript, hasMasterSrt, MASTER_SRT_REQUIRED_MESSAGE } from "@/utils/master-srt-utils"
+const tauriFetch = window.fetch; // Bypass Tauri streamChannel bug
+import { hasMasterSrt, MASTER_SRT_REQUIRED_MESSAGE } from "@/utils/master-srt-utils"
+import { join } from '@tauri-apps/api/path'
+import { writeTextFile, exists, mkdir } from '@tauri-apps/plugin-fs'
 
 // ======================== HELPERS ========================
+
+function stripScriptNumbers(text: string): string {
+    if (!text) return ''
+    return text.split('\n')
+        .map(line => line.replace(/^\[\d+\]\s*/, ''))
+        .filter(line => line.trim())
+        .join('\n')
+}
 
 /** Format giây → MM:SS.ss */
 function formatTime(seconds: number): string {
@@ -56,6 +64,15 @@ export function SubtitleTab() {
     const [importProgress, setImportProgress] = useState<{ current: number; total: number } | null>(null)
     const [error, setError] = useState<string | null>(null)
     const [showAllLines, setShowAllLines] = useState(false)
+
+    // Auto-fill script từ AutoMedia/MasterSRT tabs nếu panel này trống
+    // Điều này giúp user "vẫn phải paste kịch bản gốc à" KHÔNG CẦN paste lại
+    useEffect(() => {
+        if (!subData.scriptText && project.scriptText) {
+            const cleanText = stripScriptNumbers(project.scriptText)
+            updateSubtitleData({ scriptText: cleanText })
+        }
+    }, [subData.scriptText, project.scriptText, updateSubtitleData])
 
     // ======================== CHỌN MATCHING FOLDER ========================
 
@@ -83,11 +100,6 @@ export function SubtitleTab() {
         }
     }, [updateSubtitleData])
 
-    // ======================== XOÁ KỊCH BẢN ========================
-    const handleClearScript = useCallback(() => {
-        updateSubtitleData({ scriptText: '' })
-    }, [updateSubtitleData])
-
     // ======================== AI SO KHỚP PHỤ ĐỀ ========================
 
     const handleAIMatch = useCallback(async () => {
@@ -108,30 +120,36 @@ export function SubtitleTab() {
         setMatchProgress({ current: 0, total: 5, message: "Đang chuẩn bị..." })
 
         try {
-            // 1. Kiểm tra kịch bản gốc (user paste vào textarea)
-            const scriptText = (subData.scriptText || '').trim()
-            if (!scriptText) {
-                throw new Error("Chưa có kịch bản gốc — hãy paste kịch bản vào ô bên dưới.")
+            // 1. Lấy Matching Sentences (từ Project hoặc đọc từ file)
+            let sentencesToUse = project.matchingSentences;
+            if (!sentencesToUse || sentencesToUse.length === 0) {
+                if (subData.matchingFolder) {
+                    try {
+                        const { readTextFile } = await import('@tauri-apps/plugin-fs');
+                        const path = await import('@tauri-apps/api/path');
+                        const filePath = await path.join(subData.matchingFolder, 'matching.json');
+                        const content = await readTextFile(filePath);
+                        const data = JSON.parse(content);
+                        sentencesToUse = data.sentences || data.matchedSentences || data.matchingSentences;
+                    } catch (e) {
+                        console.warn("[SubtitleTab] Chưa đọc được matching.json:", e);
+                    }
+                }
             }
 
-            // 2. ⭐ Dùng Master SRT thay vì raw Whisper transcript
-            // Master SRT đã có text chuẩn (khớp kịch bản) + timing word-level chính xác
-            const transcriptData = masterSrtToTranscript(project.masterSrt!)
-            console.log(`[SubtitleTab] Dùng Master SRT: ${project.masterSrt!.length} từ → fake transcript`)
+            if (!sentencesToUse || sentencesToUse.length === 0) {
+                throw new Error("Không tìm thấy Matching_Sentence! Bạn phải chọn Cache Folder chứa `matching.json`, hoặc chạy Auto Media trước.");
+            }
 
-            const scriptLines = scriptText.split(/\n+/).filter((l: string) => l.trim())
-            console.log(`[SubtitleTab] Script: ${scriptText.length} chars, ${scriptLines.length} dòng`)
-
-            // 3. Gọi AI matching (dùng Master SRT làm nguồn timing)
-            const lines = await aiSubtitleMatch(
-                scriptText,
-                transcriptData,
-                (progress) => setMatchProgress(progress),
+            console.log(`[SubtitleTab] Dùng MatchingSentences: ${sentencesToUse.length} câu`);
+            const lines = await aiSubtitleMatchFromSentences(
+                sentencesToUse,
+                project.masterSrt || null,
+                (progress: any) => setMatchProgress(progress),
                 subData.matchingFolder || undefined // Chỉ lưu cache nếu đã chọn folder
-            )
-
-            // 4. Lưu kết quả vào state
+            );
             updateSubtitleData({ subtitleLines: lines })
+
             setMatchProgress(null)
 
         } catch (err) {
@@ -164,31 +182,86 @@ export function SubtitleTab() {
             const trackToUse = "4"
 
             setImportProgress({ current: 0, total: totalLines })
-            console.log(`[SubtitleTab] Sending ${totalLines} clips in 1 request → track V${trackToUse}`)
+            
+            if (subData.subtitleMode === 'srt') {
+                console.log(`[SubtitleTab] Generating SRT mode for ${totalLines} clips`)
+                
+                // 1. Convert sang nội dung SRT
+                let srtContent = ''
+                lines.forEach((line, index) => {
+                    const formatTime = (secs: number) => {
+                        const h = Math.floor(secs / 3600).toString().padStart(2, '0')
+                        const m = Math.floor((secs % 3600) / 60).toString().padStart(2, '0')
+                        const s = Math.floor(secs % 60).toString().padStart(2, '0')
+                        const ms = Math.floor((secs % 1) * 1000).toString().padStart(3, '0')
+                        return `${h}:${m}:${s},${ms}`
+                    }
+                    const startTc = formatTime(line.start)
+                    const endTc = formatTime(line.end)
+                    const text = (line.text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
+                    if (text && line.end > line.start) {
+                        srtContent += `${index + 1}\n`
+                        srtContent += `${startTc} --> ${endTc}\n`
+                        srtContent += `${text}\n\n`
+                    }
+                })
 
-            const response = await tauriFetch("http://127.0.0.1:56003/", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    func: "AddSimpleSubtitles",
-                    clips: lines.map(line => ({
-                        text: line.text,
-                        start: line.start,
-                        end: line.end,
-                    })),
-                    templateName: subData.selectedTemplate,
-                    trackIndex: trackToUse,
-                    fontSize: subData.fontSize,
-                }),
-            })
+                // 2. Lưu file SRT vào Desktop/Auto_media/
+                const { desktopDir } = await import('@tauri-apps/api/path')
+                const pDesktop = await desktopDir()
+                const autoMediaDir = await join(pDesktop, 'Auto_media')
+                if (!(await exists(autoMediaDir))) {
+                    await mkdir(autoMediaDir, { recursive: true })
+                }
+                const tlId = timelineInfo?.timelineId || 'manual'
+                const srtPath = await join(autoMediaDir, `Autosubs_${tlId}_phude.srt`)
+                await writeTextFile(srtPath, srtContent)
 
-            const result = await response.json() as any
-            if (result.error) {
-                throw new Error(result.message || "Lỗi import")
+                // 3. Gọi server import SRT vào Media Pool rồi append lên timeline
+                console.log(`[SubtitleTab] Calling Server to ImportSrtToTimeline: ${srtPath}`)
+                const response = await tauriFetch("http://127.0.0.1:56003/", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        func: "ImportSrtToTimeline",
+                        filePath: srtPath
+                    }),
+                })
+
+                const result = await response.json() as any
+                if (result.error) {
+                    throw new Error(result.message || "Lỗi import SRT")
+                }
+
+                setImportProgress({ current: totalLines, total: totalLines })
+                console.log(`[SubtitleTab] ✅ Import SRT lên timeline hoàn tất!`)
+                
+            } else {
+                console.log(`[SubtitleTab] Sending ${totalLines} clips in 1 request → track V${trackToUse}`)
+                const response = await tauriFetch("http://127.0.0.1:56003/", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        func: "AddSimpleSubtitles",
+                        clips: lines.map(line => ({
+                            text: line.text,
+                            start: line.start,
+                            end: line.end,
+                        })),
+                        templateName: subData.selectedTemplate,
+                        trackIndex: trackToUse,
+                        fontSize: subData.fontSize,
+                    }),
+                })
+
+                const result = await response.json() as any
+                if (result.error) {
+                    throw new Error(result.message || "Lỗi import")
+                }
+
+                setImportProgress({ current: totalLines, total: totalLines })
+                console.log(`[SubtitleTab] ✅ Import hoàn tất: ${result.added || totalLines} clips → track V${trackToUse}`)
             }
-
-            setImportProgress({ current: totalLines, total: totalLines })
-            console.log(`[SubtitleTab] ✅ Import hoàn tất: ${result.added || totalLines} clips → track V${trackToUse}`)
 
         } catch (err) {
             console.error("[SubtitleTab] Lỗi import:", err)
@@ -227,40 +300,7 @@ export function SubtitleTab() {
                 </p>
             </div>
 
-            {/* Kịch Bản Gốc — textarea user paste */}
-            <div className="shrink-0 px-4 py-2 border-t">
-                <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-1.5">
-                        <FileText className="h-3 w-3 text-muted-foreground" />
-                        <label className="text-[11px] text-muted-foreground font-medium">Kịch Bản Gốc</label>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        {/* Đếm số dòng */}
-                        {subData.scriptText ? (
-                            <span className="text-[10px] text-muted-foreground">
-                                {subData.scriptText.split(/\n+/).filter((l: string) => l.trim()).length} dòng
-                            </span>
-                        ) : null}
-                        {/* Nút xoá */}
-                        {subData.scriptText ? (
-                            <button
-                                onClick={handleClearScript}
-                                className="text-muted-foreground hover:text-destructive transition-colors"
-                                title="Xoá kịch bản"
-                            >
-                                <X className="h-3 w-3" />
-                            </button>
-                        ) : null}
-                    </div>
-                </div>
-                <textarea
-                    className="w-full h-28 text-xs px-2.5 py-2 rounded border border-border bg-muted/30 resize-none focus:outline-none focus:ring-1 focus:ring-yellow-500/50 placeholder:text-muted-foreground/50"
-                    placeholder="Paste kịch bản gốc vào đây (từng dòng/câu, không cần đánh số)..."
-                    value={subData.scriptText || ''}
-                    onChange={(e) => updateSubtitleData({ scriptText: e.target.value })}
-                    disabled={isMatching}
-                />
-            </div>
+
 
             {/* Matching Folder (TÙY CHỌN - chỉ để lưu cache) */}
             <div className="shrink-0 px-4 py-2 border-t">
@@ -442,6 +482,32 @@ export function SubtitleTab() {
                             <option value={0.055}>L — Lớn (0.055)</option>
                             <option value={0.07}>XL — Rất lớn (0.07)</option>
                         </select>
+                    </div>
+
+                    {/* Chế Độ Phụ Đề */}
+                    <div className="flex items-start gap-2 pt-1 border-t border-border/50">
+                        <label className="text-[10px] text-muted-foreground w-[60px] shrink-0 mt-2">Chế Độ:</label>
+                        <div className="flex-1 space-y-2">
+                            <div className="grid grid-cols-2 gap-1.5 bg-background border rounded-md p-1">
+                                <button 
+                                    onClick={() => updateSubtitleData({ subtitleMode: 'srt' })}
+                                    className={`text-[11px] py-1.5 rounded-sm font-medium transition-colors ${subData.subtitleMode === 'srt' ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-muted text-muted-foreground'}`}
+                                >
+                                    📝 Mượt mà (.srt)
+                                </button>
+                                <button 
+                                    onClick={() => updateSubtitleData({ subtitleMode: 'fusion' })}
+                                    className={`text-[11px] py-1.5 rounded-sm font-medium transition-colors ${subData.subtitleMode === 'fusion' ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-muted text-muted-foreground'}`}
+                                >
+                                    ✨ Hiệu ứng (Text+)
+                                </button>
+                            </div>
+                            <p className="text-[9.5px] text-muted-foreground leading-tight px-1 text-center">
+                                {subData.subtitleMode === 'srt' 
+                                    ? "Khuyên dùng cho Phim Tài Liệu. Rất nhẹ, không chiếm RAM, tạo file .srt vào Media Pool." 
+                                    : "Ăn chục GB RAM của DaVinci. Phù hợp cho video ngắn cần text Animation."}
+                            </p>
+                        </div>
                     </div>
 
                     {/* Track — cố định V4 (Text Onscreen) */}

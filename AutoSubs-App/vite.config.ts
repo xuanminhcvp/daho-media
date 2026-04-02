@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import path from "path"
 // Plugin obfuscation: làm rối code JS khi build production
 // → user không đọc được source code trong app bundle
-import obfuscatorPlugin from "vite-plugin-obfuscator";
+import { viteObfuscateFile } from "vite-plugin-obfuscator";
 
 const host = (process.env.TAURI_DEV_HOST as string) || undefined;
 
@@ -16,8 +16,7 @@ export default defineConfig(async () => ({
     react(),
     // Chỉ bật obfuscation khi build production
     // Khi dev: không obfuscate (để debug dễ dàng)
-    ...(isProduction ? [obfuscatorPlugin({
-      options: {
+    ...(isProduction ? [viteObfuscateFile({
         // Làm rối tên biến/function → không đọc được
         renameGlobals: false,
         // ⚠️ MÃ HÓA 100% string literals (đặc biệt quan trọng cho prompts!)
@@ -37,7 +36,6 @@ export default defineConfig(async () => ({
         debugProtection: false, // set true nếu muốn chặn DevTools
         // Tự bảo vệ: phát hiện nếu code bị format lại
         selfDefending: true,
-      },
     })] : []),
   ],
 

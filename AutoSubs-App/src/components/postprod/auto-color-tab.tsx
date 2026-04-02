@@ -25,7 +25,7 @@ import {
     type AutoColorResult,
     type AutoColorProgress,
 } from "@/services/auto-color-service";
-import type { PrimariesValues } from "@/prompts/auto-color-prompt";
+import type { PrimariesValues } from "@/prompts/documentary/auto-color-prompt";
 import { open } from "@tauri-apps/plugin-dialog";
 
 

@@ -45,6 +45,8 @@ import {
 } from "@/services/auto-media-service"
 import type { AutoMediaDependencies } from "@/services/auto-media-service"
 
+import { getActiveProfileId } from "@/config/activeProfile"
+
 import { open } from "@tauri-apps/plugin-dialog"
 import { readDir } from "@tauri-apps/plugin-fs"
 
@@ -134,6 +136,7 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
         updateSubtitleData,
         updateMusicLibrary,
         updateSfxLibrary,
+        setMasterSrt,
     } = useProject()
     const { timelineInfo, getSourceAudio } = useResolve()
     const { subtitles, processTranscriptionResults } = useTranscript()
@@ -142,9 +145,34 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
     // ======================== LOCAL STATE ========================
 
     // Config bật/tắt từng bước
-    const [config, setConfig] = React.useState<AutoMediaConfig>({
-        ...DEFAULT_AUTO_MEDIA_CONFIG,
+    const [config, setConfig] = React.useState<AutoMediaConfig>(() => {
+        const profileId = getActiveProfileId();
+        
+        // Đọc full cấu hình Auto Media đã lưu của profile hiện tại
+        const savedConfigStr = localStorage.getItem(`auto-media-config-${profileId}`);
+        if (savedConfigStr) {
+            try {
+                const parsed = JSON.parse(savedConfigStr);
+                return { ...DEFAULT_AUTO_MEDIA_CONFIG, ...parsed };
+            } catch (err) {
+                console.warn("Lỗi parse config Auto Media:", err);
+            }
+        }
+        
+        // Migrate Master SRT toggle cũ (nếu có)
+        const oldMasterSrt = localStorage.getItem(`auto-media-master-srt-${profileId}`);
+        let baseConfig = { ...DEFAULT_AUTO_MEDIA_CONFIG };
+        if (oldMasterSrt) {
+            baseConfig.enableMasterSrt = oldMasterSrt === 'true';
+        }
+        return baseConfig;
     })
+
+    // Lưu lại toàn bộ cài đặt config khi có thay đổi (kể cả hiệu ứng)
+    React.useEffect(() => {
+        const profileId = getActiveProfileId();
+        localStorage.setItem(`auto-media-config-${profileId}`, JSON.stringify(config));
+    }, [config]);
 
     // Script text (user paste vào popup)
     const [scriptText, setScriptText] = React.useState(
@@ -171,8 +199,12 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
     React.useEffect(() => {
         if (isOpen) {
             import('@/services/saved-folders-service').then(async ({ getSavedFolder }) => {
+                const { getFootageFolderPath, getMusicFolderPath, getSfxFolderPath } = await import('@/services/auto-media-storage');
+                
                 // Load footage folder + metadata
-                const savedFootage = await getSavedFolder('footageFolder')
+                let savedFootage = await getSavedFolder('footageFolder')
+                if (!savedFootage) savedFootage = await getFootageFolderPath()
+                
                 if (savedFootage) {
                     setFootageFolder(savedFootage)
                     try {
@@ -185,7 +217,9 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                 }
 
                 // Load music folder + metadata (nếu chưa có items từ project)
-                const savedMusic = await getSavedFolder('musicFolder')
+                let savedMusic = await getSavedFolder('musicFolder')
+                if (!savedMusic) savedMusic = await getMusicFolderPath()
+                
                 if (savedMusic) {
                     setMusicFolder(savedMusic)
                     if (musicItems.length === 0) {
@@ -200,7 +234,9 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                 }
 
                 // Load SFX folder + metadata (nếu chưa có items từ project)
-                const savedSfx = await getSavedFolder('sfxFolder')
+                let savedSfx = await getSavedFolder('sfxFolder')
+                if (!savedSfx) savedSfx = await getSfxFolderPath()
+                
                 if (savedSfx) {
                     setSfxFolder(savedSfx)
                     if (sfxItems.length === 0) {
@@ -326,6 +362,7 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
         const deps: AutoMediaDependencies = {
             timelineId: timelineInfo.timelineId,
             subtitles,
+            masterSrt: project.masterSrt,
             imageFolder,
             scriptText,
             imageFiles,
@@ -338,6 +375,7 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
             matchingFolder: project.matchingFolder || imageFolder,
             setMatchingSentences: setSharedMatchingSentences,
             setMatchingFolder: setSharedMatchingFolder,
+            setMasterSrt: setMasterSrt,
             updateImageImport,
             updateSubtitleData,
             // ★ ĐỒNG BỘ TAB: dùng template + fontSize từ ProjectContext
@@ -487,6 +525,7 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
         const deps: AutoMediaDependencies = {
             timelineId: timelineInfo?.timelineId || '',
             subtitles,
+            masterSrt: project.masterSrt,
             imageFolder,
             scriptText,
             imageFiles,
@@ -501,6 +540,7 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
             matchingFolder: project.matchingFolder || imageFolder,
             setMatchingSentences: () => {},
             setMatchingFolder: () => {},
+            setMasterSrt: () => {},
             updateImageImport: () => {},
             updateSubtitleData: () => {},
             subtitleTemplate: project.subtitleData.selectedTemplate || 'Subtitle Default',
@@ -550,11 +590,7 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                         <span>A5: 🎵 Nhạc Nền</span>
                         <span>V6: 🔤 Tên Chương</span>
                         <span></span>
-                        <span>V7: 🎬 Footage</span>
                     </div>
-                    <p className="text-yellow-500/80 text-[10px]">
-                        ⚠️ Tạo đủ 7 Video + 5 Audio tracks trong DaVinci trước khi chạy
-                    </p>
                 </div>
 
                 {/* ====== MODE: INPUT — Nhập liệu ====== */}
@@ -562,7 +598,7 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                     <div className="space-y-4">
                         {/* Script Text */}
                         <div className="space-y-1.5">
-                            <label className="text-sm font-medium">Kịch Bản (Script)</label>
+                            <label className="text-sm font-medium">Kịch bản chia câu</label>
                             <Textarea
                                 value={scriptText}
                                 onChange={(e) => setScriptText(e.target.value)}
@@ -619,6 +655,7 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                             <label className="text-sm font-medium">Bước tự động</label>
                             <div className="grid grid-cols-2 gap-2">
                                 {([
+                                    ['enableMasterSrt', 'Tạo Master SRT', <Brain key="msrt" className="h-3.5 w-3.5" />],
                                     ['enableImage', 'Import Ảnh', <Image key="img" className="h-3.5 w-3.5" />],
                                     ['enableSubtitle', 'Phụ Đề', <Subtitles key="sub" className="h-3.5 w-3.5" />],
                                     ['enableMusic', 'Nhạc Nền', <Music key="mus" className="h-3.5 w-3.5" />],
@@ -638,6 +675,34 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                                     </div>
                                 ))}
                             </div>
+
+                            {/* Tùy chọn Phụ Đề */}
+                            {config.enableSubtitle && (
+                                <div className="mt-2 rounded-md border p-2 bg-muted/30">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <span className="text-[11px] font-medium text-muted-foreground uppercase">Chế độ Phụ Đề</span>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-1.5 bg-background border rounded-md p-1">
+                                        <button 
+                                            onClick={() => setConfig(prev => ({...prev, subtitleMode: 'srt'}))}
+                                            className={`text-xs py-1.5 rounded-sm font-medium transition-colors ${config.subtitleMode === 'srt' ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-muted text-muted-foreground'}`}
+                                        >
+                                            📝 File .srt (Nhẹ/Chuẩn)
+                                        </button>
+                                        <button 
+                                            onClick={() => setConfig(prev => ({...prev, subtitleMode: 'fusion'}))}
+                                            className={`text-xs py-1.5 rounded-sm font-medium transition-colors ${config.subtitleMode === 'fusion' ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-muted text-muted-foreground'}`}
+                                        >
+                                            ✨ Fusion Text+ (Nặng/Đẹp)
+                                        </button>
+                                    </div>
+                                    <p className="text-[9.5px] text-muted-foreground mt-1.5 leading-tight px-1 text-center">
+                                        {config.subtitleMode === 'srt' 
+                                            ? "Khuyên dùng cho Phim Tài Liệu. Rất nhẹ, không ăn RAM, tự import vào Native Subtitle Track." 
+                                            : "Khuyên dùng cho Short/Stories. Ăn nhiều RAM vì render từng hiệu ứng chuyển động."}
+                                    </p>
+                                </div>
+                            )}
 
                             {/* Debug Mode toggle */}
                             <div className="flex items-center justify-between rounded-md border border-orange-500/20 bg-orange-500/5 p-2 mt-2">

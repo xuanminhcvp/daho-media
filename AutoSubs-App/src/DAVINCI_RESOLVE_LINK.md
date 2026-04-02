@@ -159,7 +159,7 @@ Content-Type: application/json
 
 Paste trực tiếp vào Console (tab Lua):
 ```lua
-dofile("/Users/may1/Desktop/auto/auto-subs-main/AutoSubs-App/src-tauri/resources/AutoSubs.lua")
+dofile("<thư_mục_chứa_AutoSubs_App>/src-tauri/resources/AutoSubs.lua")
 ```
 
 ---
@@ -182,7 +182,7 @@ dofile("/Users/may1/Desktop/auto/auto-subs-main/AutoSubs-App/src-tauri/resources
 **Cách fix:**
 1. Kiểm tra thư mục tồn tại:
    ```bash
-   ls ~/Desktop/auto/auto-subs-main/AutoSubs-App/src-tauri/resources/modules/
+   ls <thư_mục_chứa_AutoSubs_App>/src-tauri/resources/modules/
    ```
 2. Phải có ít nhất: `init.lua`, `helpers.lua`, `server.lua`, `ljsocket.lua`, `dkjson.lua`
 3. Nếu thiếu file → copy lại từ `_lua_archive/modules/`:
@@ -244,7 +244,7 @@ Trong `AutoSubs.lua` dòng 8:
 ```lua
 local DEV_MODE = true
 ```
-- `true`: Load resources từ source code (`~/Desktop/auto/auto-subs-main/...`)
+- `true`: Load resources tự động thông qua script context path, hoặc code folder (`<thư_mục_chứa_AutoSubs_App>/...`)
 - `false`: Load từ app bundle (`/Applications/AutoSubs.app/Contents/Resources/...`)
 
 ### Log file:

@@ -22,13 +22,28 @@ type WhisperBatch = {
   endTime: number
 }
 
-const BATCH_COUNT = 4
-const MAX_CONCURRENT = 4 // 4 request song song cho nhanh
 const AI_TIMEOUT = 900_000
 const RETRY_COUNT = 3
 const RETRY_BASE_MS = 5000
 const RETRYABLE_STATUS_CODES = [524, 429, 500, 502, 503]
 const SCRIPT_OVERLAP_RATIO = 0.12 // giảm overlap để bớt prompt phình
+
+// Đọc BATCH_COUNT và MAX_CONCURRENT từ Tauri store (settings người dùng)
+// Phương án A: dùng aiMaxConcurrency làm giới hạn song song chung cho tất cả tính năng AI
+async function getAIConfig(): Promise<{ batchCount: number; maxConcurrent: number }> {
+  try {
+    const { load } = await import('@tauri-apps/plugin-store')
+    const store = await load('autosubs-store.json')
+    const stored = await store.get<any>('settings')
+    return {
+      batchCount: stored?.aiMasterSrtBatches ?? 4,    // mặc định 4 batch
+      maxConcurrent: stored?.aiMaxConcurrency ?? 3,   // mặc định 3 song song (global)
+    }
+  } catch {
+    // Fallback nếu store chưa init
+    return { batchCount: 4, maxConcurrent: 3 }
+  }
+}
 
 // Chạy nhiều task bất đồng bộ với giới hạn số lượng đồng thời
 async function runWithConcurrency<T>(
@@ -343,7 +358,7 @@ export async function createMasterSrt(
   scriptText: string,
   onProgress?: (msg: string, percent: number) => void
 ): Promise<MasterSrtResult> {
-  const { buildMasterSrtPrompt } = await import("@/prompts/master-srt-prompt")
+  const { buildMasterSrtPrompt } = await import("../prompts/documentary/master-srt-prompt")
 
   // Parse duy nhất 1 lần
   const allTokens = parseWhisperWords(whisperWordsText)
@@ -355,7 +370,11 @@ export async function createMasterSrt(
     }
   }
 
-  const transcriptParts = splitWordIndicesAtSentenceBoundaries(allTokens, BATCH_COUNT)
+  // Đọc cấu hình từ settings: số batch và giới hạn song song chung
+  const { batchCount, maxConcurrent } = await getAIConfig()
+  console.log(`[MasterSRT] Config: ${batchCount} batch, tối đa ${maxConcurrent} song song (từ aiMaxConcurrency)`)
+
+  const transcriptParts = splitWordIndicesAtSentenceBoundaries(allTokens, batchCount)
   // Gửi FULL kịch bản cho mỗi batch — AI cần toàn bộ script để so khớp chuẩn
   const fullScript = scriptText.trim()
 
@@ -417,10 +436,10 @@ export async function createMasterSrt(
     }
   })
 
-  // Chạy song song tối đa MAX_CONCURRENT batch
-  console.log(`[DEBUG-MSRT] ▶ runWithConcurrency bắt đầu — ${totalBatches} tasks, max ${MAX_CONCURRENT}`)
-  onProgress?.(`Gửi ${totalBatches} batch (max ${MAX_CONCURRENT} đồng thời)...`, 10)
-  const batchResults = await runWithConcurrency(batchTasks, MAX_CONCURRENT)
+  // Chạy song song tối đa maxConcurrent batch (dùng chung aiMaxConcurrency từ settings)
+  console.log(`[DEBUG-MSRT] ▶ runWithConcurrency bắt đầu — ${totalBatches} tasks, max ${maxConcurrent} đồng thời`)
+  onProgress?.(`Gửi ${totalBatches} batch (max ${maxConcurrent} đồng thời)...`, 10)
+  const batchResults = await runWithConcurrency(batchTasks, maxConcurrent)
   console.log(`[DEBUG-MSRT] ★ runWithConcurrency XONG — ${batchResults.length} batch results`)
   batchResults.forEach((r, i) => console.log(`[DEBUG-MSRT]   Batch ${i + 1} result: ${r?.length ?? 'null'} từ`))
 

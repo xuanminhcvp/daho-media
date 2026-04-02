@@ -21,8 +21,7 @@ import {
     PACING_RULES,
     PACING_CONFIG,
     SENTENCE_TYPE_RULES,
-    buildVoicePacingPrompt,
-} from "@/prompts/voice-pacing-prompt"
+} from "@/prompts/documentary/voice-pacing-prompt"
 import type { ScriptSentence } from "@/utils/media-matcher"
 
 // ======================== TYPES ========================
@@ -363,6 +362,8 @@ async function analyzeByAIBatch(
     }
 
     // Build prompt
+    const { getActiveProfileId } = await import('@/config/activeProfile');
+    const { buildVoicePacingPrompt } = await import(`../prompts/${getActiveProfileId()}/voice-pacing-prompt`);
     const prompt = buildVoicePacingPrompt(scriptText)
 
     // Round-robin Claude/Gemini

@@ -11,7 +11,7 @@
 
 import { readDir, readFile, exists, writeTextFile, readTextFile, remove } from "@tauri-apps/plugin-fs";
 import { join, appCacheDir } from "@tauri-apps/api/path";
-import { fetch } from "@tauri-apps/plugin-http";
+// Dùng fetch mặc định browser để tránh tauri plugin bug
 import { Command } from "@tauri-apps/plugin-shell";
 import { getFFmpegPath } from "@/utils/ffmpeg-path";
 import {
@@ -350,7 +350,7 @@ export async function analyzeAudioWithAI(
         // 2. Chuẩn bị prompt từ file prompts/ (dễ chỉnh sửa riêng)
         //    SFX: prompt đơn giản (chỉ mô tả + tags, không timeline/beats/trim)
         //    Music: prompt đầy đủ (timeline + beats + trimSuggestions)
-        const { buildAudioScanPrompt, buildSfxScanPrompt } = await import("@/prompts/audio-scan-prompt");
+        const { buildAudioScanPrompt, buildSfxScanPrompt } = await import("../prompts/documentary/audio-scan-prompt");
         const promptText = item.type === "sfx" ? buildSfxScanPrompt() : buildAudioScanPrompt();
 
         const requestBody = JSON.stringify({

@@ -1,6 +1,6 @@
 // @ts-nocheck
 // media-import-panel.tsx
-// Panel giao diện cho tính năng Import Media vào DaVinci Resolve timeline
+// Panel giao diện cho tính năng Video Import vào DaVinci Resolve timeline
 // Cho phép chọn folder chứa video, paste script, và import tự động
 // Hỗ trợ 2 mode matching: Logic (nhanh) và AI (chính xác hơn)
 
@@ -642,7 +642,7 @@ export function MediaImportPanel() {
             <div className="shrink-0 px-4 pt-4 pb-2 border-b">
                 <h3 className="text-lg font-semibold flex items-center gap-2">
                     <FileVideo className="h-5 w-5 text-primary" />
-                    Media Import
+                    Video Import
                 </h3>
                 <p className="text-xs text-muted-foreground mt-1">
                     Import video files vào timeline, tự động căn khớp với thời gian từng câu script

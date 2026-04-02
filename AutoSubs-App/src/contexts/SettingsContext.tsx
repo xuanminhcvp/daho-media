@@ -3,10 +3,12 @@ import { load, Store } from '@tauri-apps/plugin-store';
 import { Settings } from '@/types/interfaces';
 import { initI18n, normalizeUiLanguage } from '@/i18n';
 import { models, modelSupportsLanguage, getFirstRecommendedModelForLanguage } from '@/lib/models';
+import { setActiveProfileId } from '@/config/activeProfile';
 
 export const DEFAULT_SETTINGS: Settings = {
   // Mode
   isStandaloneMode: false,
+  activeProfile: "stories",
 
   // UI settings
   uiLanguage: "en",
@@ -45,6 +47,24 @@ export const DEFAULT_SETTINGS: Settings = {
   animationType: "none",
   highlightType: "none",
   highlightColor: "#000000",
+
+  // ===== AI Performance Settings =====
+  aiAudioBatches: 1,          // Âm thanh: 1 đợt
+  aiSfxBatches: 1,            // SFX: 1 đợt
+  aiTextOnScreenBatches: 1,   // Text on screen: 1 đợt
+  aiRefImageBatches: 1,       // Ref image: 1 đợt
+  aiSubtitleBatches: 5,       // Phụ đề (Subtitle Match): 5 đợt
+  aiFootageBatches: 1,        // Hình ảnh: 1 đợt
+  aiMasterSrtBatches: 4,      // Master SRT: chia 4 batch Whisper → 4 request AI song song
+  aiMediaImportBatches: 4,    // Video Import: chia 4 batch transcript
+  aiImageImportBatches: 4,    // Image Import: chia 2 batch transcript
+  aiMaxConcurrency: 6,        // 6 luồng API song song — dùng chung cho tất cả tính năng
+  aiBatchOverlapRatio: 0.15,  // Overlap 15% giữa các batch
+  aiTemperature: 0.7,         // 0.7 — cân bằng sáng tạo / chính xác
+  bRollStartTime: 60,         // Cấm B-Roll trong 60 giây đầu (Documentary)
+  aiMaxRetries: 3,            // Thử lại 3 lần khi API lỗi
+  aiTotalSfxCues: 10,         // Tổng SFX tối đa cho toàn video
+  aiTotalFootageClips: 10,    // Tổng Footage tối đa cho toàn video
 };
 
 interface SettingsContextType {
@@ -63,7 +83,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 
   async function initializeStore() {
     try {
-      const storeLoadPromise = load('autosubs-store.json', { autoSave: false });
+      const storeLoadPromise = load('autosubs-store.json');
       const timeoutPromise = new Promise<never>((_, reject) => {
         setTimeout(() => reject(new Error('Store initialization timed out after 4000ms')), 4000);
       });
@@ -96,7 +116,8 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!isHydrated) return;
     initI18n(settings.uiLanguage);
-  }, [settings.uiLanguage, isHydrated]);
+    setActiveProfileId(settings.activeProfile || "stories");
+  }, [settings.uiLanguage, settings.activeProfile, isHydrated]);
 
   // Whenever settings change, persist them
   useEffect(() => {

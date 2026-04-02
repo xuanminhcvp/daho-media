@@ -28,7 +28,7 @@ const GeminiScanStatusBadge: React.FC<GeminiScanStatusBadgeProps> = ({ status })
             gap: '5px',
             padding: '2px 8px',
             borderRadius: '20px',
-            fontSize: '11px',
+            fontSize: '0.8rem',
             fontWeight: 500,
             backgroundColor: `${cfg.color}20`,
             border: `1px solid ${cfg.color}40`,

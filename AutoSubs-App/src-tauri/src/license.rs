@@ -22,7 +22,7 @@ use sha2::Sha256;
 const SECRET_KEY: &[u8] = b"AutoSubs_Media_2026_Internal_Team_Secret_Key_DO_NOT_SHARE";
 
 // Prefix cho license key (để dễ nhận diện)
-const KEY_PREFIX: &str = "ASUBS";
+const KEY_PREFIX: &str = "DAHO";
 
 // Alias cho HMAC-SHA256
 type HmacSha256 = Hmac<Sha256>;
@@ -35,19 +35,19 @@ type HmacSha256 = Hmac<Sha256>;
 pub fn validate_license_key(license_key: String) -> Result<LicenseResult, String> {
     let license_key = license_key.trim().to_uppercase();
 
-    // Kiểm tra format: phải bắt đầu bằng ASUBS-
+    // Kiểm tra format: phải bắt đầu bằng DAHO-
     if !license_key.starts_with(&format!("{}-", KEY_PREFIX)) {
         return Ok(LicenseResult {
             valid: false,
-            message: "Key không đúng định dạng. Key phải bắt đầu bằng ASUBS-".to_string(),
+            message: "Key không đúng định dạng. Key phải bắt đầu bằng DAHO-".to_string(),
         });
     }
 
-    // Tách phần sau prefix: "ASUBS-xxxx-yyyy" → "xxxx-yyyy"
+    // Tách phần sau prefix: "DAHO-xxxx-yyyy" → "xxxx-yyyy"
     let key_data = &license_key[KEY_PREFIX.len() + 1..];
 
     // Tách email hash và signature
-    // Format: ASUBS-{email_hex_8chars}-{signature_hex_16chars}
+    // Format: DAHO-{email_hex_8chars}-{signature_hex_16chars}
     let parts: Vec<&str> = key_data.split('-').collect();
     if parts.len() < 2 {
         return Ok(LicenseResult {
@@ -56,7 +56,7 @@ pub fn validate_license_key(license_key: String) -> Result<LicenseResult, String
         });
     }
 
-    // Ghép lại thành payload (bỏ prefix ASUBS-)
+    // Ghép lại thành payload (bỏ prefix DAHO-)
     let full_payload = key_data.to_string();
 
     // Tách signature (phần cuối cùng, 16 ký tự hex)
@@ -77,7 +77,7 @@ pub fn validate_license_key(license_key: String) -> Result<LicenseResult, String
     if expected_sig == signature.to_uppercase() {
         Ok(LicenseResult {
             valid: true,
-            message: "✅ License key hợp lệ! Chào mừng bạn đến với AutoSubs Media.".to_string(),
+            message: "✅ License key hợp lệ! Chào mừng bạn đến với DahoMedia.".to_string(),
         })
     } else {
         Ok(LicenseResult {

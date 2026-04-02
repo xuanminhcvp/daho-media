@@ -148,7 +148,7 @@ export function GeminiScanPanel() {
                 <div style={sectionStyle}>
                     <div style={sectionHeaderStyle}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span style={{ fontSize: '16px' }}>🤖</span>
+                            <span style={{ fontSize: '1rem' }}>🤖</span>
                             <div>
                                 <div style={titleStyle}>Gemini Browser Scan</div>
                                 <div style={subtitleStyle}>Scan ảnh/audio qua giao diện Gemini (không cần API key)</div>
@@ -184,7 +184,7 @@ export function GeminiScanPanel() {
                     {/* Server message */}
                     {serverMessage && (
                         <div style={{
-                            fontSize: '12px', color: '#94a3b8',
+                            fontSize: '0.85rem', color: '#94a3b8',
                             padding: '6px 10px', borderRadius: '6px',
                             backgroundColor: 'rgba(255,255,255,0.04)',
                         }}>
@@ -195,7 +195,7 @@ export function GeminiScanPanel() {
                     {/* Hướng dẫn khi chưa kết nối */}
                     {serverStatus === 'disconnected' && (
                         <div style={{
-                            fontSize: '12px', color: '#64748b',
+                            fontSize: '0.85rem', color: '#64748b',
                             padding: '10px', borderRadius: '8px',
                             backgroundColor: 'rgba(0,0,0,0.2)',
                             lineHeight: 1.7,
@@ -281,7 +281,7 @@ export function GeminiScanPanel() {
                                 <div key={fp} style={{
                                     display: 'flex', alignItems: 'center', gap: '6px',
                                     padding: '3px 6px', borderRadius: '4px',
-                                    fontSize: '11px', color: '#94a3b8',
+                                    fontSize: '0.8rem', color: '#94a3b8',
                                 }}>
                                     <span style={{ color: '#64748b', flexShrink: 0 }}>{idx + 1}.</span>
                                     <span style={{
@@ -295,7 +295,7 @@ export function GeminiScanPanel() {
                                         style={{
                                             background: 'none', border: 'none',
                                             color: '#64748b', cursor: 'pointer',
-                                            fontSize: '11px', padding: '0 2px',
+                                            fontSize: '0.8rem', padding: '0 2px',
                                             flexShrink: 0,
                                         }}
                                         title={fp}
@@ -310,7 +310,7 @@ export function GeminiScanPanel() {
                     {selectedFiles.length === 0 && (
                         <div style={{
                             textAlign: 'center', padding: '12px',
-                            color: '#475569', fontSize: '12px',
+                            color: '#475569', fontSize: '0.85rem',
                         }}>
                             Chưa có file nào. Bấm "Chọn file" hoặc "Chọn folder".
                         </div>
@@ -335,7 +335,7 @@ export function GeminiScanPanel() {
                             </div>
                             <div style={{
                                 display: 'flex', justifyContent: 'space-between',
-                                fontSize: '11px', color: '#94a3b8',
+                                fontSize: '0.8rem', color: '#94a3b8',
                             }}>
                                 <span>
                                     {progress.done}/{progress.total}
@@ -354,7 +354,7 @@ export function GeminiScanPanel() {
                             width: '100%',
                             justifyContent: 'center',
                             padding: '10px',
-                            fontSize: '13px',
+                            fontSize: '1.1rem',
                             opacity: (serverStatus !== 'ready' || selectedFiles.length === 0 || isScanning) ? 0.5 : 1,
                             cursor: (serverStatus !== 'ready' || selectedFiles.length === 0 || isScanning) ? 'not-allowed' : 'pointer',
                             background: 'linear-gradient(135deg, #7c3aed, #a855f7)',
@@ -399,7 +399,7 @@ export function GeminiScanPanel() {
                         {activeResultTab === 'results' && (
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                 {results.length === 0 && (
-                                    <div style={{ textAlign: 'center', color: '#475569', fontSize: '12px', padding: '12px' }}>
+                                    <div style={{ textAlign: 'center', color: '#475569', fontSize: '0.85rem', padding: '12px' }}>
                                         Chưa có kết quả. Hãy scan file trước.
                                     </div>
                                 )}
@@ -422,7 +422,7 @@ export function GeminiScanPanel() {
                                         display: 'flex', gap: '6px',
                                         padding: '2px 0',
                                         borderBottom: '1px solid rgba(255,255,255,0.03)',
-                                        fontSize: '11px', lineHeight: '1.4',
+                                        fontSize: '0.8rem', lineHeight: '1.4',
                                     }}>
                                         <span style={{ color: '#475569', flexShrink: 0, minWidth: '55px' }}>
                                             {new Date(log.timestamp).toLocaleTimeString('vi-VN', {
@@ -478,28 +478,28 @@ const sectionHeaderStyle: React.CSSProperties = {
 };
 
 const titleStyle: React.CSSProperties = {
-    fontSize: '14px', fontWeight: 600, color: '#e2e8f0',
+    fontSize: '0.9rem', fontWeight: 600, color: '#e2e8f0',
 };
 
 const subtitleStyle: React.CSSProperties = {
-    fontSize: '11px', color: '#64748b',
+    fontSize: '0.8rem', color: '#64748b',
 };
 
 const labelStyle: React.CSSProperties = {
-    fontSize: '12px', fontWeight: 600, color: '#94a3b8',
+    fontSize: '0.85rem', fontWeight: 600, color: '#94a3b8',
 };
 
 const codeStyle: React.CSSProperties = {
     backgroundColor: 'rgba(255,255,255,0.1)',
     padding: '1px 6px', borderRadius: '4px',
-    fontSize: '11px', fontFamily: 'monospace',
+    fontSize: '0.8rem', fontFamily: 'monospace',
 };
 
 // Buttons
 const btnBase: React.CSSProperties = {
     display: 'flex', alignItems: 'center', gap: '4px',
     padding: '5px 12px', borderRadius: '8px', border: 'none',
-    fontSize: '12px', fontWeight: 500, cursor: 'pointer',
+    fontSize: '0.85rem', fontWeight: 500, cursor: 'pointer',
     transition: 'all 0.2s',
 };
 
@@ -525,13 +525,13 @@ const btnSmall: React.CSSProperties = {
     padding: '3px 10px', borderRadius: '6px',
     border: '1px solid rgba(255,255,255,0.1)',
     backgroundColor: 'rgba(255,255,255,0.05)',
-    color: '#94a3b8', fontSize: '11px', cursor: 'pointer',
+    color: '#94a3b8', fontSize: '0.8rem', cursor: 'pointer',
 };
 
 const tabBtnActive: React.CSSProperties = {
     padding: '4px 12px', borderRadius: '6px', border: 'none',
     backgroundColor: 'rgba(168,85,247,0.2)', color: '#a855f7',
-    fontSize: '12px', cursor: 'pointer',
+    fontSize: '0.85rem', cursor: 'pointer',
     boxShadow: '0 0 0 1px rgba(168,85,247,0.3)',
 };
 
@@ -539,5 +539,5 @@ const tabBtnInactive: React.CSSProperties = {
     padding: '4px 12px', borderRadius: '6px',
     border: '1px solid rgba(255,255,255,0.08)',
     backgroundColor: 'transparent', color: '#64748b',
-    fontSize: '12px', cursor: 'pointer',
+    fontSize: '0.85rem', cursor: 'pointer',
 };

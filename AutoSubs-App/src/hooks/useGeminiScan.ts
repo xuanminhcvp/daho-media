@@ -25,8 +25,8 @@ import { join } from '@tauri-apps/api/path';
 import type { GeminiDebugStep, GeminiBugReport } from '@/components/gemini-scan/GeminiDebugTimeline';
 
 // Import prompt builders
-import { buildGeminiBrowserAudioPrompt, buildGeminiBrowserSfxPrompt } from '@/prompts/gemini-browser-audio-scan-prompt';
-import { buildGeminiBrowserImagePrompt } from '@/prompts/gemini-browser-image-scan-prompt';
+import { buildGeminiBrowserAudioPrompt, buildGeminiBrowserSfxPrompt } from '@/prompts/documentary/gemini-browser-audio-scan-prompt';
+import { buildGeminiBrowserImagePrompt } from '@/prompts/documentary/gemini-browser-image-scan-prompt';
 
 // ─── Types ────────────────────────────────────────
 /** 1 dòng log trong panel */

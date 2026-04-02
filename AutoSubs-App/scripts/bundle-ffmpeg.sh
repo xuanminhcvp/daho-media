@@ -3,7 +3,8 @@
 set -e
 
 FFMPEG_SRC="/opt/homebrew/bin/ffmpeg"
-BINARIES_DIR="/Users/may1/Desktop/auto/auto-subs-main/AutoSubs-App/src-tauri/binaries"
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+BINARIES_DIR="$SCRIPT_DIR/../src-tauri/binaries"
 FFMPEG_DST="$BINARIES_DIR/ffmpeg-aarch64-apple-darwin"
 DYLIB_DIR="$BINARIES_DIR/ffmpeg-dylibs"
 

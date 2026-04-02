@@ -12,8 +12,8 @@ export interface AudioTimelineSegment {
     endSec: number;
     /** Cảm xúc chính của phân đoạn này */
     emotion: string;
-    /** Mô tả chi tiết (ví dụ: "Nhạc build-up, tiếng trống dồn dập") */
-    description: string;
+    /** Mô tả chi tiết (tuỳ chọn) */
+    description?: string;
 }
 
 /** 1 nhịp/hit/đập quan trọng trong file audio (beat timing) */
@@ -22,8 +22,8 @@ export interface AudioBeat {
     timeSec: number;
     /** Loại nhịp: "start" | "hit" | "impact" | "transition" | "drop" | "swell" | "end" */
     type: string;
-    /** Mô tả ngắn: "Bass drum hit", "Cymbal crash", "Climax impact" */
-    description: string;
+    /** Mô tả ngắn (tuỳ chọn) */
+    description?: string;
 }
 
 /** Gợi ý cắt gọt 1 đoạn hay từ file audio (để FFmpeg trim) */

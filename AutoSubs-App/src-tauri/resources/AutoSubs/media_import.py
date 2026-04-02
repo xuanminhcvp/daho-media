@@ -5,6 +5,7 @@
 
 import os
 import math
+from pathlib import Path
 from . import state
 from .helpers import to_frames
 from .template_manager import walk_media_pool
@@ -494,3 +495,33 @@ def auto_relink_autosubs_media(folder_path=None):
             "offlineCount": len(offline_items),
             "message": f"RelinkClips thất bại: {e}",
         }
+
+def import_srt_to_media_pool(srt_path):
+    """
+    Import file .srt vào Media Pool của DaVinci Resolve.
+    Để dễ quản lý, file chạy sẽ được bỏ vào thư mục 'AutoSubs Subtitles'
+    """
+    if not srt_path or not os.path.exists(srt_path):
+        return {"error": True, "message": f"Không tìm thấy file SRT: {srt_path}"}
+        
+    try:
+        current_folder = state.media_pool.GetCurrentFolder()
+        sub_folder = state.media_pool.AddSubFolder(current_folder, "AutoSubs Subtitles")
+        if sub_folder:
+            state.media_pool.SetCurrentFolder(sub_folder)
+            
+        media_items = state.media_pool.ImportMedia([str(Path(srt_path).resolve())])
+        
+        if current_folder:
+            state.media_pool.SetCurrentFolder(current_folder)
+            
+        if not media_items:
+            return {"error": True, "message": "Import vào Media Pool thất bại."}
+            
+        return {
+            "success": True, 
+            "message": f"Đã import SRT vào Media Pool.\nVui lòng mở Media Pool và kéo file vào timeline.",
+            "clipsAdded": len(media_items)
+        }
+    except Exception as e:
+        return {"error": True, "message": f"Lỗi Python khi import: {e}"}

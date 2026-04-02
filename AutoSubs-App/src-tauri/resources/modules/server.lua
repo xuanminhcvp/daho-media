@@ -186,6 +186,16 @@ function M.StartServer(state, helpers, timeline_info, audio_export, subtitle_ren
                                 -- Import ảnh tham khảo thực tế V4 + SFX tự động + Ken Burns + Dissolve
                                 local result = media_import.AddRefImagesToTimeline(state, helpers, data.clips, data.sfxClips)
                                 body = helpers.safe_json(result, json)
+                            elseif data.func == "ImportSrtToMediaPool" then
+                                -- Import file SRT vào subfolder AutoSubs Subtitles trong Media Pool
+                                print("[AutoSubs Server] Importing SRT to Media Pool...")
+                                local result = media_import.ImportSrtToMediaPool(state, helpers, data.filePath)
+                                body = helpers.safe_json(result, json)
+                            elseif data.func == "ImportSrtToTimeline" then
+                                -- Import file SRT vào Media Pool rồi tự append lên timeline
+                                print("[AutoSubs Server] Importing SRT and appending to timeline...")
+                                local result = media_import.ImportSrtToTimeline(state, helpers, data.filePath)
+                                body = helpers.safe_json(result, json)
                             elseif data.func == "AddTemplateSubtitles" then
                                 local result = subtitle_renderer.AddTemplateSubtitles(
                                     state, helpers, template_manager, data.clips, data.trackIndex)
@@ -204,8 +214,8 @@ function M.StartServer(state, helpers, timeline_info, audio_export, subtitle_ren
                                 body = helpers.safe_json(result, json)
 
                             elseif data.func == "SetupTimelineTracks" then
-                                -- Tạo đủ 7V+5A tracks + đặt tên chuẩn (chỉ AddTrack + SetTrackName)
-                                local result = timeline_info.SetupTimelineTracks(state, helpers)
+                                -- Tạo đủ 7V+5A tracks + đặt config timeline resolution
+                                local result = timeline_info.SetupTimelineTracks(state, helpers, data)
                                 body = helpers.safe_json(result, json)
 
                             -- ======================== AUTO COLOR ROUTES ========================

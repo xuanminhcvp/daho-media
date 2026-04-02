@@ -506,7 +506,8 @@ export function ImageImportPanel() {
                     setAiProgress(progress.message)
                     setStatusMessage(`🤖 ${progress.message}`)
                 },
-                imageFolder || undefined
+                imageFolder || undefined,
+                'image'
             )
 
             setMatchedSentences(matched)
@@ -791,7 +792,7 @@ export function ImageImportPanel() {
                     stillImageJobs.push({
                         inputPath: clip.filePath,
                         durationFrames,
-                        outputPath: getVideoOutputPath(clip.filePath),
+                        outputPath: await getVideoOutputPath(clip.filePath),
                     })
                 }
             }

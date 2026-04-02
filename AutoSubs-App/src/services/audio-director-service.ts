@@ -181,10 +181,9 @@ export async function loadMatchingScript(
 // ======================== BUILD CATALOG TEXT ========================
 // Đã chuyển sang file prompts/audio-director-prompt.ts
 // Import lại để dùng trong hàm analyzeScriptForMusic
-// import { buildDirectorPrompt } from "@/prompts/audio-director-prompt"; // unused — giữ lại để tham khảo
-import { buildSfxDirectorPrompt, buildSfxBatchPrompt } from "@/prompts/sfx-director-prompt";
-import type { WhisperWordCompact } from "@/prompts/sfx-director-prompt";
-import { buildHighlightTextPrompt } from "@/prompts/highlight-text-prompt";
+// import { buildDirectorPrompt } from "@/prompts/documentary/audio-director-prompt"; // unused — giữ lại để tham khảo
+// import { buildDirectorPrompt } from "@/prompts/documentary/audio-director-prompt"; // unused — giữ lại để tham khảo
+import type { WhisperWordCompact } from "@/prompts/documentary/sfx-director-prompt";
 
 // ======================== GỌI AI ========================
 
@@ -209,16 +208,27 @@ export async function analyzeScriptForMusic(
         : 0;
     const totalMinutes = Math.round(totalDuration / 60);
 
-    // Documentary 25-27min → gửi 1 batch duy nhất (toàn bộ video)
-    // → Nhạc đồng bộ, coherent, AI thấy toàn cảnh kịch bản
-    const MUSIC_BATCH_COUNT = 1;
+    // Đọc Config từ Profile động và Settings (Tauri Store)
+    const { getActiveProfileId } = await import('@/config/activeProfile');
+    const { formatConfig } = await import(`../prompts/${getActiveProfileId()}/config`);
+
+    let MUSIC_BATCH_COUNT = formatConfig.MUSIC_BATCH_COUNT || 1;
+    try {
+        const { load } = await import('@tauri-apps/plugin-store');
+        const store = await load('autosubs-store.json');
+        const storedSettings = await store.get<any>('settings');
+        if (storedSettings?.aiAudioBatches) {
+            MUSIC_BATCH_COUNT = storedSettings.aiAudioBatches;
+        }
+    } catch {
+        // Fallback to profile config
+    }
     const batchDuration = totalDuration / MUSIC_BATCH_COUNT;
 
-    console.log(`[AudioDirector] 🚀 Batch 1 tuần tự → Batch 2-${MUSIC_BATCH_COUNT} song song | Video: ${totalMinutes}min | ${sentences.length} câu`);
-    onProgress?.(`🚀 Batch 1 lấy coherence → Batch 2-${MUSIC_BATCH_COUNT} song song (${musicItems.length} bài nhạc)...`);
+    console.log(`[AudioDirector] 🚀 Chạy ${MUSIC_BATCH_COUNT} batch song song | Video: ${totalMinutes}min | ${sentences.length} câu | Config: ${getActiveProfileId()}`);
+    onProgress?.(`🚀 Đang phân tích ${MUSIC_BATCH_COUNT} batch song song (${musicItems.length} bài nhạc)...`);
 
-    // Import prompt batch
-    const { buildDirectorBatchPrompt } = await import("@/prompts/audio-director-prompt");
+    // Import prompt batch (đã chuyển vào trong vòng lặp)
 
     // Kết quả tích lũy
     let allScenes: AudioScene[] = [];
@@ -252,6 +262,8 @@ export async function analyzeScriptForMusic(
         onProgress?.(`📦 Batch ${batchNum}/${MUSIC_BATCH_COUNT}: ${batchSentences.length} câu (${Math.round(batchTimeStart)}s-${Math.round(batchTimeEnd)}s)...`);
 
         // Build prompt — truyền coherence reference (từ batch 1)
+        const { getActiveProfileId } = await import('@/config/activeProfile');
+        const { buildDirectorBatchPrompt } = await import(`../prompts/${getActiveProfileId()}/audio-director-prompt`);
         const prompt = buildDirectorBatchPrompt(
             batchSentences,
             musicItems,
@@ -295,50 +307,35 @@ export async function analyzeScriptForMusic(
         return batchScenes;
     };
 
-    // ========== BƯỚC 1: BATCH 1 TUẦN TỰ — lấy coherence ==========
-    onProgress?.(`⏳ Batch 1/${MUSIC_BATCH_COUNT}: Chạy tuần tự để lấy coherence nhạc...`);
-    const batch1Scenes = await runSingleBatch(0, []); // Batch 1: không có coherence trước đó
-    allScenes.push(...batch1Scenes);
+    // ========== THỰC THI TOÀN BỘ BATCH SONG SONG ==========
+    onProgress?.(`⏳ Đang chạy ${MUSIC_BATCH_COUNT} batch AI song song...`);
+    
+    const batchPromises: Promise<{ batchIdx: number; scenes: AudioScene[] }>[] = [];
 
-    // Tạo coherence reference từ batch 1 (phong cách, genre, nhạc cụ đã chọn)
-    // Tất cả batch còn lại sẽ dùng chung coherence này
-    const batch1Coherence = batch1Scenes.map(scene => ({
-        sceneId: scene.sceneId,
-        emotion: scene.emotion,
-        assignedMusicFileName: scene.assignedMusic?.fileName || null,
-    }));
-
-    console.log(`[AudioDirector] 🎵 Batch 1 xong: ${batch1Scenes.length} scenes → dùng coherence cho batch 2-${MUSIC_BATCH_COUNT}`);
-    onProgress?.(`🎵 Batch 1 xong (${batch1Scenes.length} scenes) → Batch 2-${MUSIC_BATCH_COUNT} song song...`);
-
-    // ========== BƯỚC 2: BATCH 2-5 SONG SONG — dùng coherence từ batch 1 ==========
-    // Tất cả batch còn lại chạy cùng lúc, đều tham chiếu coherence từ batch 1
-    const remainingBatchPromises: Promise<{ batchIdx: number; scenes: AudioScene[] }>[] = [];
-
-    for (let batchIdx = 1; batchIdx < MUSIC_BATCH_COUNT; batchIdx++) {
-        // Capture batchIdx để tránh closure issue
+    for (let batchIdx = 0; batchIdx < MUSIC_BATCH_COUNT; batchIdx++) {
+        // Capture batchIdx
         const idx = batchIdx;
-        remainingBatchPromises.push(
-            runSingleBatch(idx, batch1Coherence).then(scenes => ({
+        batchPromises.push(
+            runSingleBatch(idx, []).then(scenes => ({
                 batchIdx: idx,
                 scenes,
             }))
         );
     }
 
-    // Chờ tất cả batch 2-5 hoàn tất
-    const remainingResults = await Promise.allSettled(remainingBatchPromises);
+    // Chờ tất cả xong
+    const batchResults = await Promise.allSettled(batchPromises);
 
-    // Thu thập kết quả — sort theo batchIdx để giữ đúng thứ tự thời gian
+    // Ghép kết quả
     const successResults: { batchIdx: number; scenes: AudioScene[] }[] = [];
-    for (const result of remainingResults) {
+    for (const result of batchResults) {
         if (result.status === 'fulfilled') {
             successResults.push(result.value);
         } else {
-            console.error(`[AudioDirector] ❌ Batch song song lỗi:`, result.reason);
+            console.error(`[AudioDirector] ❌ Batch lỗi:`, result.reason);
         }
     }
-    // Sort theo batchIdx để scenes được thêm đúng thứ tự (batch 2 trước batch 3,...) 
+    // Sort theo batch để scenes đúng thứ tự
     successResults.sort((a, b) => a.batchIdx - b.batchIdx);
     for (const r of successResults) {
         allScenes.push(...r.scenes);
@@ -349,7 +346,7 @@ export async function analyzeScriptForMusic(
     // ========== MUSIC RETRY — tối đa 2 round (giống image import) ==========
     // Sau khi 5 batch chạy xong, kiểm tra scene trống nhạc (> 30s)
     // Nếu còn trống → gọi AI retry để chọn nhạc, tối đa 2 lần
-    const { buildMusicRetryPrompt } = await import("@/prompts/music-retry-prompt");
+    const { buildMusicRetryPrompt } = await import("../prompts/documentary/music-retry-prompt");
     const GAP_THRESHOLD_SEC = 30;
     const MAX_RETRY_ROUNDS = 2;
 
@@ -712,8 +709,7 @@ function fillMusicGaps(scenes: AudioScene[]): void {
 
 // ======================== AI GỢI Ý SFX (5 BATCH SONG SONG) ========================
 
-// Documentary 25-27min → gửi 1 batch duy nhất (mặc định tắt trong automedia)
-const SFX_BATCH_COUNT = 1;
+// (Đã xóa khai báo hardcode tĩnh cho documentary)
 
 /**
  * Gọi AI để phân tích kịch bản và gợi ý các điểm cần chèn SFX.
@@ -751,19 +747,36 @@ export async function analyzeScriptForSFX(
     const totalDuration = sentences.length > 0
         ? Math.max(...sentences.map(s => s.end))
         : 0;
+    // totalMinutes used to be here, deleted to fix lint
+
+    // Lấy config SFX từ profile động và Settings (Tauri Store)
+    const { getActiveProfileId } = await import('@/config/activeProfile');
+    const { formatConfig } = await import(`../prompts/${getActiveProfileId()}/config`);
+
+    let SFX_BATCH_COUNT = formatConfig.SFX_BATCH_COUNT || 1;
+    let totalSfxCues = formatConfig.MAX_SFX_CUES_PER_BATCH || 10;
+    try {
+        const { load } = await import('@tauri-apps/plugin-store');
+        const store = await load('autosubs-store.json');
+        const storedSettings = await store.get<any>('settings');
+        if (storedSettings?.aiSfxBatches) {
+            SFX_BATCH_COUNT = storedSettings.aiSfxBatches;
+        }
+        if (storedSettings?.aiTotalSfxCues) {
+            totalSfxCues = storedSettings.aiTotalSfxCues;
+        }
+    } catch {
+        // Fallback to profile config
+    }
+
+    // Tự động phân bổ theo mật độ: lùi trên xuống, chia đều cho các Batch
+    const maxCuesPerBatch = Math.max(1, Math.round(totalSfxCues / SFX_BATCH_COUNT));
     const batchDuration = totalDuration / SFX_BATCH_COUNT;
 
-    // Cố định 10 SFX cues cho cả video → chia 5 batch → mỗi batch tối đa 2 cues
-    // Chỉ giữ 10 moment đắt giá nhất, không spam SFX
-    const totalMinutes = Math.round(totalDuration / 60);
-    // @ts-expect-error kept for reference
-    const _totalMaxCues = 10;
-    const maxCuesPerBatch = 2;
+    console.log(`[SFX Planner] 🚀 Chia ${SFX_BATCH_COUNT} batch song song | Tổng SFX nhắm tới: ${totalSfxCues} | Max ${maxCuesPerBatch} cues/batch`);
+    onProgress?.(`🚀 Chia ${SFX_BATCH_COUNT} batch song song (${validSfxItems.length} SFX, max ${maxCuesPerBatch}/đợt)...`);
 
-    console.log(`[SFX Planner] 🚀 Chia ${SFX_BATCH_COUNT} batch song song | Video: ${totalMinutes}min | Max ${maxCuesPerBatch} cues/batch`);
-    onProgress?.(`🚀 Chia ${SFX_BATCH_COUNT} batch song song (${validSfxItems.length} SFX, ${whisperWords.length} words)...`);
-
-    // ========== TẠO 5 BATCH ==========
+    // ========== TẠO CÁC BATCH ==========
     interface BatchData {
         batchNum: number;
         sentences: MatchingSentence[];
@@ -815,6 +828,8 @@ export async function analyzeScriptForSFX(
         onProgress?.(`📦 Batch ${batch.batchNum}/${SFX_BATCH_COUNT}: ${batch.sentences.length} câu đang phân tích...`);
 
         // Build prompt cho batch này
+        const { getActiveProfileId } = await import('@/config/activeProfile');
+        const { buildSfxBatchPrompt } = await import(`../prompts/${getActiveProfileId()}/sfx-director-prompt`);
         const prompt = buildSfxBatchPrompt(
             batch.sentences,
             sfxItems!,  // Gửi TOÀN BỘ thư viện (kể cả item chưa scan)
@@ -939,6 +954,8 @@ async function analyzeScriptForSFX_legacy(
 
     onProgress?.("Đang gửi kịch bản cho AI Director (SFX) — chế độ cũ...");
 
+    const { getActiveProfileId } = await import('@/config/activeProfile');
+    const { buildSfxDirectorPrompt } = await import(`../prompts/${getActiveProfileId()}/sfx-director-prompt`);
     const prompt = buildSfxDirectorPrompt(sentences);
 
     try {
@@ -999,6 +1016,8 @@ export async function analyzeScriptForHighlightText(
     onProgress?.("Đang gửi kịch bản cho AI Director (Highlight Text)...");
 
     // ==== PROMPT từ file prompts/ (dễ chỉnh sửa riêng) ====
+    const { getActiveProfileId } = await import('@/config/activeProfile');
+    const { buildHighlightTextPrompt } = await import(`../prompts/${getActiveProfileId()}/highlight-text-prompt`);
     const prompt = buildHighlightTextPrompt(sentences);
 
     try {
@@ -1035,205 +1054,4 @@ export async function analyzeScriptForHighlightText(
     }
 }
 
-// ======================== GỢI Ý TỪ KHÓA SFX ĐỂ TẢI ========================
 
-import { buildSfxSuggestKeywordsPrompt } from "@/prompts/sfx-suggest-keywords-prompt";
-
-/** Từ khóa SFX gợi ý — chỉ là string tiếng Anh (để user tìm trên Freesound, Pixabay...) */
-export type SfxKeywordSuggestion = string;
-
-/**
- * Gọi Claude để gợi ý ~20 từ khóa SFX cần tải về xây dựng thư viện
- * Dựa trên nội dung kịch bản → AI hiểu thể loại → gợi ý SFX phù hợp
- *
- * @param sentences - Danh sách câu từ matching.json
- * @param onProgress - Callback báo tiến trình
- * @returns Mảng string keywords
- */
-export async function suggestSfxKeywords(
-    sentences: MatchingSentence[],
-    onProgress?: (msg: string) => void
-): Promise<SfxKeywordSuggestion[]> {
-    const logId = generateLogId();
-    const startTime = Date.now();
-
-    onProgress?.("Đang phân tích thể loại kịch bản...");
-
-    // Gửi TOÀN BỘ kịch bản — AI cần đọc hết nội dung để gợi ý SFX chính xác
-    const fullScript = sentences
-        .filter(s => s.quality === "high" || s.quality === "medium")
-        .map(s => s.text)
-        .join("\n");
-
-    const prompt = buildSfxSuggestKeywordsPrompt(fullScript);
-
-    try {
-        let content = await callClaude(
-            prompt,
-            `AI Gợi Ý SFX Keywords (Claude)`,
-            logId,
-            startTime,
-            onProgress
-        );
-
-        // Clean markdown wrapper nếu có
-        content = content.replace(/```(?:json)?\s*([\s\S]*?)```/, "$1");
-
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) {
-            throw new Error("AI không trả về JSON hợp lệ");
-        }
-        const parsed = JSON.parse(jsonMatch[0]);
-
-        // AI trả về mảng string keywords
-        const keywords: SfxKeywordSuggestion[] = Array.isArray(parsed.keywords)
-            ? parsed.keywords.map((kw: any) => typeof kw === "string" ? kw : kw.keyword || String(kw))
-            : [];
-
-        console.log(`[AudioDirector] ✅ AI gợi ý ${keywords.length} từ khóa SFX`);
-        return keywords;
-
-    } catch (error) {
-        console.error("[AudioDirector] Lỗi gợi ý SFX keywords:", error);
-        throw error;
-    }
-}
-
-// ======================== GỢI Ý SUNO AI PROMPTS CHO NHẠC NỀN ========================
-
-import { buildMusicSuggestKeywordsPrompt } from "@/prompts/music-suggest-keywords-prompt";
-
-/**
- * Gợi ý Suno AI prompt — gồm tên mood, mô tả ngắn (Vietnamese) + prompt Suno (English ~50 từ)
- */
-export type MusicKeywordSuggestion = {
-    mood: string;        // Tên mood (Tense, Emotional, Dramatic Climax...)
-    description: string; // Mô tả ngắn bằng tiếng Việt — phù hợp cảnh gì
-    prompt: string;      // Prompt Suno AI ~50 từ tiếng Anh để generate nhạc
-};
-
-/**
- * Gọi Claude để gợi ý 10 Suno AI music prompts dựa trên kịch bản
- * User đem các prompt này vào Suno AI tạo nhạc → import vào thư viện nhạc nền
- *
- * @param sentences - Danh sách câu từ matching.json
- * @param onProgress - Callback báo tiến trình
- * @returns Mảng 10 Suno prompts
- */
-export async function suggestMusicKeywords(
-    sentences: MatchingSentence[],
-    onProgress?: (msg: string) => void
-): Promise<MusicKeywordSuggestion[]> {
-    const logId = generateLogId();
-    const startTime = Date.now();
-
-    onProgress?.("Đang phân tích kịch bản để tạo Suno AI prompts nhạc nền...");
-
-    // Gửi TOÀN BỘ kịch bản — AI cần đọc hết nội dung để biết mood video
-    const fullScript = sentences
-        .filter(s => s.quality === "high" || s.quality === "medium")
-        .map(s => s.text)
-        .join("\n");
-
-    const prompt = buildMusicSuggestKeywordsPrompt(fullScript);
-
-    try {
-        let content = await callClaude(
-            prompt,
-            `🎵 Suno AI Music Prompts (10 prompts)`,
-            logId,
-            startTime,
-            onProgress
-        );
-
-        // Clean markdown wrapper nếu có
-        content = content.replace(/```(?:json)?\s*([\s\S]*?)```/, "$1");
-
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) {
-            throw new Error("AI không trả về JSON hợp lệ");
-        }
-        const parsed = JSON.parse(jsonMatch[0]);
-
-        // AI trả về mảng objects { mood, description, prompt }
-        const prompts: MusicKeywordSuggestion[] = Array.isArray(parsed.prompts)
-            ? parsed.prompts.map((item: any) => ({
-                mood: item.mood || "Unknown",
-                description: item.description || "",
-                prompt: item.prompt || "",
-            }))
-            : [];
-
-        console.log(`[AudioDirector] ✅ AI gợi ý ${prompts.length} Suno AI prompts nhạc nền`);
-        return prompts;
-
-    } catch (error) {
-        console.error("[AudioDirector] Lỗi gợi ý Suno Music prompts:", error);
-        throw error;
-    }
-}
-
-
-// ======================== GỢI Ý TỪ KHÓA FOOTAGE (STOCK VIDEO) ========================
-
-import { buildFootageSuggestKeywordsPrompt } from "@/prompts/footage-suggest-keywords-prompt";
-
-/** Từ khóa footage gợi ý — string English (tìm trên Envato, Pexels, Pixabay...) */
-export type FootageKeywordSuggestion = string;
-
-/**
- * Gọi Claude để gợi ý ~15 từ khóa footage stock video cần tải về
- * AI phân tích kịch bản → hiểu thể loại → gợi ý B-roll phù hợp
- *
- * @param sentences - Danh sách câu từ matching.json
- * @param onProgress - Callback báo tiến trình
- * @returns Mảng string keywords footage
- */
-export async function suggestFootageKeywords(
-    sentences: MatchingSentence[],
-    onProgress?: (msg: string) => void
-): Promise<FootageKeywordSuggestion[]> {
-    const logId = generateLogId();
-    const startTime = Date.now();
-
-    onProgress?.("Đang phân tích kịch bản để gợi ý footage...");
-
-    // Gửi TOÀN BỘ kịch bản
-    const fullScript = sentences
-        .filter(s => s.quality === "high" || s.quality === "medium")
-        .map(s => s.text)
-        .join("\n");
-
-    const prompt = buildFootageSuggestKeywordsPrompt(fullScript);
-
-    try {
-        let content = await callClaude(
-            prompt,
-            `AI Gợi Ý Footage Keywords (Claude)`,
-            logId,
-            startTime,
-            onProgress
-        );
-
-        // Clean markdown wrapper nếu có
-        content = content.replace(/```(?:json)?\s*([\s\S]*?)```/, "$1");
-
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) {
-            throw new Error("AI không trả về JSON hợp lệ");
-        }
-        const parsed = JSON.parse(jsonMatch[0]);
-
-        // AI trả về mảng string keywords
-        const keywords: FootageKeywordSuggestion[] = Array.isArray(parsed.keywords)
-            ? parsed.keywords.map((kw: any) => typeof kw === "string" ? kw : kw.keyword || String(kw))
-            : [];
-
-        console.log(`[AudioDirector] ✅ AI gợi ý ${keywords.length} từ khóa footage`);
-        return keywords;
-
-    } catch (error) {
-        console.error("[AudioDirector] Lỗi gợi ý Footage keywords:", error);
-        throw error;
-    }
-}

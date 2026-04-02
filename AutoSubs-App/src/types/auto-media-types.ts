@@ -48,6 +48,7 @@ export interface StepState {
 /** Config bật/tắt từng bước — user toggle trên UI popup */
 export interface AutoMediaConfig {
     /** Bật/tắt từng bước (mặc định bật hết) */
+    enableMasterSrt: boolean
     enableImage: boolean
     enableSubtitle: boolean
     enableMusic: boolean
@@ -61,10 +62,14 @@ export interface AutoMediaConfig {
 
     /** Debug mode: chạy tuần tự + dừng sau mỗi bước chờ nhấn Tiếp tục */
     debugMode: boolean
+
+    /** Chế độ tạo phụ đề: fusion (hiệu ứng, nặng) hoặc srt (cơ bản, nhẹ) */
+    subtitleMode: 'fusion' | 'srt'
 }
 
 /** Config mặc định — bật hết trừ subtitle (nặng RAM), debug mode tắt */
 export const DEFAULT_AUTO_MEDIA_CONFIG: AutoMediaConfig = {
+    enableMasterSrt: false,
     enableImage: true,
     enableSubtitle: false, // ★ Mặc định TẮT — Fusion Text+ ngốn RAM DaVinci
     enableMusic: true,
@@ -74,6 +79,7 @@ export const DEFAULT_AUTO_MEDIA_CONFIG: AutoMediaConfig = {
     effectType: 'kenburns',
     effectIntensity: 'subtle',
     debugMode: false, // ★ Mặc định TẮT — chạy tự động song song
+    subtitleMode: 'srt', // Mặc định SRT cho nhẹ nhàng
 }
 
 // ======================== TRẠNG THÁI TỔNG THỂ ========================

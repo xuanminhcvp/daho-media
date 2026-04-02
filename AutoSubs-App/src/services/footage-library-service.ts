@@ -10,7 +10,7 @@
 
 import { readDir, exists, writeTextFile, readTextFile } from "@tauri-apps/plugin-fs";
 import { join, appCacheDir } from "@tauri-apps/api/path";
-import { fetch } from "@tauri-apps/plugin-http";
+// const fetch = window.fetch; (bỏ qua tauri-apps/plugin-http đề phòng bug streamChannel)
 import { Command } from "@tauri-apps/plugin-shell";
 import { getFFmpegPath, getFFprobePath } from "@/utils/ffmpeg-path";
 import type {
@@ -273,7 +273,7 @@ export async function analyzeFootageWithAI(
     framePaths: string[],
     apiKey: string
 ): Promise<{ description: string; tags: string[]; mood: string }> {
-    const { buildFootageScanPrompt } = await import("@/prompts/footage-scan-prompt");
+    const { buildFootageScanPrompt } = await import("../prompts/documentary/footage-scan-prompt");
     const promptText = buildFootageScanPrompt();
 
     // Tạo parts: text prompt + inline_data cho mỗi frame

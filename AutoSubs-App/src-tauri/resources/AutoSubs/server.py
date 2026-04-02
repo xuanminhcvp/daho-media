@@ -22,7 +22,11 @@ from .subtitle_renderer import (
 )
 from .template_subtitles import add_template_subtitles
 from .template_manager import create_template_set
-from .media_import import add_audio_to_timeline, add_sfx_clips_to_timeline, add_media_to_timeline, auto_relink_autosubs_media
+from .media_import import (
+    add_audio_to_timeline, add_sfx_clips_to_timeline, 
+    add_media_to_timeline, auto_relink_autosubs_media,
+    import_srt_to_media_pool
+)
 from .preview_generator import generate_preview
 from .auto_color import (
     scan_timeline_clips, apply_cdl_to_clip, apply_lut_to_clip,
@@ -142,6 +146,10 @@ def route_request(data):
         print("[AutoSubs Server] Creating Template Set...")
         return create_template_set(data.get("templateNames", []))
 
+    elif func == "ImportSrtToMediaPool":
+        print("[AutoSubs Server] Importing SRT to Media Pool...")
+        return import_srt_to_media_pool(data.get("filePath", ""))
+
     elif func == "AutoRelinkMedia":
         # Relink lại mọi clip offline trong Media Pool
         # Gọi khi mở project lại mà bị 'Media not found'
@@ -208,6 +216,14 @@ class AutoSubsHandler(BaseHTTPRequestHandler):
     Nhận POST request → parse JSON → route → trả JSON response
     """
 
+    def do_OPTIONS(self):
+        """Xử lý preflight CORS request từ trình duyệt (window.fetch)"""
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
     def do_POST(self):
         """Xử lý POST request từ Tauri app"""
         try:
@@ -245,6 +261,7 @@ class AutoSubsHandler(BaseHTTPRequestHandler):
         try:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")  # Bật CORS cho window.fetch
             self.send_header("Content-Length", str(len(response_body)))
             self.send_header("Connection", "close")
             self.end_headers()

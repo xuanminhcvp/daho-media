@@ -27,6 +27,7 @@ import {
     Copy,
     Check,
     Zap,
+    PlusCircle,
 } from "lucide-react"
 import { open } from "@tauri-apps/plugin-dialog"
 import { desktopDir } from "@tauri-apps/api/path"
@@ -39,10 +40,15 @@ import {
 } from "@/services/audio-library-service"
 import {
     analyzeScriptForMusic,
-    suggestMusicKeywords,
-    type MusicKeywordSuggestion,
 } from "@/services/audio-director-service"
-import { AudioLibraryItem } from "@/types/audio-types"
+import {
+    generateMediaIdeas,
+    MusicKeywordSuggestion
+} from "@/services/idea-generator-service"
+import {
+    AudioLibraryItem,
+    AudioTimelineSegment,
+} from "@/types/audio-types"
 import { mixAudioScenesAndDuck } from "@/services/audio-ffmpeg-service"
 import { useAudioPreview, type UseAudioPreviewReturn } from "@/hooks/useAudioPreview"
 import { useProject } from "@/contexts/ProjectContext"
@@ -51,6 +57,7 @@ import {
     getSavedFolder,
     getAudioScanApiKey,
 } from "@/services/saved-folders-service"
+import { getMusicFolderPath } from "@/services/auto-media-storage"
 
 export function MusicLibraryTab() {
     // ======================== PROJECT CONTEXT ========================
@@ -112,22 +119,42 @@ export function MusicLibraryTab() {
     // Trạng thái "đã lưu" — hiện tick xanh sau khi bấm Save
     const [musicFolderSaved, setMusicFolderSaved] = React.useState(false)
     // ======================== AUTO-LOAD THƯ MỤC ĐÃ LƯU ========================
-    // Khi component mount lần đầu, tự động load thư mục nhạc nền đã lưu + metadata từ file JSON trong folder
+    // Khi component mount lần đầu, tự động load thư mục nhạc nền đã lưu.
+    // Nếu chưa từng lưu folder nào → fallback vào ~/Desktop/Auto_media/nhac_nen
     React.useEffect(() => {
         const loadSavedMusicFolder = async () => {
             // Chỉ load nếu chưa có folder nào được chọn
             if (musicFolder) return
-            const saved = await getSavedFolder("musicFolder")
-            if (!saved) return
 
-            console.log("[MusicLib] Auto-load thư mục nhạc đã lưu:", saved)
-            updateMusicLibrary({ musicFolder: saved })
+            // Ưu tiên: folder đã lưu trước đó
+            let folderToLoad = await getSavedFolder("musicFolder")
+
+            // Fallback: ~/Desktop/Auto_media/nhac_nen (đường dẫn động theo máy)
+            if (!folderToLoad) {
+                folderToLoad = await getMusicFolderPath()
+                console.log("[MusicLib] Dùng Auto_media fallback:", folderToLoad)
+            }
+
+            console.log("[MusicLib] Auto-load thư mục nhạc:", folderToLoad)
+            updateMusicLibrary({ musicFolder: folderToLoad })
 
             try {
                 // Quét folder + load metadata từ file JSON trong folder
-                const scanned = await scanAudioFolder(saved, "music")
-                const folderItems = await loadAudioItemsFromFolder(saved)
-                const folderMap = new Map(folderItems.map(i => [i.filePath, i]))
+                const scanned = await scanAudioFolder(folderToLoad, "music")
+                const folderItems = await loadAudioItemsFromFolder(folderToLoad)
+
+                // TỰ ĐỘNG DỌN DẸP: NẾU FILE ĐÃ BỊ XOÁ KHỎI Ổ CỨNG -> XOÁ LUÔN KHỎI DỮ LIỆU JSON
+                const currentPaths = new Set(scanned.map(i => i.filePath));
+                const cleanedFolderItems = folderItems.filter(item => currentPaths.has(item.filePath));
+                const deletedCount = folderItems.length - cleanedFolderItems.length;
+                
+                if (deletedCount > 0) {
+                    const { saveAudioItemsToFolder } = await import("@/services/audio-library-service");
+                    await saveAudioItemsToFolder(folderToLoad, cleanedFolderItems);
+                    console.log(`[MusicLib] 🧹 Khởi động: Đã dọn dẹp ${deletedCount} file bị xoá khỏi metadata JSON`);
+                }
+
+                const folderMap = new Map(cleanedFolderItems.map(i => [i.filePath, i]))
 
                 // Merge: ưu tiên metadata từ file JSON
                 const mergedItems = scanned.map(item => {
@@ -138,7 +165,7 @@ export function MusicLibraryTab() {
                 updateMusicLibrary({ musicItems: mergedItems })
 
                 // Đếm file mới cần quét AI
-                const newFiles = findNewFiles(scanned, folderItems)
+                const newFiles = findNewFiles(scanned, cleanedFolderItems)
                 setNewFilesCount(newFiles.length)
             } catch (error) {
                 console.error("[MusicLib] Lỗi auto-load thư mục nhạc:", error)
@@ -172,7 +199,19 @@ export function MusicLibraryTab() {
             // Quét folder + load metadata từ file JSON trong folder
             const scanned = await scanAudioFolder(folderPath as string, "music")
             const folderItems = await loadAudioItemsFromFolder(folderPath as string)
-            const folderMap = new Map(folderItems.map(i => [i.filePath, i]))
+
+            // TỰ ĐỘNG DỌN DẸP KHI CHỌN FOLDER MỚI
+            const currentPaths = new Set(scanned.map(i => i.filePath));
+            const cleanedFolderItems = folderItems.filter(item => currentPaths.has(item.filePath));
+            const deletedCount = folderItems.length - cleanedFolderItems.length;
+            
+            if (deletedCount > 0) {
+                const { saveAudioItemsToFolder } = await import("@/services/audio-library-service");
+                await saveAudioItemsToFolder(folderPath as string, cleanedFolderItems);
+                console.log(`[MusicLib] 🧹 Chọn folder: Đã dọn dẹp ${deletedCount} file bị xoá khỏi metadata JSON`);
+            }
+
+            const folderMap = new Map(cleanedFolderItems.map(i => [i.filePath, i]))
 
             // Merge: ưu tiên metadata từ file JSON
             const mergedItems = scanned.map(item => {
@@ -184,7 +223,7 @@ export function MusicLibraryTab() {
             updateMusicLibrary({ musicItems: mergedItems })
 
             // Đếm file mới cần quét AI
-            const newFiles = findNewFiles(scanned, folderItems)
+            const newFiles = findNewFiles(scanned, cleanedFolderItems)
             setNewFilesCount(newFiles.length)
 
         } catch (error) {
@@ -286,6 +325,59 @@ export function MusicLibraryTab() {
 
     // Đếm nhạc đã có metadata vs tổng
     const analyzedCount = musicItems.filter((i) => i.aiMetadata).length
+
+    // ======================== MANUAL SCAN TOOLS ========================
+    const handleRevealInFinder = React.useCallback(async (filePath: string) => {
+        try {
+            const { Command } = await import('@tauri-apps/plugin-shell');
+            await Command.create("exec-sh", ["-c", `open -R "${filePath}"`]).execute();
+        } catch (e) {
+            console.error("Lỗi khi mở Finder:", e);
+        }
+    }, []);
+
+    const handleCopyPrompt = React.useCallback(async (_item: AudioLibraryItem) => {
+        const prompt = `Phân tích nhạc nền (Music) này và trả về định dạng JSON chính xác sau (CHỈ TRẢ VỀ JSON, KHÔNG THÊM BẤT KỲ VĂN BẢN NÀO KHÁC):\n{\n  "description": "mô tả cảm xúc và nhạc cụ chính (dưới 15 từ)",\n  "tags": ["epic", "piano", "sad"],\n  "emotion": ["mood1", "mood2"],\n  "intensity": "Cao",\n  "totalDurationSec": 60,\n  "timeline": [],\n  "beats": [],\n  "trimSuggestions": []\n}`; // "Cao" / "Trung bình" / "Thấp"
+        await navigator.clipboard.writeText(prompt);
+    }, []);
+
+    const handlePasteJson = React.useCallback(async (item: AudioLibraryItem) => {
+        const jsonStr = window.prompt(`Dán JSON từ Gemini cho file ${item.fileName}:\nVD: {"description":"...","tags":["..."],"emotion":["..."],"intensity":"Cao",...}`);
+        if (!jsonStr) return;
+        try {
+            const match = jsonStr.match(/\{[\s\S]*\}/);
+            if (!match) throw new Error("Không tìm thấy dấu {} JSON hợp lệ");
+            const parsed = JSON.parse(match[0]);
+
+            const newMeta = {
+                description: parsed.description || "Manual",
+                tags: Array.isArray(parsed.tags) ? parsed.tags : [],
+                emotion: Array.isArray(parsed.emotion) ? parsed.emotion : [],
+                intensity: parsed.intensity || "Trung bình",
+                totalDurationSec: parsed.totalDurationSec || item.durationSec || 60,
+                timeline: Array.isArray(parsed.timeline) ? parsed.timeline : [],
+                beats: Array.isArray(parsed.beats) ? parsed.beats : [],
+                trimSuggestions: Array.isArray(parsed.trimSuggestions) ? parsed.trimSuggestions : []
+            };
+
+            const newItem: AudioLibraryItem = {
+                ...item,
+                aiMetadata: newMeta,
+                scannedAt: new Date().toISOString()
+            };
+
+            const allItems = musicItems.map(i => i.filePath === item.filePath ? newItem : i);
+            
+            if (matchingFolder) {
+                const { saveAudioItemsToFolder } = await import("@/services/audio-library-service");
+                await saveAudioItemsToFolder(matchingFolder, allItems);
+                updateMusicLibrary({ musicItems: allItems });
+                alert(`✅ Đã cập nhật metadata thủ công cho ${item.fileName}`);
+            }
+        } catch (e) {
+            alert("Lỗi parse JSON: " + String(e));
+        }
+    }, [musicItems, matchingFolder, updateMusicLibrary]);
 
     // ======================== RENDER ========================
 
@@ -461,6 +553,9 @@ export function MusicLibraryTab() {
                                                         : item
                                                 )
                                             }
+                                            onRevealInFinder={handleRevealInFinder}
+                                            onCopyPrompt={handleCopyPrompt}
+                                            onPasteJson={handlePasteJson}
                                         />
                                     ))}
 
@@ -494,7 +589,7 @@ export function MusicLibraryTab() {
                                             <div className="pt-2 border-t border-border/50">
                                                 <p className="text-[10px] font-semibold text-muted-foreground mb-1">TIMELINE CẢM XÚC:</p>
                                                 <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1">
-                                                    {selectedItem.aiMetadata.timeline.map((seg, idx) => (
+                                                    {selectedItem.aiMetadata.timeline.map((seg: AudioTimelineSegment, idx: number) => (
                                                         <div key={idx} className="flex gap-2 items-start opacity-80 hover:opacity-100 transition-opacity">
                                                             <span className="text-[10px] font-mono text-primary bg-primary/10 px-1 py-0.5 rounded shrink-0 mt-0.5">
                                                                 {Math.floor(seg.startSec / 60)}:{String(Math.floor(seg.startSec % 60)).padStart(2, "0")} - {Math.floor(seg.endSec / 60)}:{String(Math.floor(seg.endSec % 60)).padStart(2, "0")}
@@ -516,51 +611,49 @@ export function MusicLibraryTab() {
                 )}
 
                 {/* ===== SECTION: Gợi Ý Từ Khóa Nhạc Nền ===== */}
-                {sentences && sentences.length > 0 && (
-                    <div className="space-y-2 pt-2 border-t">
-                        {/* Header collapse */}
-                        <button
-                            className="flex items-center gap-1 text-sm font-medium w-full text-left hover:text-primary transition-colors"
-                            onClick={() => setKeywordsExpanded(!keywordsExpanded)}
-                        >
-                            {keywordsExpanded ? (
-                                <ChevronDown className="h-3.5 w-3.5" />
-                            ) : (
-                                <ChevronRight className="h-3.5 w-3.5" />
-                            )}
-                            🎵 Gợi Ý Suno AI Prompts
-                            {musicKeywords.length > 0 && (
-                                <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30">
-                                    {musicKeywords.length} prompts
-                                </span>
-                            )}
-                        </button>
+                <div className="space-y-2 pt-2 border-t">
+                    {/* Header collapse */}
+                    <button
+                        className="flex items-center gap-1 text-sm font-medium w-full text-left hover:text-primary transition-colors"
+                        onClick={() => setKeywordsExpanded(!keywordsExpanded)}
+                    >
+                        {keywordsExpanded ? (
+                            <ChevronDown className="h-3.5 w-3.5" />
+                        ) : (
+                            <ChevronRight className="h-3.5 w-3.5" />
+                        )}
+                        🎵 Gợi Ý Suno AI Prompts
+                        {musicKeywords.length > 0 && (
+                            <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30">
+                                {musicKeywords.length} prompts
+                            </span>
+                        )}
+                    </button>
 
-                        {keywordsExpanded && (
-                            <div className="space-y-2">
-                                {/* Nút gọi AI gợi ý keywords */}
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="w-full gap-2 h-8 text-xs"
-                                    onClick={async () => {
-                                        if (!sentences) return
-                                        setIsSuggestingKeywords(true)
-                                        try {
-                                            const keywords = await suggestMusicKeywords(
-                                                sentences,
-                                                (msg) => setAnalyzeProgress(msg)
-                                            )
-                                            setMusicKeywords(keywords)
-                                        } catch (err) {
-                                            setAnalyzeError(String(err))
-                                        } finally {
-                                            setIsSuggestingKeywords(false)
-                                            setAnalyzeProgress("")
-                                        }
-                                    }}
-                                    disabled={isSuggestingKeywords}
-                                >
+                    {keywordsExpanded && (
+                        <div className="space-y-2">
+                            {/* Nút gọi AI gợi ý keywords */}
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="w-full gap-2 h-8 text-xs"
+                                onClick={async () => {
+                                    setIsSuggestingKeywords(true)
+                                    try {
+                                        const keywords = await generateMediaIdeas(
+                                            "music",
+                                            (msg) => setAnalyzeProgress(msg)
+                                        )
+                                        setMusicKeywords(keywords)
+                                    } catch (err) {
+                                        setAnalyzeError(String(err))
+                                    } finally {
+                                        setIsSuggestingKeywords(false)
+                                        setAnalyzeProgress("")
+                                    }
+                                }}
+                                disabled={isSuggestingKeywords}
+                            >
                                     {isSuggestingKeywords ? (
                                         <Loader2 className="h-3 w-3 animate-spin" />
                                     ) : (
@@ -584,7 +677,6 @@ export function MusicLibraryTab() {
                             </div>
                         )}
                     </div>
-                )}
 
                 {/* ===== SECTION 3: AI Gợi Ý Nhạc Nền ===== */}
                 {analyzedCount > 0 && (
@@ -762,7 +854,7 @@ export function MusicLibraryTab() {
                                             outputFolder: matchingFolder,
                                             scenes: ffmpegScenes,
                                             sentences: sentences,
-                                            duckingVolume: 0.15,
+                                            duckingVolume: 0.30, // Tăng lên 30% để nhạc không bị tụt quá sâu, nghe tự nhiên hơn
                                             onProgress: (p) => setImportProgress(p)
                                         });
 
@@ -812,11 +904,17 @@ function MusicItemRow({
     isSelected,
     audioPreview,
     onClick,
+    onRevealInFinder,
+    onCopyPrompt,
+    onPasteJson
 }: {
     item: AudioLibraryItem
     isSelected: boolean
     audioPreview: UseAudioPreviewReturn
     onClick: () => void
+    onRevealInFinder?: (path: string) => void
+    onCopyPrompt?: (item: AudioLibraryItem) => void
+    onPasteJson?: (item: AudioLibraryItem) => void
 }) {
     const meta = item.aiMetadata
     // Kiểm tra bài này có đang phát không
@@ -853,11 +951,11 @@ function MusicItemRow({
             </button>
 
             {/* Tên file */}
-            <span className="text-xs truncate flex-1 min-w-0">{item.fileName}</span>
+            <span className="text-xs truncate flex-1 min-w-0" title={item.fileName}>{item.fileName}</span>
 
             {/* Tags cảm xúc (badge) — chỉ hiện khi có metadata */}
             {meta && (
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex items-center gap-1 shrink-0 hidden sm:flex">
                     {meta.emotion.slice(0, 2).map((emo, i) => (
                         <span
                             key={i}
@@ -880,11 +978,37 @@ function MusicItemRow({
                 </div>
             )}
 
-            {/* Chưa scan → badge xám */}
+            {/* Chưa scan → badge xám + nhóm nut công cụ manual scan */}
             {!meta && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground border border-border/50">
-                    Chưa scan
-                </span>
+                <div className="flex items-center gap-1 shrink-0">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-red-400/80 border border-border/50 mr-1 italic">
+                        Chưa scan
+                    </span>
+                    {onRevealInFinder && (
+                        <Button
+                            variant="ghost" size="sm" className="h-6 w-6 p-0 text-muted-foreground hover:text-blue-400"
+                            onClick={(e) => { e.stopPropagation(); onRevealInFinder(item.filePath) }} title="Mở trong Finder"
+                        >
+                            <FolderOpen className="h-3.5 w-3.5" />
+                        </Button>
+                    )}
+                    {onCopyPrompt && (
+                        <Button
+                            variant="ghost" size="sm" className="h-6 w-6 p-0 text-muted-foreground hover:text-green-400"
+                            onClick={(e) => { e.stopPropagation(); onCopyPrompt(item) }} title="Copy Prompt gửi Gemini"
+                        >
+                            <Copy className="h-3.5 w-3.5" />
+                        </Button>
+                    )}
+                    {onPasteJson && (
+                        <Button
+                            variant="ghost" size="sm" className="h-6 w-6 p-0 text-muted-foreground hover:text-orange-400"
+                            onClick={(e) => { e.stopPropagation(); onPasteJson(item) }} title="Nhúng JSON từ Gemini"
+                        >
+                            <PlusCircle className="h-3.5 w-3.5" />
+                        </Button>
+                    )}
+                </div>
             )}
         </div>
     )

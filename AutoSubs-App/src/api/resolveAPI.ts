@@ -1,5 +1,5 @@
 // src/api/resolveApi.ts
-import { fetch } from '@tauri-apps/plugin-http';
+// Dùng fetch mặc định browser để tránh tauri plugin bug
 import { downloadDir } from '@tauri-apps/api/path';
 import { getTranscriptPath } from '@/utils/file-utils';
 import { Speaker } from '@/types/interfaces';

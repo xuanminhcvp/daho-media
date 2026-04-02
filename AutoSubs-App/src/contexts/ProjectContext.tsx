@@ -113,6 +113,8 @@ export interface SubtitleData {
   selectedTrack: string;
   /** Font size cho phụ đề (mặc định 0.04 = Medium) */
   fontSize: number;
+  /** Chế độ phụ đề (fusion = Text+ nặng, srt = Native nhẹ) */
+  subtitleMode: 'fusion' | 'srt';
 }
 
 // ===== INTERFACE: TOÀN BỘ DỮ LIỆU DỰ ÁN =====
@@ -224,6 +226,7 @@ export const DEFAULT_PROJECT_DATA: ProjectData = {
     selectedTemplate: 'Subtitle Default',
     selectedTrack: '0',
     fontSize: 0.04,
+    subtitleMode: 'srt',
   },
 };
 

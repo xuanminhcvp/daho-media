@@ -95,8 +95,20 @@ local function main()
 
     -- DEV_MODE override
     if DEV_MODE then
-        resources_folder = os.getenv("HOME")
-            .. "/Documents/src_code/autosubs_documentary/AutoSubs-App/src-tauri/resources"
+        -- Lấy đường dẫn thư mục chứa file AutoSubs.lua hiện tại (cách này giúp động trên các máy dev khác nhau)
+        local script_path = debug.getinfo(1, "S").source
+        if script_path:sub(1,1) == "@" then
+            script_path = script_path:sub(2)
+            -- Cắt lấy thư mục cha
+            resources_folder = script_path:match("(.*[/\\])") 
+            -- Bỏ dấu / ở cuối nếu có
+            if resources_folder and resources_folder:sub(-1) == "/" then
+                resources_folder = resources_folder:sub(1, -2)
+            end
+        else
+            -- Fallback nếu chạy trực tiếp qua Console copy-paste
+            resources_folder = os.getenv("HOME") .. "/Documents/src_code/daho_media/AutoSubs-App/src-tauri/resources"
+        end
     end
     log("[Step 2] resources_folder:", resources_folder)
 

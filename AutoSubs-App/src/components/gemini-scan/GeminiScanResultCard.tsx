@@ -66,12 +66,12 @@ const GeminiScanResultCard: React.FC<GeminiScanResultCardProps> = ({ result }) =
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'space-between' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
                     {/* Icon file type */}
-                    <span style={{ fontSize: '14px', flexShrink: 0 }}>
+                    <span style={{ fontSize: '0.9rem', flexShrink: 0 }}>
                         {scanType === 'audio' ? '🎵' : '🖼️'}
                     </span>
                     {/* Tên file */}
                     <span style={{
-                        fontSize: '12px',
+                        fontSize: '0.85rem',
                         fontWeight: 600,
                         color: '#e2e8f0',
                         overflow: 'hidden',
@@ -86,7 +86,7 @@ const GeminiScanResultCard: React.FC<GeminiScanResultCardProps> = ({ result }) =
                 <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
                     {savedToMetadata && (
                         <span style={{
-                            fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
+                            fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px',
                             backgroundColor: 'rgba(34,197,94,0.15)', color: '#22c55e',
                             border: '1px solid rgba(34,197,94,0.3)',
                         }}>
@@ -95,7 +95,7 @@ const GeminiScanResultCard: React.FC<GeminiScanResultCardProps> = ({ result }) =
                     )}
                     {hasError && (
                         <span style={{
-                            fontSize: '10px', padding: '2px 6px', borderRadius: '4px',
+                            fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px',
                             backgroundColor: 'rgba(239,68,68,0.15)', color: '#ef4444',
                             border: '1px solid rgba(239,68,68,0.3)',
                         }}>
@@ -110,21 +110,21 @@ const GeminiScanResultCard: React.FC<GeminiScanResultCardProps> = ({ result }) =
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {/* Main info */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span style={{ fontSize: '13px', fontWeight: 600, color: '#a78bfa' }}>
+                        <span style={{ fontSize: '1.1rem', fontWeight: 600, color: '#a78bfa' }}>
                             {summary.main}
                         </span>
-                        <span style={{ fontSize: '11px', color: '#94a3b8' }}>
+                        <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
                             {summary.sub}
                         </span>
                         {/* extra info (image: AI tool, quality) */}
                         {'extra' in summary && summary.extra && (
-                            <span style={{ fontSize: '11px', color: '#f59e0b' }}>
+                            <span style={{ fontSize: '0.8rem', color: '#f59e0b' }}>
                                 {(summary as any).extra}
                             </span>
                         )}
                         {'quality' in summary && summary.quality && (
                             <span style={{
-                                fontSize: '10px', padding: '1px 6px', borderRadius: '4px',
+                                fontSize: '0.7rem', padding: '1px 6px', borderRadius: '4px',
                                 backgroundColor: 'rgba(59,130,246,0.15)', color: '#60a5fa',
                             }}>
                                 {(summary as any).quality}
@@ -134,7 +134,7 @@ const GeminiScanResultCard: React.FC<GeminiScanResultCardProps> = ({ result }) =
 
                     {/* Description */}
                     {summary.description && (
-                        <p style={{ fontSize: '11px', color: '#94a3b8', margin: 0, lineHeight: 1.5 }}>
+                        <p style={{ fontSize: '0.8rem', color: '#94a3b8', margin: 0, lineHeight: 1.5 }}>
                             {summary.description.slice(0, 200)}{summary.description.length > 200 ? '...' : ''}
                         </p>
                     )}
@@ -142,7 +142,7 @@ const GeminiScanResultCard: React.FC<GeminiScanResultCardProps> = ({ result }) =
                     {/* Recommendation (image) */}
                     {'recommendation' in summary && (summary as any).recommendation && (
                         <p style={{
-                            fontSize: '11px', color: '#22c55e', margin: 0,
+                            fontSize: '0.8rem', color: '#22c55e', margin: 0,
                             padding: '4px 8px', borderRadius: '4px',
                             backgroundColor: 'rgba(34,197,94,0.08)',
                         }}>
@@ -155,7 +155,7 @@ const GeminiScanResultCard: React.FC<GeminiScanResultCardProps> = ({ result }) =
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                             {summary.tags.slice(0, 8).map((tag: string) => (
                                 <span key={tag} style={{
-                                    fontSize: '10px', padding: '1px 6px', borderRadius: '12px',
+                                    fontSize: '0.7rem', padding: '1px 6px', borderRadius: '12px',
                                     backgroundColor: 'rgba(255,255,255,0.06)',
                                     color: '#64748b', border: '1px solid rgba(255,255,255,0.08)',
                                 }}>
@@ -169,7 +169,7 @@ const GeminiScanResultCard: React.FC<GeminiScanResultCardProps> = ({ result }) =
 
             {/* ─── Error message ─── */}
             {hasError && (
-                <p style={{ fontSize: '11px', color: '#ef4444', margin: 0 }}>
+                <p style={{ fontSize: '0.8rem', color: '#ef4444', margin: 0 }}>
                     {error || 'Không parse được JSON từ Gemini'}
                 </p>
             )}
@@ -179,7 +179,7 @@ const GeminiScanResultCard: React.FC<GeminiScanResultCardProps> = ({ result }) =
                 <button
                     onClick={handleCopy}
                     style={{
-                        padding: '3px 10px', borderRadius: '6px', fontSize: '11px',
+                        padding: '3px 10px', borderRadius: '6px', fontSize: '0.8rem',
                         backgroundColor: 'rgba(255,255,255,0.06)', color: '#94a3b8',
                         border: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer',
                     }}
@@ -189,7 +189,7 @@ const GeminiScanResultCard: React.FC<GeminiScanResultCardProps> = ({ result }) =
                 <button
                     onClick={() => setShowJson(!showJson)}
                     style={{
-                        padding: '3px 10px', borderRadius: '6px', fontSize: '11px',
+                        padding: '3px 10px', borderRadius: '6px', fontSize: '0.8rem',
                         backgroundColor: showJson ? 'rgba(168,85,247,0.15)' : 'rgba(255,255,255,0.06)',
                         color: showJson ? '#a855f7' : '#94a3b8',
                         border: `1px solid ${showJson ? 'rgba(168,85,247,0.3)' : 'rgba(255,255,255,0.1)'}`,
@@ -201,7 +201,7 @@ const GeminiScanResultCard: React.FC<GeminiScanResultCardProps> = ({ result }) =
                 <button
                     onClick={() => setShowRaw(!showRaw)}
                     style={{
-                        padding: '3px 10px', borderRadius: '6px', fontSize: '11px',
+                        padding: '3px 10px', borderRadius: '6px', fontSize: '0.8rem',
                         backgroundColor: showRaw ? 'rgba(59,130,246,0.15)' : 'rgba(255,255,255,0.06)',
                         color: showRaw ? '#3b82f6' : '#94a3b8',
                         border: `1px solid ${showRaw ? 'rgba(59,130,246,0.3)' : 'rgba(255,255,255,0.1)'}`,
@@ -215,7 +215,7 @@ const GeminiScanResultCard: React.FC<GeminiScanResultCardProps> = ({ result }) =
             {/* ─── JSON view ─── */}
             {showJson && parsedJson && (
                 <pre style={{
-                    fontSize: '10px', color: '#94a3b8', margin: 0,
+                    fontSize: '0.7rem', color: '#94a3b8', margin: 0,
                     padding: '8px', borderRadius: '6px',
                     backgroundColor: 'rgba(0,0,0,0.3)',
                     overflow: 'auto', maxHeight: '200px',
@@ -228,7 +228,7 @@ const GeminiScanResultCard: React.FC<GeminiScanResultCardProps> = ({ result }) =
             {/* ─── Raw text view ─── */}
             {showRaw && (
                 <pre style={{
-                    fontSize: '10px', color: '#64748b', margin: 0,
+                    fontSize: '0.7rem', color: '#64748b', margin: 0,
                     padding: '8px', borderRadius: '6px',
                     backgroundColor: 'rgba(0,0,0,0.3)',
                     overflow: 'auto', maxHeight: '150px',

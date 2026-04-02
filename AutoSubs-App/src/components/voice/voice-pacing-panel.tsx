@@ -30,7 +30,7 @@ import {
 import { open, save } from "@tauri-apps/plugin-dialog"
 import { downloadDir } from "@tauri-apps/api/path"
 import { join } from "@tauri-apps/api/path"
-import { PACING_RULES, PACING_CONFIG } from "@/prompts/voice-pacing-prompt"
+import { PACING_RULES, PACING_CONFIG } from "@/prompts/documentary/voice-pacing-prompt"
 import { loadMatchingResults } from "@/services/ai-matcher"
 import {
     analyzeByRules,

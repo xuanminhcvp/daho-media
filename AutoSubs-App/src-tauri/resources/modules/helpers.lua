@@ -161,6 +161,9 @@ end
 function M.CreateResponse(body)
     local header = "HTTP/1.1 200 OK\r\n"
         .. "Server: ljsocket/0.1\r\n"
+        .. "Access-Control-Allow-Origin: *\r\n"
+        .. "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+        .. "Access-Control-Allow-Headers: Content-Type\r\n"
         .. "Content-Type: application/json\r\n"
         .. "Content-Length: " .. #body .. "\r\n"
         .. "Connection: close\r\n"

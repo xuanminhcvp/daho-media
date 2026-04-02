@@ -5,34 +5,20 @@
 // 2. Chọn thư mục SFX cục bộ → quét folder → AI scan metadata (Gemini)
 // 3. Load file whisper_words.txt → bắt timing chính xác từng từ
 // 4. Smart Auto-Assign: khớp SFX cue → file SFX dựa trên AI metadata
-// 5. Render SFX track với timing chính xác từ whisper words
-
 import * as React from "react"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Slider } from "@/components/ui/slider"
 import {
-    Sparkles,
-    Zap,
-    Loader2,
-    FolderOpen,
-    Download,
-    ChevronDown,
-    ChevronRight,
-    Copy,
-    Check,
-    Save,
-    Search,
-    StopCircle,
+    FolderOpen, Sparkles, Check, ChevronDown, ChevronRight, Loader2, StopCircle, Save, Search, Download, Copy, Zap, PlusCircle
 } from "lucide-react"
 import { open } from "@tauri-apps/plugin-dialog"
 import { desktopDir } from "@tauri-apps/api/path"
 import {
     analyzeScriptForSFX,
-    suggestSfxKeywords,
     SfxCue,
-    type SfxKeywordSuggestion,
 } from "@/services/audio-director-service"
+import { generateMediaIdeas } from "@/services/idea-generator-service"
 import {
     scanAudioFolder,
     scanAndAnalyzeFolder,
@@ -47,6 +33,7 @@ import { useProject } from "@/contexts/ProjectContext"
 import { useTranscript } from "@/contexts/TranscriptContext"
 import { join } from "@tauri-apps/api/path"
 import { saveFolderPath, getSavedFolder, getAudioScanApiKey } from "@/services/saved-folders-service"
+import { getSfxFolderPath } from "@/services/auto-media-storage"
 import {
     WhisperWordsFile,
     WhisperWord,
@@ -140,25 +127,44 @@ export function SfxLibraryTab() {
     const [libraryExpanded, setLibraryExpanded] = React.useState(false)
 
     // Gợi ý SFX keywords để tải
-    const [sfxKeywords, setSfxKeywords] = React.useState<SfxKeywordSuggestion[]>([])
+    const [sfxKeywords, setSfxKeywords] = React.useState<string[]>([])
     const [isSuggestingKeywords, setIsSuggestingKeywords] = React.useState(false)
     const [keywordSuggestExpanded, setKeywordSuggestExpanded] = React.useState(true)
 
     // ======================== AUTO-LOAD THƯ MỤC ĐÃ LƯU ========================
-
-    // Khi mount, tự động load thư mục SFX đã lưu + metadata từ file JSON trong folder
+    // Khi mount, tự động load thư mục SFX đã lưu.
+    // Nếu chưa từng lưu folder → fallback vào ~/Desktop/Auto_media/sfx
     React.useEffect(() => {
         const loadSavedSfxFolder = async () => {
             if (sfxFolder) return
-            const saved = await getSavedFolder("sfxFolder")
-            if (!saved) return
 
-            console.log("[SfxLib] Auto-load thư mục SFX đã lưu:", saved)
+            // Ưu tiên: folder đã lưu
+            let folderToLoad = await getSavedFolder("sfxFolder")
+
+            // Fallback: ~/Desktop/Auto_media/sfx (đường dẫn động theo máy)
+            if (!folderToLoad) {
+                folderToLoad = await getSfxFolderPath()
+                console.log("[SfxLib] Dùng Auto_media fallback:", folderToLoad)
+            }
+
+            console.log("[SfxLib] Auto-load thư mục SFX:", folderToLoad)
             try {
                 // Quét folder + load metadata từ file JSON trong folder
-                const scanned = await scanAudioFolder(saved, "sfx")
-                const folderItems = await loadAudioItemsFromFolder(saved)
-                const folderMap = new Map(folderItems.map(i => [i.filePath, i]))
+                const scanned = await scanAudioFolder(folderToLoad, "sfx")
+                const folderItems = await loadAudioItemsFromFolder(folderToLoad)
+
+                // TỰ ĐỘNG DỌN DẸP
+                const currentPaths = new Set(scanned.map(i => i.filePath));
+                const cleanedFolderItems = folderItems.filter(item => currentPaths.has(item.filePath));
+                const deletedCount = folderItems.length - cleanedFolderItems.length;
+                
+                if (deletedCount > 0) {
+                    const { saveAudioItemsToFolder } = await import("@/services/audio-library-service");
+                    await saveAudioItemsToFolder(folderToLoad, cleanedFolderItems);
+                    console.log(`[SfxLib] 🧹 Khởi động: Đã dọn dẹp ${deletedCount} file bị xoá khỏi metadata JSON`);
+                }
+
+                const folderMap = new Map(cleanedFolderItems.map(i => [i.filePath, i]))
 
                 // Merge: ưu tiên metadata từ file JSON
                 const mergedItems = scanned.map(item => {
@@ -167,10 +173,10 @@ export function SfxLibraryTab() {
                     return item
                 })
 
-                updateSfxLibrary({ sfxFolder: saved, sfxItems: mergedItems })
+                updateSfxLibrary({ sfxFolder: folderToLoad, sfxItems: mergedItems })
 
                 // Đếm file mới cần quét AI
-                const newFiles = findNewFiles(scanned, folderItems)
+                const newFiles = findNewFiles(scanned, cleanedFolderItems)
                 setNewFilesCount(newFiles.length)
             } catch (error) {
                 console.error("[SfxLib] Lỗi auto-load thư mục SFX:", error)
@@ -282,15 +288,13 @@ export function SfxLibraryTab() {
 
     // --- Gợi ý từ khóa SFX để tải ---
     const handleSuggestKeywords = async () => {
-        if (!sentences) return
-
         setIsSuggestingKeywords(true)
         setAnalyzeError("")
         setSfxKeywords([])
 
         try {
-            const keywords = await suggestSfxKeywords(
-                sentences,
+            const keywords = await generateMediaIdeas(
+                "sfx",
                 (msg: string) => setAnalyzeProgress(msg)
             )
             setSfxKeywords(keywords)
@@ -316,7 +320,19 @@ export function SfxLibraryTab() {
             // Quét folder + load metadata từ file JSON trong folder
             const scanned = await scanAudioFolder(folder as string, "sfx")
             const folderItems = await loadAudioItemsFromFolder(folder as string)
-            const folderMap = new Map(folderItems.map(i => [i.filePath, i]))
+
+            // TỰ ĐỘNG DỌN DẸP KHI CHỌN FOLDER
+            const currentPaths = new Set(scanned.map(i => i.filePath));
+            const cleanedFolderItems = folderItems.filter(item => currentPaths.has(item.filePath));
+            const deletedCount = folderItems.length - cleanedFolderItems.length;
+            
+            if (deletedCount > 0) {
+                const { saveAudioItemsToFolder } = await import("@/services/audio-library-service");
+                await saveAudioItemsToFolder(folder as string, cleanedFolderItems);
+                console.log(`[SfxLib] 🧹 Chọn folder: Đã dọn dẹp ${deletedCount} file bị xoá khỏi metadata JSON`);
+            }
+
+            const folderMap = new Map(cleanedFolderItems.map(i => [i.filePath, i]))
 
             // Merge: ưu tiên metadata từ file JSON
             const mergedItems = scanned.map(item => {
@@ -328,7 +344,7 @@ export function SfxLibraryTab() {
             updateSfxLibrary({ sfxFolder: folder as string, sfxItems: mergedItems })
 
             // Đếm file mới cần quét AI
-            const newFiles = findNewFiles(scanned, folderItems)
+            const newFiles = findNewFiles(scanned, cleanedFolderItems)
             setNewFilesCount(newFiles.length)
         } catch (error: any) {
             console.error(error)
@@ -608,6 +624,62 @@ export function SfxLibraryTab() {
     // Đếm cues có whisper timing (exactStartTime từ AI batch)
     const whisperMatchedCount = sfxPlan?.cues.filter(c => c.exactStartTime !== undefined).length || 0;
 
+    // ======================== MANUAL SCAN TOOLS ========================
+    const handleRevealInFinder = React.useCallback(async (filePath: string) => {
+        try {
+            const { Command } = await import('@tauri-apps/plugin-shell');
+            await Command.create("exec-sh", ["-c", `open -R "${filePath}"`]).execute();
+        } catch (e) {
+            console.error("Lỗi khi mở Finder:", e);
+        }
+    }, []);
+
+    const handleCopyPrompt = React.useCallback(async (_item: AudioLibraryItem) => {
+        const prompt = `Phân tích hiệu ứng âm thanh (SFX) này và trả về định dạng JSON chính xác sau (CHỈ TRẢ VỀ JSON, KHÔNG THÊM BẤT KỲ VĂN BẢN NÀO KHÁC):\n{\n  "description": "mô tả ngắn âm thanh (VD: tiếng bùm trầm, gió thổi mạnh)",\n  "tags": ["tag1", "tag2"],\n  "emotion": ["mood1", "mood2"],\n  "intensity": "Cao"\n}`; // "Cao" / "Trung bình" / "Thấp"
+        await navigator.clipboard.writeText(prompt);
+        // Có thể thêm toast thông báo
+    }, []);
+
+    const handlePasteJson = React.useCallback(async (item: AudioLibraryItem) => {
+        const jsonStr = window.prompt(`Dán JSON từ Gemini cho file ${item.fileName}:\nVD: {"description":"...","tags":["..."],"emotion":["..."],"intensity":"Cao"}`);
+        if (!jsonStr) return;
+        try {
+            const match = jsonStr.match(/\\{[\\s\\S]*\\}/);
+            if (!match) throw new Error("Không tìm thấy dấu {} JSON hợp lệ");
+            const parsed = JSON.parse(match[0]);
+
+            const newMeta = {
+                description: parsed.description || "Manual",
+                tags: Array.isArray(parsed.tags) ? parsed.tags : [],
+                emotion: Array.isArray(parsed.emotion) ? parsed.emotion : [],
+                intensity: parsed.intensity || "Trung bình",
+                timeline: [],
+            };
+
+            const newItem: AudioLibraryItem = {
+                ...item,
+                aiMetadata: newMeta,
+                scannedAt: new Date().toISOString()
+            };
+
+            const allItems = sfxItems.map(i => i.filePath === item.filePath ? newItem : i);
+            
+            // Xoá bỏ item cũ khỏi sfxItems state để thay bằng mới (nhưng update bằng hook call custom)
+            // Thay vì tự set state, ta gọi updateAudioLibraryItem nếu có hàm đó, hoặc tự save & reload folder
+            if (sfxFolder) {
+                const { saveAudioItemsToFolder } = await import("@/services/audio-library-service");
+                await saveAudioItemsToFolder(sfxFolder, allItems);
+                // Dispatch event để reload (có thể setSfxItems trực tiếp)
+                // Lưu ý SfxLibraryTab không export trực tiếp setSfxItems ra ngoài mà dùng event,
+                // Nhưng ở đây ta có thể dùng trigger "Scan AI" nhẹ hoặc reload:
+                window.dispatchEvent(new CustomEvent("sfx-library-updated", { detail: allItems }));
+                alert(`✅ Đã cập nhật metadata thủ công cho ${item.fileName}`);
+            }
+        } catch (e) {
+            alert("Lỗi parse JSON: " + String(e));
+        }
+    }, [sfxItems, sfxFolder]);
+
     // ======================== RENDER ========================
 
     return (
@@ -775,7 +847,13 @@ export function SfxLibraryTab() {
                                     {/* Danh sách file SFX */}
                                     <div className="space-y-0.5 max-h-40 overflow-y-auto">
                                         {filteredSfxItems.map((item) => (
-                                            <SfxFileRow key={item.filePath} item={item} />
+                                            <SfxFileRow 
+                                                key={item.filePath} 
+                                                item={item} 
+                                                onRevealInFinder={handleRevealInFinder}
+                                                onCopyPrompt={handleCopyPrompt}
+                                                onPasteJson={handlePasteJson}
+                                            />
                                         ))}
                                         {filteredSfxItems.length === 0 && searchQuery && (
                                             <p className="text-[11px] text-muted-foreground text-center py-2">
@@ -790,8 +868,7 @@ export function SfxLibraryTab() {
                 </div>
 
                 {/* ===== SECTION: Gợi Ý SFX Để Tải ===== */}
-                {sentences && sentences.length > 0 && (
-                    <div className="space-y-2 pt-2 border-t">
+                <div className="space-y-2 pt-2 border-t">
                         <button
                             className="flex items-center gap-1 text-sm font-medium w-full text-left hover:text-primary transition-colors"
                             onClick={() => setKeywordSuggestExpanded(!keywordSuggestExpanded)}
@@ -857,7 +934,6 @@ export function SfxLibraryTab() {
                             </div>
                         )}
                     </div>
-                )}
 
                 {/* ===== SECTION 2: Phân Tích SFX ===== */}
                 {sentences && sentences.length > 0 && (
@@ -1092,17 +1168,29 @@ function smartMatchSfxFile(cue: SfxCue, sfxItems: AudioLibraryItem[]): AudioLibr
 /**
  * Hiển thị 1 file SFX trong thư viện (compact row)
  */
-function SfxFileRow({ item }: { item: AudioLibraryItem }) {
+function SfxFileRow({ 
+    item,
+    onRevealInFinder,
+    onCopyPrompt,
+    onPasteJson
+}: { 
+    item: AudioLibraryItem;
+    onRevealInFinder?: (path: string) => void;
+    onCopyPrompt?: (item: AudioLibraryItem) => void;
+    onPasteJson?: (item: AudioLibraryItem) => void;
+}) {
     const meta = item.aiMetadata;
     return (
-        <div className="flex items-center gap-2 px-2 py-1 rounded text-[11px] hover:bg-muted/50 transition-colors">
+        <div className={`flex items-center gap-2 px-2 py-1 rounded text-[11px] transition-colors ${
+            meta ? "hover:bg-muted/50" : "bg-red-500/5 hover:bg-red-500/10 border border-red-500/10"
+        }`}>
             {/* Tên file */}
-            <span className="flex-1 min-w-0 truncate text-foreground/80">
+            <span className="flex-1 min-w-0 truncate text-foreground/80" title={item.fileName}>
                 {item.fileName}
             </span>
             {/* Tags (nếu có AI metadata) */}
             {meta && (
-                <div className="flex gap-0.5 shrink-0">
+                <div className="flex gap-0.5 shrink-0 hidden sm:flex">
                     {meta.tags.slice(0, 3).map((tag, i) => (
                         <span
                             key={i}
@@ -1113,9 +1201,35 @@ function SfxFileRow({ item }: { item: AudioLibraryItem }) {
                     ))}
                 </div>
             )}
-            {/* Chưa scan */}
+            {/* Chưa scan -> Hiện công cụ Mở Manual Scan */}
             {!meta && (
-                <span className="text-[9px] text-muted-foreground italic">chưa scan</span>
+                <div className="flex items-center gap-1 shrink-0">
+                    <span className="text-[9px] text-red-400/80 mr-1 italic pr-1 border-r border-red-400/30">chưa scan</span>
+                    {onRevealInFinder && (
+                        <Button
+                            variant="ghost" size="sm" className="h-4 w-4 p-0 text-muted-foreground hover:text-blue-400"
+                            onClick={() => onRevealInFinder(item.filePath)} title="Mở trong Finder"
+                        >
+                            <FolderOpen className="h-3 w-3" />
+                        </Button>
+                    )}
+                    {onCopyPrompt && (
+                        <Button
+                            variant="ghost" size="sm" className="h-4 w-4 p-0 text-muted-foreground hover:text-green-400"
+                            onClick={() => onCopyPrompt(item)} title="Copy Prompt gửi Gemini"
+                        >
+                            <Copy className="h-3 w-3" />
+                        </Button>
+                    )}
+                    {onPasteJson && (
+                        <Button
+                            variant="ghost" size="sm" className="h-4 w-4 p-0 text-muted-foreground hover:text-orange-400"
+                            onClick={() => onPasteJson(item)} title="Nhúng JSON từ Gemini"
+                        >
+                            <PlusCircle className="h-3 w-3" />
+                        </Button>
+                    )}
+                </div>
             )}
         </div>
     );
@@ -1246,7 +1360,7 @@ function SfxCueItem({
  * Hiển thị 1 keyword SFX gợi ý (compact row)
  * Gồm: số thứ tự, keyword tiếng Anh, nút copy
  */
-function SfxKeywordRow({ item, index }: { item: SfxKeywordSuggestion; index: number }) {
+function SfxKeywordRow({ item, index }: { item: string; index: number }) {
     const [copied, setCopied] = React.useState(false)
 
     const handleCopy = async () => {

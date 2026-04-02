@@ -106,56 +106,99 @@ export async function mixAudioScenesAndDuck(config: MixAudioConfig) {
                 "-i", cscene.filePath
             );
             // Chuẩn hoá audio:
-            // 1. aresample 44100 + stereo (format thống nhất)
-            // 2. volume=-11dB: giảm âm lượng nhạc nền cố định (~28% volume gốc)
-            //    ⚡ NHANH: 1-pass (chỉ đọc audio 1 lần)
-            //    vs loudnorm: 2-pass (đọc 2 lần) → chậm gấp 2-3x
-            filterParts.push(`[${inputIdx}:a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=-11dB,asetpts=N/SR/TB[${outLabel}]`);
+            // Thay vì dùng volume=-11dB tĩnh (dễ bị lệch to/nhỏ giữa các bài),
+            // Ta áp dụng bộ phân tích/ép dải âm chuẩn điện ảnh EBU R128 `loudnorm` (1-pass). 
+            // Giả lập đưa TẤT CẢ các file gốc về cùng 1 độ lớn -20 LUFS dù file gốc bé hay to.
+            filterParts.push(`[${inputIdx}:a]loudnorm=I=-20:LRA=11:tp=-2.0,aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=N/SR/TB[${outLabel}]`);
             cscene.inputIdx = inputIdx;
             inputIdx++;
         }
     }
 
-    // 2. Cascade crossfades
+    // 2. Cascade crossfades -> Fix bug O(N^2) bằng amix + adelay + afade thay vì acrossfade
     if (continuousScenes.length === 0) {
         throw new Error("Không có dữ liệu Scene để Render.");
     }
 
-    let lastMixLabel = `norm0`;
-    for (let i = 1; i < continuousScenes.length; i++) {
-        const nextLabel = `norm${i}`;
-        const newMixLabel = `mix${i}`;
-        const prevScene = continuousScenes[i - 1];
+    const mixInputs: string[] = [];
+    let currentGlobalTimeMs = 0; // ms
 
-        if (prevScene.XFADE > 0) {
-            filterParts.push(`[${lastMixLabel}][${nextLabel}]acrossfade=d=${prevScene.XFADE.toFixed(2)}:c1=tri:c2=tri[${newMixLabel}]`);
-            lastMixLabel = newMixLabel;
-        } else {
-            // Just in case there is no crossfade needed
-            filterParts.push(`[${lastMixLabel}][${nextLabel}]concat=n=2:v=0:a=1[${newMixLabel}]`);
-            lastMixLabel = newMixLabel;
+    for (let i = 0; i < continuousScenes.length; i++) {
+        const cscene = continuousScenes[i];
+        const outLabel = `pos${i}`;
+
+        let chain = `[norm${i}]`;
+        
+        // FADE IN (nếu có khúc giao với track trước)
+        if (i > 0 && continuousScenes[i-1].XFADE > 0) {
+            chain += `afade=t=in:st=0:d=${continuousScenes[i-1].XFADE.toFixed(3)},`;
         }
+
+        // FADE OUT
+        if (cscene.XFADE > 0) {
+            const fadeOutStartSec = cscene.dur - cscene.XFADE;
+            chain += `afade=t=out:st=${fadeOutStartSec.toFixed(3)}:d=${cscene.XFADE.toFixed(3)},`;
+        }
+        
+        // DELAY (căn thời điểm bắt đầu ghép track)
+        if (currentGlobalTimeMs > 0) {
+            const d = Math.round(currentGlobalTimeMs);
+            chain += `adelay=${d}|${d},`;
+        }
+
+        if (chain.endsWith(',')) chain = chain.slice(0, -1);
+        chain += `[${outLabel}]`;
+        
+        filterParts.push(chain);
+        mixInputs.push(`[${outLabel}]`);
+
+        // Đẩy timeline (trừ đi khoảng XFADE vì track tiếp theo sẽ bắt đầu ĐÈ lên khoảng XFADE này)
+        currentGlobalTimeMs += (cscene.dur - cscene.XFADE) * 1000;
+    }
+
+    let lastMixLabel = 'mixed_bgm';
+    if (mixInputs.length > 1) {
+        filterParts.push(`${mixInputs.join('')}amix=inputs=${mixInputs.length}:duration=longest:dropout_transition=0:normalize=0[${lastMixLabel}]`);
+    } else {
+        lastMixLabel = "pos0"; // Nếu chỉ có 1 track
     }
 
     // 3. Ducking (Sidechain via aevalsrc)
     let duckingLabel = lastMixLabel;
     if (config.sentences.length > 0) {
+        // Tối ưu: Gộp các câu nối tiếp nhau để giảm số lượng biểu thức tính toán (tăng tốc độ render hàng chục lần)
+        const mergedSentences: Array<{start: number, end: number}> = [];
+        const margin = 0.5; // Cắt sớm/muộn 0.5s
+        const minGap = 1.0; // Nếu khoảng lặng < 1.0s thì gộp luôn không tăng volume lên
+
+        for (const s of config.sentences) {
+            const start = Math.max(0, s.start - margin);
+            const end = s.end + margin;
+            if (mergedSentences.length === 0) {
+                mergedSentences.push({ start, end });
+            } else {
+                const last = mergedSentences[mergedSentences.length - 1];
+                if (start <= last.end + minGap) {
+                    last.end = Math.max(last.end, end);
+                } else {
+                    mergedSentences.push({ start, end });
+                }
+            }
+        }
+
         // Build mathematical expression for speech presence (1.0 = speech, 0.0 = silence)
-        const bexprs = config.sentences.map(s => {
-            const margin = 0.5; // Trigger ducking slightly before and after speech
-            return `between(t,${Math.max(0, s.start - margin).toFixed(3)},${(s.end + margin).toFixed(3)})`;
+        const bexprs = mergedSentences.map(s => {
+            return `between(t,${s.start.toFixed(3)},${s.end.toFixed(3)})`;
         });
 
-        // Volume expression: when speech=0 -> vol=1.0. When speech=1 -> vol=duckVol
-        // Multiplier = 1.0 - (1.0 - duckVol) * sum(bexprs)
         const volDrop = (1.0 - duckVol).toFixed(2);
-
-        // In case there are hundreds of sentences, FFmpeg expressions handle long strings fine.
         const expr = `1.0-${volDrop}*min(1,${bexprs.join('+')})`;
 
+        // Tối ưu: Dùng s=8000 thay vì 44100 cho aevalsrc vì ducking envelope không cần chi tiết ở mức kHz. 
+        // Thay đổi này giúp giảm tải CPU đánh giá biểu thức toán học đi 5.5 lần.
         filterParts.push(
-            `aevalsrc=exprs='${expr}':s=44100:d=${totalDur.toFixed(3)}[vol_mono]`,
-            `[vol_mono]lowpass=f=4,pan=stereo|c0=c0|c1=c0[vol_stereo]`, // Lowpass creates a smooth fade transition (~0.3s fade)
+            `aevalsrc=exprs='${expr}':s=8000:d=${totalDur.toFixed(3)}[vol_mono]`,
+            `[vol_mono]aresample=44100,lowpass=f=4,pan=stereo|c0=c0|c1=c0[vol_stereo]`, // Lowpass creates a smooth fade transition (~0.3s fade)
             `[${lastMixLabel}][vol_stereo]amultiply[ducked_out]`
         );
         duckingLabel = "ducked_out";
@@ -357,19 +400,14 @@ export async function normalizeSfxVolume(
     const startTime = Date.now();
     const fileName = inputPath.split(/[/\\]/).pop() || "sfx";
 
-    // Tính volume dB từ target LUFS
-    // Baseline: file SFX gốc thường ~-16 LUFS
-    // → Giảm (targetLufs - (-16)) = targetLufs + 16 dB
-    // Ví dụ: target -30 LUFS → volume = -30 + 16 = -14dB
-    const volumeDb = targetLufs + 16;
-
-    // Dùng volume filter (1-pass, nhanh x3 so với loudnorm 2-pass)
-    // SFX clip thường ngắn (1-10s) nên không cần normalize chính xác từng file
+    // THAY THẾ bộ lọc "Trừ tĩnh" (static volume) bằng bộ phân tích EBU R128 `loudnorm`
+    // Tự động phân tích và đo đạc để bơm/ép mọi file SFX (ngắn hay dài)
+    // về mốc LUFS cực kỳ chính xác. Loại bỏ hoàn toàn tình trạng tiếng nổ điếc tai, tiếng chim hót lại bé tí.
     const ffmpegArgs: string[] = [
         "-y",
         "-i", inputPath,
         "-vn",
-        "-af", `volume=${volumeDb}dB`,
+        "-af", `loudnorm=I=${targetLufs}:LRA=11:tp=-2.0`,
         "-ar", "48000",     // 48kHz chuẩn cho DaVinci Resolve
         "-c:a", "pcm_s16le",
         outputPath
@@ -380,18 +418,18 @@ export async function normalizeSfxVolume(
         id: logId,
         timestamp: new Date(),
         method: "CLI",
-        url: `FFmpeg Volume (${fileName})`,
+        url: `FFmpeg EBU R128 (${fileName})`,
         requestHeaders: {},
         requestBody: `ffmpeg ${ffmpegArgs.join(" ")}`,
         status: null,
         responseHeaders: {},
-        responseBody: `(đang normalize ${fileName} → ${volumeDb}dB / ~${targetLufs} LUFS...)`,
+        responseBody: `(đang phân tích và ép mốc chuẩn: ${fileName} → ${targetLufs} LUFS...)`,
         duration: 0,
         error: null,
-        label: `🔊 Volume: ${fileName} → ${volumeDb}dB`,
+        label: `🔊 EBU R128: ${fileName} → ${targetLufs} LUFS`,
     });
 
-    console.log(`[FFmpeg] 🔊 Volume: ${fileName} → ${volumeDb}dB (~${targetLufs} LUFS)`);
+    console.log(`[FFmpeg] 🔊 LOUDNORM: ${fileName} → ép về mốc chuẩn ${targetLufs} LUFS`);
 
     // Dùng runFFmpegSafe (single-quote mọi arg) + timeout 60s
     const TIMEOUT_MS = 60000;
@@ -413,17 +451,17 @@ export async function normalizeSfxVolume(
     if (exitCode !== 0) {
         updateDebugLog(logId, {
             status: 500,
-            responseBody: `❌ FFmpeg Volume FAILED\n\nFile: ${fileName}\nTarget: ${volumeDb}dB\n\n=== STDERR ===\n${stderrData}`,
+            responseBody: `❌ FFmpeg Loudnorm FAILED\n\nFile: ${fileName}\nTarget: ${targetLufs} LUFS\n\n=== STDERR ===\n${stderrData}`,
             duration,
             error: `Exit code: ${exitCode}`,
         });
-        throw new Error(`FFmpeg volume failed (code ${exitCode}): ${stderrData.slice(-300)}`);
+        throw new Error(`FFmpeg loudnorm failed (code ${exitCode}): ${stderrData.slice(-300)}`);
     }
 
     // Thành công → log kết quả vào Debug Panel
     updateDebugLog(logId, {
         status: 200,
-        responseBody: `✅ Volume OK\n\nFile: ${fileName}\nVolume: ${volumeDb}dB (~${targetLufs} LUFS)\nOutput: ${outputPath}\nThời gian: ${duration}ms`,
+        responseBody: `✅ EBU R128 OK\n\nFile: ${fileName}\nĐã ép thẳng về cột mốc: ${targetLufs} LUFS\nOutput: ${outputPath}\nThời gian: ${duration}ms`,
         duration,
         error: null,
     });

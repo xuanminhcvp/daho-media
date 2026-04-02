@@ -3,7 +3,7 @@
 // Gửi POST đến port 56003 → server.py route → auto_color.py
 // ============================================================
 
-import { fetch } from "@tauri-apps/plugin-http";
+// Dùng window.fetch để bypass tauri fetch bug
 
 const resolveAPI = "http://127.0.0.1:56003/";
 

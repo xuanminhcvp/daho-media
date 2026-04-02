@@ -28,7 +28,8 @@ import { PostProductionPanel } from "@/components/postprod/post-production-panel
 import { MasterSrtTab } from "@/components/postprod/master-srt-tab"
 import { GeminiScanPanel } from "@/components/gemini-scan/GeminiScanPanel"
 import GeminiManualScanPanel from "@/components/gemini-scan/GeminiManualScanPanel"
-import { DebugPanel } from "@/components/debug/debug-panel"
+// DebugPanel cũ đã được thay bằng BugReporterPanel floating (góc dưới phải)
+// import { DebugPanel } from "@/components/debug/debug-panel"
 import { useSessionManager } from "@/hooks/useSessionManager"
 import { SessionManagerDialog } from "@/components/dialogs/session-manager-dialog"
 import { useProject } from "@/contexts/ProjectContext"
@@ -108,11 +109,11 @@ function LiveDataSummary({ sessionName, updatedAt }: LiveDataSummaryProps) {
                 : 'Chưa có',
         })
 
-        // 6. Media Import
+        // 6. Video Import
         const mi = project.mediaImport
         const miMatched = mi?.matchedSentences?.length || 0
         lines.push({
-            icon: '🎬', label: 'Media Import',
+            icon: '🎬', label: 'Video Import',
             hasData: miMatched > 0,
             detail: miMatched > 0 ? `${miMatched} câu | ${mi?.mediaFiles?.length || 0} files` : 'Chưa có',
         })
@@ -312,17 +313,17 @@ export function RightPanelTabs() {
                     <TooltipContent side="bottom">So khớp kịch bản → Whisper → Master SRT chuẩn</TooltipContent>
                 </Tooltip>
 
-                {/* Tab Media Import */}
+                {/* Tab Video Import */}
                 <Tooltip>
                     <TooltipTrigger asChild>
                         <Button
-                            variant={activeTab === "media-import" ? "secondary" : "ghost"}
+                            variant={activeTab === "media-import" ? "default" : "ghost"}
                             size="sm"
-                            className="h-8 px-3 gap-1.5 text-xs"
+                            className="h-8 shadow-none border items-center justify-start gap-2 tabular-nums"
                             onClick={() => setActiveTab("media-import")}
                         >
                             <FileVideo className="h-3.5 w-3.5" />
-                            Media Import
+                            Video Import
                         </Button>
                     </TooltipTrigger>
                     <TooltipContent side="bottom">Import video files vào timeline</TooltipContent>
@@ -512,8 +513,8 @@ export function RightPanelTabs() {
                     </div>
                 )}
             </div>
-            {/* Debug Panel — chỉ hiển thị khi dev, ẩn hoàn toàn khi build production */}
-            {import.meta.env.DEV && <DebugPanel />}
+            {/* Debug Panel cũ đã được tích hợp vào BugReporterPanel floating (App.tsx) */}
+            {/* Bao gồm: tab Bugs, tab API (request/response), Insights, Timeline, Annotation Mode */}
 
             {/* Session Manager Dialog */}
             <SessionManagerDialog

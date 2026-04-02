@@ -15,6 +15,8 @@ import { useResolve } from "@/contexts/ResolveContext"
 import { initAutoMediaStorage } from "@/services/auto-media-storage"
 // License gate: chặn toàn bộ app cho đến khi nhập key hợp lệ
 import { LicenseGate } from "@/components/license/license-gate"
+// Bug Reporter + Annotation Mode — floating panel góc dưới phải bắt mọi lỗi
+import BugReporterPanel from "@/components/debug/BugReporterPanel"
 
 export function ThemeToggle() {
   const { setTheme, theme } = useTheme()
@@ -73,6 +75,9 @@ function AppContent() {
           />
         )}
       </div>
+
+      {/* Bug Reporter + Annotation Mode — floating, zài nọi trên toàn app */}
+      <BugReporterPanel />
     </TooltipProvider>
   )
 }

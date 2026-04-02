@@ -269,7 +269,33 @@ export function DebugPanel() {
                                             ? selectedLog.requestBody
                                             : selectedLog.responseBody
                                         let formatted = content
-                                        try { formatted = JSON.stringify(JSON.parse(content), null, 2) } catch { /* giữ nguyên */ }
+                                        try {
+                                            const parsed = JSON.parse(content);
+                                            // Format cho Request Claude
+                                            if (parsed.messages && Array.isArray(parsed.messages)) {
+                                                formatted = parsed.messages.map((m: any) => `[${m.role.toUpperCase()}]\n${m.content}`).join("\n\n");
+                                            }
+                                            // Format cho Response Claude
+                                            else if (parsed.choices && Array.isArray(parsed.choices)) {
+                                                formatted = parsed.choices[0]?.message?.content || "";
+                                            }
+                                            // Format cho Request Gemini
+                                            else if (parsed.contents && Array.isArray(parsed.contents)) {
+                                                formatted = parsed.contents.map((c: any) => {
+                                                    const parts = Array.isArray(c.parts) ? c.parts : [];
+                                                    const txt = parts.find((p: any) => p.text)?.text || "";
+                                                    return `[PROMPT]\n${txt}`;
+                                                }).join("\n\n");
+                                            }
+                                            // Format cho Response Gemini
+                                            else if (parsed.candidates && Array.isArray(parsed.candidates)) {
+                                                formatted = parsed.candidates[0]?.content?.parts?.[0]?.text || "";
+                                            }
+                                            // Fallback JSON đẹp
+                                            else {
+                                                formatted = JSON.stringify(parsed, null, 2);
+                                            }
+                                        } catch { /* giữ nguyên text raw nếu không phải JSON */ }
                                         await navigator.clipboard.writeText(formatted)
                                         // Hiển thị feedback "đã copy"
                                         const btn = document.getElementById('debug-copy-btn')
@@ -292,10 +318,25 @@ export function DebugPanel() {
                                             ? selectedLog.requestBody
                                             : selectedLog.responseBody
                                         let formatted = content
-                                        try { formatted = JSON.stringify(JSON.parse(content), null, 2) } catch { /* giữ nguyên */ }
+                                        let ext = "txt"
+                                        try {
+                                            const parsed = JSON.parse(content);
+                                            if (parsed.messages && Array.isArray(parsed.messages)) {
+                                                formatted = parsed.messages.map((m: any) => `[${m.role.toUpperCase()}]\n${m.content}`).join("\n\n");
+                                            } else if (parsed.choices && Array.isArray(parsed.choices)) {
+                                                formatted = parsed.choices[0]?.message?.content || "";
+                                            } else if (parsed.contents && Array.isArray(parsed.contents)) {
+                                                formatted = parsed.contents.map((c: any) => `[PROMPT]\n${(c.parts || []).find((p: any) => p.text)?.text || ""}`).join("\n\n");
+                                            } else if (parsed.candidates && Array.isArray(parsed.candidates)) {
+                                                formatted = parsed.candidates[0]?.content?.parts?.[0]?.text || "";
+                                            } else {
+                                                formatted = JSON.stringify(parsed, null, 2);
+                                                ext = "json";
+                                            }
+                                        } catch { /* giữ nguyên */ }
                                         downloadText(
                                             formatted,
-                                            `${selectedLog.label.replace(/\s/g, "_")}_${modalTab}.json`
+                                            `${selectedLog.label.replace(/\s/g, "_")}_${modalTab}.${ext}`
                                         )
                                     }}
                                 >
@@ -339,119 +380,78 @@ export function DebugPanel() {
  */
 function renderReadableContent(text: string): React.ReactNode {
     try {
-        const parsed = JSON.parse(text)
+        const parsed = JSON.parse(text);
 
-        // Nếu là request body (có messages[].content)
-        if (parsed.messages && Array.isArray(parsed.messages)) {
-            return (
-                <div className="space-y-4">
-                    {/* Metadata */}
-                    <div className="text-xs space-y-1 border-b pb-3">
-                        <p><strong>Model:</strong> {parsed.model}</p>
-                        {parsed.max_tokens && <p><strong>Max tokens:</strong> {parsed.max_tokens}</p>}
-                    </div>
+        // Hàm đệ quy render cấu trúc JSON đẹp mắt
+        const renderJsonNode = (node: any, isRoot: boolean = false, path: string = ""): React.ReactNode => {
+            if (node === null) return <span className="text-gray-500">null</span>;
+            if (typeof node === "boolean") return <span className="text-purple-500">{node.toString()}</span>;
+            if (typeof node === "number") return <span className="text-blue-500">{node}</span>;
+            if (typeof node === "string") {
+                // Nếu chuỗi dài hoặc có chứa xuống dòng -> render thành một block dễ đọc
+                if (node.length > 80 || node.includes("\n")) {
+                    return (
+                        <div className="mt-1 mb-1 p-3 bg-muted/30 border rounded-md whitespace-pre-wrap break-words text-green-700 dark:text-green-400 font-sans">
+                            {node}
+                        </div>
+                    );
+                }
+                // Chuỗi ngắn bình thường
+                return <span className="text-green-600 dark:text-green-300">"{node}"</span>;
+            }
 
-                    {/* Messages */}
-                    {parsed.messages.map((msg: { role: string; content: string }, i: number) => (
-                        <div key={i} className="space-y-2">
-                            <p className="text-xs font-semibold text-primary">
-                                📤 {msg.role.toUpperCase()}:
-                            </p>
-                            {/* Render content với xuống dòng thật */}
-                            <div className="text-xs leading-relaxed whitespace-pre-wrap break-words bg-muted/30 rounded-lg p-4 border">
-                                {msg.content}
+            if (Array.isArray(node)) {
+                if (node.length === 0) return <span className="text-gray-500">[]</span>;
+                return (
+                    <div className="pl-4 border-l-2 border-muted/50 ml-1 mt-1">
+                        <span className="text-gray-400 select-none">[</span>
+                        {node.map((item, index) => (
+                            <div key={index} className="pl-2 py-0.5">
+                                {renderJsonNode(item, false, `${path}[${index}]`)}
+                                {index < node.length - 1 && <span className="text-gray-400 select-none">,</span>}
                             </div>
-                        </div>
-                    ))}
-                </div>
-            )
-        }
-
-        // Nếu là response body (có choices[].message.content)
-        if (parsed.choices && Array.isArray(parsed.choices)) {
-            const content = parsed.choices[0]?.message?.content || ""
-            return (
-                <div className="space-y-4">
-                    {/* Metadata */}
-                    <div className="text-xs space-y-1 border-b pb-3">
-                        <p><strong>Model:</strong> {parsed.model}</p>
-                        {parsed.usage && (
-                            <p><strong>Tokens:</strong> prompt={parsed.usage.prompt_tokens}, completion={parsed.usage.completion_tokens}, total={parsed.usage.total_tokens}</p>
-                        )}
+                        ))}
+                        <span className="text-gray-400 select-none">]</span>
                     </div>
+                );
+            }
 
-            // AI Response
-                    <div className="space-y-2">
-                        <p className="text-xs font-semibold text-green-600">
-                            📥 AI RESPONSE:
-                        </p>
-                        <div className="text-xs leading-relaxed whitespace-pre-wrap break-words bg-muted/30 rounded-lg p-4 border">
-                            {content}
-                        </div>
-                    </div>
-                </div>
-            )
-        }
-
-        // Nếu là Gemini request body (có contents[].parts[].text)
-        if (parsed.contents && Array.isArray(parsed.contents)) {
-            return (
-                <div className="space-y-4">
-                    <div className="text-xs space-y-1 border-b pb-3">
-                        <p><strong>Config:</strong> Gemini API Request</p>
-                    </div>
-                    {parsed.contents.map((content: any, i: number) => {
-                        // Tách text và kiểm tra xem có inline_data (base64) không
-                        const parts = Array.isArray(content.parts) ? content.parts : [];
-                        const textPart = parts.find((p: any) => p.text)?.text || "";
-                        const hasMedia = parts.some((p: any) => p.inline_data);
-
-                        return (
-                            <div key={i} className="space-y-2">
-                                <p className="text-xs font-semibold text-primary">
-                                    📤 PROMPT:
-                                </p>
-                                <div className="text-xs leading-relaxed whitespace-pre-wrap break-words bg-muted/30 rounded-lg p-4 border">
-                                    {hasMedia && <div className="text-blue-500 mb-2 font-mono">[Đính kèm file Media Base64]</div>}
-                                    {textPart}
-                                </div>
+            if (typeof node === "object") {
+                const keys = Object.keys(node);
+                if (keys.length === 0) return <span className="text-gray-500">{"{}"}</span>;
+                
+                return (
+                    <div className={isRoot ? "" : "pl-4 border-l-2 border-muted/50 ml-1 mt-1"}>
+                        <span className="text-gray-400 select-none">{"{"}</span>
+                        {keys.map((key, index) => (
+                            <div key={key} className="pl-2 py-1">
+                                <span className="text-orange-600 dark:text-orange-400 font-semibold select-none">"{key}"</span>
+                                <span className="text-gray-500 select-none">: </span>
+                                {renderJsonNode(node[key], false, `${path}.${key}`)}
+                                {index < keys.length - 1 && <span className="text-gray-400 select-none">,</span>}
                             </div>
-                        )
-                    })}
-                </div>
-            )
-        }
-
-        // Nếu là Gemini response body (có candidates[].content.parts[].text)
-        if (parsed.candidates && Array.isArray(parsed.candidates)) {
-            const content = parsed.candidates[0]?.content?.parts?.[0]?.text || ""
-            return (
-                <div className="space-y-4">
-                    <div className="space-y-2">
-                        <p className="text-xs font-semibold text-green-600">
-                            📥 GEMINI RESPONSE:
-                        </p>
-                        <div className="text-xs leading-relaxed whitespace-pre-wrap break-words bg-muted/30 rounded-lg p-4 border">
-                            {content}
-                        </div>
+                        ))}
+                        <span className="text-gray-400 select-none">{"}"}</span>
                     </div>
-                </div>
-            )
-        }
+                );
+            }
 
-        // JSON khác: format đẹp
+            return <span>{String(node)}</span>;
+        };
+
         return (
-            <pre className="text-xs font-mono whitespace-pre-wrap break-words leading-relaxed">
-                {JSON.stringify(parsed, null, 2)}
-            </pre>
-        )
+            <div className="text-xs font-mono leading-relaxed overflow-x-auto pb-4">
+                {renderJsonNode(parsed, true)}
+            </div>
+        );
+
     } catch {
         // Không phải JSON: hiện raw text với xuống dòng
         return (
-            <div className="text-xs leading-relaxed whitespace-pre-wrap break-words">
+            <div className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-words bg-muted/10 p-4 rounded border">
                 {text}
             </div>
-        )
+        );
     }
 }
 

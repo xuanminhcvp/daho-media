@@ -117,7 +117,7 @@ export function LicenseGate({ children }: LicenseGateProps) {
                             <Shield className="h-8 w-8 text-white" />
                         </div>
 
-                        <h1 className="text-2xl font-bold tracking-tight">AutoSubs Media</h1>
+                        <h1 className="text-2xl font-bold tracking-tight">DahoMedia</h1>
                         <p className="text-sm text-muted-foreground mt-2">
                             Nhập License Key để kích hoạt phần mềm
                         </p>
@@ -137,7 +137,7 @@ export function LicenseGate({ children }: LicenseGateProps) {
                                     value={inputKey}
                                     onChange={(e) => setInputKey(e.target.value.toUpperCase())}
                                     onKeyDown={handleKeyDown}
-                                    placeholder="ASUBS-XXXX-XXXX-XXXX"
+                                    placeholder="DAHO-XXXX-XXXX-XXXX"
                                     disabled={validating}
                                     className="w-full rounded-lg border bg-background px-10 py-3 text-sm font-mono tracking-wider placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 disabled:opacity-50 transition-all"
                                     autoFocus
@@ -189,7 +189,7 @@ export function LicenseGate({ children }: LicenseGateProps) {
 
                 {/* Branding */}
                 <p className="text-center text-xs text-muted-foreground/40 mt-6">
-                    AutoSubs Media © 2026 • Internal Use Only
+                    DahoMedia © 2026 • Internal Use Only
                 </p>
             </div>
         </div>

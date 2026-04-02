@@ -7,7 +7,6 @@ import {
     ScriptSentence,
     extractWhisperWords,
 } from "@/utils/media-matcher";
-import { buildMatchPrompt } from "@/prompts/match-prompt";
 import { writeTextFile, readTextFile, exists } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 
@@ -156,14 +155,24 @@ function splitTranscriptAtSentenceBoundaries(
         }
     }
 
-    // Nếu không có dấu chấm nào → trả về nguyên 1 phần
+    // Nếu không có dấu chấm nào (phổ biến với raw Whisper) → chia đều theo số lượng từ
     if (sentenceEnds.length === 0) {
-        console.warn("[AI Matcher] ⚠️ Transcript không có dấu chấm câu nào!");
-        return [{
-            text: words.map(w => w.formatted).join(" "),
-            startTime: words[0].timestamp,
-            endTime: words[words.length - 1].timestamp,
-        }];
+        console.warn("[AI Matcher] ⚠️ Transcript không có dấu chấm câu nào, chia đều theo số lượng từ!");
+        const parts: { text: string; startTime: number; endTime: number }[] = [];
+        const chunkSize = Math.ceil(words.length / numParts);
+        for (let p = 0; p < numParts; p++) {
+            const startIdx = p * chunkSize;
+            const endIdx = Math.min((p + 1) * chunkSize, words.length);
+            if (startIdx >= words.length) break;
+            
+            const chunkWords = words.slice(startIdx, endIdx);
+            parts.push({
+                text: chunkWords.map(w => w.formatted).join(" "),
+                startTime: chunkWords[0].timestamp,
+                endTime: chunkWords[chunkWords.length - 1].timestamp,
+            });
+        }
+        return parts;
     }
 
     const parts: { text: string; startTime: number; endTime: number }[] = [];
@@ -252,34 +261,42 @@ function parseAIResponse(aiResponse: string): { num: number; start: number; end:
     const codeBlock = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (codeBlock) cleaned = codeBlock[1];
 
-    // Tìm JSON array hoàn chỉnh
-    let jsonMatch = cleaned.match(/\[[\s\S]*\]/);
+    let parsed: any[] = [];
+    let useFallback = false;
 
-    // ⭐ Nếu không tìm thấy ] đóng → JSON bị truncated
-    // Tìm [ mở, sau đó tìm } cuối cùng hợp lệ, thêm ] để parse phần đã có
-    if (!jsonMatch) {
-        const openBracket = cleaned.indexOf("[");
-        if (openBracket === -1) {
-            console.error("[AI] Response không có JSON:", cleaned.slice(0, 500));
-            throw new Error("AI response không chứa JSON array");
+    try {
+        // Tìm JSON array hoàn chỉnh
+        let jsonMatch = cleaned.match(/\[[\s\S]*\]/);
+
+        if (!jsonMatch) {
+            useFallback = true;
+        } else {
+            parsed = JSON.parse(jsonMatch[0]);
+            if (!Array.isArray(parsed)) {
+                useFallback = true;
+            }
         }
-
-        // Tìm } cuối cùng (kết thúc object cuối)
-        const afterOpen = cleaned.slice(openBracket);
-        const lastBrace = afterOpen.lastIndexOf("}");
-        if (lastBrace === -1) {
-            console.error("[AI] JSON truncated nghiêm trọng, không có {} nào:", cleaned.slice(0, 500));
-            throw new Error("AI response JSON truncated quá nhiều");
-        }
-
-        // Cắt tới } cuối + thêm ] để tạo valid JSON array
-        const truncatedJson = afterOpen.slice(0, lastBrace + 1) + "]";
-        console.warn(`[AI] ⚠️ JSON bị truncated! Khôi phục ${truncatedJson.length} chars`);
-        jsonMatch = [truncatedJson];
+    } catch (err) {
+        console.warn("[AI Matcher] JSON Parse error, falling back to manual extraction:", err);
+        useFallback = true;
     }
 
-    const parsed = JSON.parse(jsonMatch[0]);
-    if (!Array.isArray(parsed)) throw new Error("Không phải array");
+    // ⭐ Nếu bị móp méo dữ liệu hoặc JSON.parse thất bại → tìm bằng Regex từng object
+    if (useFallback) {
+        console.log("[AI Matcher] ⚠️ Kích hoạt fallback Regex JSON parser...");
+        parsed = [];
+        const objectRegex = /\{\s*"num"\s*:\s*\d+[\s\S]*?\}/g;
+        let match;
+        while ((match = objectRegex.exec(cleaned)) !== null) {
+            try {
+                // Thêm } phòng trường hợp object rớt chữ cuối cùng
+                let str = match[0];
+                parsed.push(JSON.parse(str));
+            } catch (e) {
+                // Bỏ qua object bị gãy
+            }
+        }
+    }
 
     const results = parsed
         .filter(
@@ -313,10 +330,44 @@ export async function aiMatchScriptToTimeline(
     scriptSentences: { num: number; text: string }[],
     transcript: any,
     onProgress?: (progress: AIMatchProgress) => void,
-    mediaFolder?: string
+    mediaFolder?: string,
+    importType: 'video' | 'image' = 'video'
 ): Promise<ScriptSentence[]> {
     const segments = transcript.originalSegments || transcript.segments || [];
     const whisperWords = extractWhisperWords(transcript);
+
+    const { getActiveProfileId } = await import('@/config/activeProfile');
+
+    // Đọc cài đặt từ Tauri Store (giống footage-matcher-service)
+    let MAX_CONCURRENCY = 6; // mặc định nếu không đọc được
+    let MAX_BATCHES = importType === 'image' ? 2 : 4; // mặc định số batch tuỳ loại 
+    let OVERLAP_RATIO = 0.15; // mặc định overlap
+    try {
+        const { load } = await import('@tauri-apps/plugin-store');
+        const store = await load('autosubs-store.json');
+        const storedSettings = await store.get<any>('settings');
+        if (storedSettings) {
+            MAX_CONCURRENCY = storedSettings.aiMaxConcurrency ?? 6;
+            MAX_BATCHES = importType === 'image' 
+                ? (storedSettings.aiImageImportBatches ?? 2)
+                : (storedSettings.aiMediaImportBatches ?? 4);
+            OVERLAP_RATIO = storedSettings.aiBatchOverlapRatio ?? 0.15;
+            console.log(`[AI Matcher] 🔧 Settings (${importType}): maxConcurrency=${MAX_CONCURRENCY}, batches=${MAX_BATCHES}, overlap=${OVERLAP_RATIO}`);
+        }
+    } catch {
+        console.warn(`[AI Matcher] Không đọc được settings, dùng mặc định ${importType} concurrency=6, batches=${MAX_BATCHES}, overlap=0.15`);
+    }
+
+    // Dùng static map thay vì dynamic import template string
+    // Vite KHÔNG thể resolve @/ alias trong `import(\`@/prompts/${id}/...\`)` lúc runtime
+    const matchPromptModules: Record<string, () => Promise<{ buildMatchPrompt: Function }>> = {
+        documentary: () => import('../prompts/documentary/match-prompt'),
+        stories:     () => import('../prompts/stories/match-prompt'),
+        tiktok:      () => import('../prompts/tiktok/match-prompt'),
+    };
+    const profileId = getActiveProfileId();
+    const loadModule = matchPromptModules[profileId] ?? matchPromptModules['documentary'];
+    const { buildMatchPrompt } = await loadModule();
 
     const totalDuration =
         whisperWords.length > 0 ? whisperWords[whisperWords.length - 1].end : 0;
@@ -328,17 +379,16 @@ export async function aiMatchScriptToTimeline(
         `[AI Matcher] ${scriptSentences.length} câu, ${allFormattedWords.length} words, ${totalDuration.toFixed(0)}s`
     );
 
-    // ⭐ Cắt transcript thành N phần tại ranh giới câu
+    // ⭐ Cắt transcript thành N phần tại ranh giới câu (N = MAX_BATCHES đọc từ cài đặt)
     const rawTranscriptParts = splitTranscriptAtSentenceBoundaries(
         allFormattedWords,
-        AI_CONFIG.batchCount
+        MAX_BATCHES
     );
 
-    // ⭐ Thêm OVERLAP cho transcript — mỗi phần lấy thêm 15% words
+    // ⭐ Thêm OVERLAP cho transcript — mỗi phần lấy thêm % words
     // từ phần liền kề (trước + sau) để câu ở ranh giới không bị trượt
-    const TRANSCRIPT_OVERLAP_RATIO = 0.15; // 15% overlap mỗi bên
     const wordsPerPart = Math.ceil(allFormattedWords.length / rawTranscriptParts.length);
-    const transcriptOverlapWords = Math.ceil(wordsPerPart * TRANSCRIPT_OVERLAP_RATIO);
+    const transcriptOverlapWords = Math.ceil(wordsPerPart * OVERLAP_RATIO);
 
     const transcriptParts: { text: string; startTime: number; endTime: number }[] = [];
 
@@ -382,11 +432,10 @@ export async function aiMatchScriptToTimeline(
         console.log(`  Phần ${i + 1}: ${p.startTime.toFixed(0)}s → ${p.endTime.toFixed(0)}s (~${(p.text.length / 1000).toFixed(0)}KB)`)
     );
 
-    // ⭐ Chia script theo tỷ lệ với overlap ±20%
+    // ⭐ Chia script theo tỷ lệ với overlap tùy chỉnh
     // Script theo thứ tự thời gian nên chia tỷ lệ rất chính xác
     const totalSentences = scriptSentences.length;
     const N = transcriptParts.length;
-    const SCRIPT_OVERLAP_RATIO = 0.20; // 20% overlap mỗi bên
     const sentencesPerPart = totalSentences / N;
 
     const scriptBatches: { num: number; text: string }[][] = [];
@@ -394,7 +443,7 @@ export async function aiMatchScriptToTimeline(
         // Tính vùng câu cho batch này (có overlap)
         const rawStart = Math.floor(sentencesPerPart * i);
         const rawEnd = Math.ceil(sentencesPerPart * (i + 1));
-        const overlapSize = Math.ceil(sentencesPerPart * SCRIPT_OVERLAP_RATIO);
+        const overlapSize = Math.ceil(sentencesPerPart * OVERLAP_RATIO);
 
         // Mở rộng ±overlap, clamp vào [0, totalSentences]
         const batchStart = Math.max(0, rawStart - overlapSize);
@@ -407,14 +456,14 @@ export async function aiMatchScriptToTimeline(
     onProgress?.({
         current: 0,
         total: N,
-        message: `Đang xử lý ${N} batch (script chia tỷ lệ + overlap)...`,
+        message: `Đang xử lý ${N} batch (concurrency tối đa ${MAX_CONCURRENCY})...`,
     });
 
     // Thu thập tất cả kết quả từ các batch
     const matchedMap = new Map<number, { start: number; end: number; whisper: string }>();
 
     // ⭐ Danh sách HTTP status/error có thể retry (lỗi tạm thời)
-    const RETRYABLE_PATTERNS = ["429", "500", "502", "503", "524", "529", "rate limit", "timeout", "ETIMEDOUT", "abort"];
+    const RETRYABLE_PATTERNS = ["429", "500", "502", "503", "524", "529", "rate limit", "timeout", "timed out", "ETIMEDOUT", "abort"];
 
     /** Kiểm tra lỗi có thể retry không */
     function isRetryableError(err: unknown): boolean {
@@ -422,77 +471,89 @@ export async function aiMatchScriptToTimeline(
         return RETRYABLE_PATTERNS.some(p => msg.includes(p.toLowerCase()));
     }
 
-    // ⚡ Gửi SONG SONG tất cả batch cùng lúc — MỖI BATCH CÓ RETRY TỐI ĐA 3 LẦN
-    const batchPromises = transcriptParts.map(async (part, i) => {
-        const batchNum = i + 1;
-        const timeRange = `${part.startTime.toFixed(0)}s → ${part.endTime.toFixed(0)}s`;
-        const batchScript = scriptBatches[i];
+    // ⚡ Worker Queue giới hạn MAX_CONCURRENCY luồng song song (lấy từ AI Config)
+    // Giống pattern của footage-matcher-service: tránh 429 rate limit
+    type BatchResult = { batchNum: number; aiResults: { num: number; start: number; end: number; whisper: string }[] };
+    const batchResults: BatchResult[] = [];
+    let batchIdx = 0;
+    let activeTasks = 0;
 
-        onProgress?.({
-            current: i,
-            total: N,
-            message: `Đang gửi ${N} batch song song...`,
-        });
+    console.log(`[AI Matcher] ⚡ Bắt đầu ${N} batch (concurrency tối đa ${MAX_CONCURRENCY} luồng song song)`);
 
-        // ⭐ RETRY LOOP — tối đa 3 lần, delay exponential: 3s → 6s → 12s
-        for (let attempt = 0; attempt <= AI_CONFIG.batchRetryCount; attempt++) {
-            try {
-                // Log retry status
-                if (attempt > 0) {
-                    console.log(`[AI Matcher] 🔄 Batch ${batchNum}: retry lần ${attempt}/${AI_CONFIG.batchRetryCount}...`);
-                    onProgress?.({
-                        current: i,
-                        total: N,
-                        message: `Batch ${batchNum}/${N}: retry lần ${attempt}/${AI_CONFIG.batchRetryCount}...`,
+    await new Promise<void>((resolve, reject) => {
+        const runNext = () => {
+            // Nạp thêm luồng mới khi còn slot trống
+            while (activeTasks < MAX_CONCURRENCY && batchIdx < N) {
+                const i       = batchIdx;
+                const part    = transcriptParts[i];
+                const batchNum = i + 1;
+                const timeRange = `${part.startTime.toFixed(0)}s → ${part.endTime.toFixed(0)}s`;
+                const batchScript = scriptBatches[i];
+                batchIdx++;
+                activeTasks++;
+
+                onProgress?.({
+                    current: i,
+                    total: N,
+                    message: `Batch ${batchNum}/${N}: ${timeRange} (${activeTasks} luồng đang chạy)...`,
+                });
+
+                // Hàm xử lý 1 batch (có retry bên trong)
+                (async (): Promise<BatchResult> => {
+                    for (let attempt = 0; attempt <= AI_CONFIG.batchRetryCount; attempt++) {
+                        try {
+                            if (attempt > 0) {
+                                console.log(`[AI Matcher] 🔄 Batch ${batchNum}: retry lần ${attempt}/${AI_CONFIG.batchRetryCount}...`);
+                                onProgress?.({
+                                    current: i,
+                                    total: N,
+                                    message: `Batch ${batchNum}/${N}: retry lần ${attempt}/${AI_CONFIG.batchRetryCount}...`,
+                                });
+                            }
+
+                            const prompt = buildMatchPrompt(batchScript, part.text, batchNum, N, timeRange);
+                            console.log(`[AI Matcher] Batch ${batchNum}: ${timeRange}, ${batchScript.length} câu, prompt ~${(prompt.length / 1000).toFixed(0)}KB`);
+
+                            const response = await callAI(
+                                prompt,
+                                `Batch ${batchNum}/${N} (${timeRange}) ${batchScript.length} câu`
+                            );
+
+                            const aiResults = parseAIResponse(response);
+                            console.log(`[AI Matcher] Batch ${batchNum}: ${aiResults.length} câu matched ✅${attempt > 0 ? ` (sau ${attempt} retry)` : ''}`);
+                            return { batchNum, aiResults };
+                        } catch (error) {
+                            const errMsg = String(error);
+                            if (isRetryableError(error) && attempt < AI_CONFIG.batchRetryCount) {
+                                const delayMs = AI_CONFIG.batchRetryBaseMs * Math.pow(2, attempt);
+                                console.warn(`[AI Matcher] ⚠️ Batch ${batchNum}: ${errMsg.slice(0, 150)} → retry sau ${delayMs / 1000}s`);
+                                await new Promise(r => setTimeout(r, delayMs));
+                                continue;
+                            }
+                            console.error(`[AI Matcher] ❌ Batch ${batchNum} THẤT BẠI:`, errMsg.slice(0, 200));
+                            return { batchNum, aiResults: [] };
+                        }
+                    }
+                    return { batchNum, aiResults: [] }; // fallback TypeScript
+                })()
+                    .then(result => {
+                        batchResults.push(result);
+                        activeTasks--;
+                        if (batchIdx < N) {
+                            runNext(); // Nhả slot → chạy batch tiếp
+                        } else if (activeTasks === 0) {
+                            resolve(); // Hết tất cả
+                        }
+                    })
+                    .catch(err => {
+                        activeTasks--;
+                        reject(err);
                     });
-                }
-
-                // ⭐ Tạo prompt: 1/N transcript + phần script TƯƠNG ỨNG (không full)
-                const prompt = buildMatchPrompt(
-                    batchScript,
-                    part.text,
-                    batchNum,
-                    N,
-                    timeRange
-                );
-
-                console.log(`[AI Matcher] Batch ${batchNum}: transcript ${timeRange}, ${batchScript.length} câu script, prompt ~${(prompt.length / 1000).toFixed(0)}KB`);
-
-                // Gọi AI (song song)
-                const response = await callAI(
-                    prompt,
-                    `Batch ${batchNum}/${N} (${timeRange}) ${batchScript.length} câu`
-                );
-
-                // Parse kết quả (có xử lý truncated JSON)
-                const aiResults = parseAIResponse(response);
-                console.log(`[AI Matcher] Batch ${batchNum}: ${aiResults.length} câu matched ✅${attempt > 0 ? ` (sau ${attempt} lần retry)` : ""}`);
-
-                return { batchNum, aiResults };
-            } catch (error) {
-                const errMsg = String(error);
-
-                // Kiểm tra lỗi có thể retry không
-                if (isRetryableError(error) && attempt < AI_CONFIG.batchRetryCount) {
-                    // Delay exponential: 3s → 6s → 12s
-                    const delayMs = AI_CONFIG.batchRetryBaseMs * Math.pow(2, attempt);
-                    console.warn(`[AI Matcher] ⚠️ Batch ${batchNum}: ${errMsg.slice(0, 150)} → retry ${attempt + 1}/${AI_CONFIG.batchRetryCount} sau ${delayMs / 1000}s`);
-                    await new Promise(r => setTimeout(r, delayMs));
-                    continue; // Retry
-                }
-
-                // Lỗi không thể retry HOẶC hết số lần retry → bỏ batch này
-                console.error(`[AI Matcher] ❌ Batch ${batchNum} THẤT BẠI${attempt > 0 ? ` sau ${attempt} lần retry` : ""}:`, errMsg.slice(0, 200));
-                return { batchNum, aiResults: [] as { num: number; start: number; end: number; whisper: string }[] };
             }
-        }
-
-        // Fallback (không bao giờ tới đây, nhưng TypeScript cần return)
-        return { batchNum, aiResults: [] as { num: number; start: number; end: number; whisper: string }[] };
+        };
+        runNext();
+        if (N === 0) resolve();
     });
-
-    // Chờ TẤT CẢ batch hoàn thành
-    const batchResults = await Promise.all(batchPromises);
 
     // Ghép kết quả từ tất cả batch (theo thứ tự batch 1 → N)
     for (const { batchNum, aiResults } of batchResults.sort((a, b) => a.batchNum - b.batchNum)) {

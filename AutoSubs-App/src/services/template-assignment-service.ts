@@ -395,8 +395,6 @@ Trả về ĐÚNG chuẩn JSON sau, KHÔNG giải thích gì thêm, KHÔNG dùng
     }
 }
 
-// Số batch mặc định — chạy song song để nhanh
-const TITLE_BATCH_COUNT = 5
 // Số từ overlap giữa các batch liền kề — tránh mất cue ở ranh giới
 const TITLE_BATCH_OVERLAP = 100
 // Số lần retry nếu batch lỗi
@@ -510,14 +508,27 @@ export async function analyzeWhisperWordsForTitles(
     onProgress?: (msg: string) => void
 ): Promise<AITitleCueResult> {
     const { callAIMultiProvider } = await import("@/utils/ai-provider")
-    const { buildTitleFromWhisperPrompt } = await import("@/prompts/title-assignment-prompt")
+    const { buildTitleFromWhisperPrompt } = await import("../prompts/documentary/title-assignment-prompt")
 
     const enabledTemplates = templates.filter(t => t.enabled)
     if (enabledTemplates.length === 0) {
         throw new Error("Chưa có template nào được bật.")
     }
 
-    // ═══ CHIA BATCH (5 batch, overlap 100 từ) ═══
+    // Đọc cài đặt batch từ Tauri Store
+    let TITLE_BATCH_COUNT = 5;
+    try {
+        const { load } = await import('@tauri-apps/plugin-store');
+        const store = await load('autosubs-store.json');
+        const storedSettings = await store.get<any>('settings');
+        if (storedSettings?.aiTextOnScreenBatches) {
+            TITLE_BATCH_COUNT = storedSettings.aiTextOnScreenBatches;
+        }
+    } catch {
+        console.warn('[AddTitle] Không đọc được settings, dùng mặc định 5 batch');
+    }
+
+    // ═══ CHIA BATCH (overlap 100 từ) ═══
     const batches = splitWhisperIntoBatches(whisperWordsText, TITLE_BATCH_COUNT, TITLE_BATCH_OVERLAP)
     onProgress?.(`Chia transcript → ${batches.length} batch (overlap ${TITLE_BATCH_OVERLAP} từ)`)
     console.log(`[AddTitle] ${batches.length} batches, overlap ${TITLE_BATCH_OVERLAP}`)

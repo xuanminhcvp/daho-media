@@ -8,11 +8,14 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card";
+/*
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+*/
+/*
 import {
   Command,
   CommandEmpty,
@@ -21,6 +24,7 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+*/
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,10 +34,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/animated-tabs";
-import { getTranscriptsDir } from "@/utils/file-utils";
-import { readDir } from "@tauri-apps/plugin-fs";
-import { readTranscript } from "@/utils/file-utils";
-import { useTranscript } from "@/contexts/TranscriptContext";
+// import { getTranscriptsDir } from "@/utils/file-utils";
+// import { readDir } from "@tauri-apps/plugin-fs";
+// import { readTranscript } from "@/utils/file-utils";
+// import { useTranscript } from "@/contexts/TranscriptContext";
 import { useTheme } from "@/components/providers/theme-provider";
 import { useModels } from "@/contexts/ModelsContext";
 import { useState, useEffect, useCallback } from "react";
@@ -43,6 +47,8 @@ import { pingResolve, setupTimelineTracks } from "@/api/resolve-api";
 import { useResolve } from "@/contexts/ResolveContext";
 import { AutoMediaPanel } from "@/components/postprod/auto-media-panel";
 import { ClaudeModelSelector } from "@/components/settings/claude-model-selector";
+import { AiAdvancedSettings } from "@/components/settings/ai-advanced-settings";
+import { ProfileSelector } from "@/components/settings/profile-selector";
 
 interface TimelineInfo {
   timelineId?: string;
@@ -186,10 +192,12 @@ function ResolveStatus({ timelineInfo }: ResolveStatusProps) {
   );
 }
 
+/*
 interface TranscriptFile {
   name: string;
   lastModified: Date;
 }
+*/
 
 
 function SettingsDropdown() {
@@ -256,7 +264,7 @@ function SettingsDropdown() {
 
             <DropdownMenuItem asChild className="cursor-pointer">
               <a
-                href="https://github.com/tmoroney/auto-subs"
+                href="https://github.com/DahoMedia/DahoMedia"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="group"
@@ -276,7 +284,7 @@ function SettingsDropdown() {
                 className="group relative flex w-full items-center"
               >
                 <Heart className="h-4 w-4 mr-2 text-pink-500 group-data-[highlighted]:fill-pink-500 group-focus:fill-pink-500 transition-all" />
-                <span>{t("settings.support.supportAutoSubs", "Support AutoSubs")}</span>
+                <span>{t("settings.support.supportDahoMedia", "Support DahoMedia")}</span>
 
                 {/* Bursting hearts animation */}
                 <div className="absolute inset-0 pointer-events-none">
@@ -355,6 +363,7 @@ function SettingsDropdown() {
   );
 }
 
+/*
 function TranscriptsButton() {
   const [open, setOpen] = useState(false);
   const [transcripts, setTranscripts] = useState<TranscriptFile[]>([]);
@@ -461,6 +470,7 @@ function TranscriptsButton() {
     </Popover>
   );
 }
+*/
 
 export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }) {
   const { t } = useTranslation();
@@ -511,7 +521,7 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
         );
       }).catch(() => {
         setLuaCode(
-          `package.loaded["init"]=nil;package.loaded["helpers"]=nil;package.loaded["timeline_info"]=nil;package.loaded["template_manager"]=nil;package.loaded["audio_export"]=nil;package.loaded["subtitle_renderer"]=nil;package.loaded["media_import"]=nil;package.loaded["preview_generator"]=nil;package.loaded["motion_effects"]=nil;package.loaded["server"]=nil;dofile("/Applications/AutoSubs_Media.app/Contents/Resources/resources/AutoSubs.lua")`
+          `package.loaded["init"]=nil;package.loaded["helpers"]=nil;package.loaded["timeline_info"]=nil;package.loaded["template_manager"]=nil;package.loaded["audio_export"]=nil;package.loaded["subtitle_renderer"]=nil;package.loaded["media_import"]=nil;package.loaded["preview_generator"]=nil;package.loaded["motion_effects"]=nil;package.loaded["server"]=nil;dofile("/Applications/DahoMedia.app/Contents/Resources/resources/AutoSubs.lua")`
         );
       });
     });
@@ -539,7 +549,20 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
     setSetupLoading(true);
     setSetupResult(null);
     try {
-      const result = await setupTimelineTracks();
+      // Bỏ qua template string dynamic load vì Vite không bundle được lúc runtime
+      const { getActiveProfileId } = await import('@/config/activeProfile');
+      const profileId = getActiveProfileId();
+
+      const configModules: Record<string, () => Promise<{ formatConfig: any }>> = {
+        documentary: () => import('../../prompts/documentary/config'),
+        stories: () => import('../../prompts/stories/config'),
+        tiktok: () => import('../../prompts/tiktok/config'),
+      };
+
+      const loadModule = configModules[profileId] ?? configModules['documentary'];
+      const { formatConfig } = await loadModule();
+      
+      const result = await setupTimelineTracks(formatConfig.RESOLUTION);
       if (result?.success) {
         setSetupResult(`✅ ${result.message}`);
       } else {
@@ -572,10 +595,10 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
             <Button
               variant="outline"
               size="sm"
-              className={`h-6 gap-1 text-[10px] px-2 rounded-full border-dashed transition-all duration-200 ${
+              className={`h-6 gap-1 text-[10px] font-medium px-2 rounded-full transition-all duration-200 ${
                 copied
-                  ? "border-green-500 text-green-400 bg-green-500/10"
-                  : "border-amber-500/50 text-amber-300 bg-amber-500/5 hover:bg-amber-500/15"
+                  ? "border border-green-500/70 text-green-700 dark:text-green-400 bg-green-500/15 dark:bg-green-500/10"
+                  : "border border-amber-500/70 text-amber-700 dark:text-amber-400 bg-amber-500/15 dark:bg-amber-500/10 hover:bg-amber-500/25 dark:hover:bg-amber-500/20"
               }`}
               onClick={handleCopyCode}
               data-tauri-drag-region="false"
@@ -590,12 +613,12 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
             <Button
               variant="outline"
               size="sm"
-              className={`h-6 gap-1 text-[10px] px-2 rounded-full border-dashed transition-all duration-200 ${
+              className={`h-6 gap-1 text-[10px] font-medium px-2 rounded-full transition-all duration-200 ${
                 setupResult?.startsWith('✅')
-                  ? 'border-green-500 text-green-400 bg-green-500/10'
+                  ? 'border border-green-500/70 text-green-700 dark:text-green-400 bg-green-500/15 dark:bg-green-500/10'
                   : setupResult?.startsWith('❌')
-                  ? 'border-red-500 text-red-400 bg-red-500/10'
-                  : 'border-violet-500/50 text-violet-300 bg-violet-500/5 hover:bg-violet-500/15'
+                  ? 'border border-red-500/70 text-red-700 dark:text-red-400 bg-red-500/15 dark:bg-red-500/10'
+                  : 'border border-violet-500/70 text-violet-700 dark:text-violet-400 bg-violet-500/15 dark:bg-violet-500/10 hover:bg-violet-500/25 dark:hover:bg-violet-500/20'
               }`}
               onClick={handleSetupTracks}
               disabled={setupLoading}
@@ -623,13 +646,19 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
           </div>
 
           {/* Right side - Model selector, Transcripts, Settings */}
-          <div className="flex items-center w-36 justify-end gap-0.5">
+          <div className="flex items-center w-auto justify-end gap-0.5">
+            <div data-tauri-drag-region="false">
+              <ProfileSelector />
+            </div>
             <div data-tauri-drag-region="false">
               <ClaudeModelSelector />
             </div>
             <div data-tauri-drag-region="false">
-              <TranscriptsButton />
+              <AiAdvancedSettings />
             </div>
+            {/* <div data-tauri-drag-region="false">
+              <TranscriptsButton />
+            </div> */}
             <div data-tauri-drag-region="false">
               <SettingsDropdown />
             </div>
@@ -641,11 +670,17 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
           {/* Left side - Model selector, Transcripts, Settings */}
           <div className="flex items-center gap-0.5">
             <div data-tauri-drag-region="false">
+              <ProfileSelector />
+            </div>
+            <div data-tauri-drag-region="false">
               <ClaudeModelSelector />
             </div>
             <div data-tauri-drag-region="false">
-              <TranscriptsButton />
+              <AiAdvancedSettings />
             </div>
+            {/* <div data-tauri-drag-region="false">
+              <TranscriptsButton />
+            </div> */}
             <div data-tauri-drag-region="false">
               <SettingsDropdown />
             </div>
@@ -658,10 +693,10 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
             <Button
               variant="outline"
               size="sm"
-              className={`h-6 gap-1 text-[10px] px-2 rounded-full border-dashed transition-all duration-200 ${
+              className={`h-6 gap-1 text-[10px] font-medium px-2 rounded-full transition-all duration-200 ${
                 copied
-                  ? "border-green-500 text-green-400 bg-green-500/10"
-                  : "border-amber-500/50 text-amber-300 bg-amber-500/5 hover:bg-amber-500/15"
+                  ? "border border-green-500/70 text-green-700 dark:text-green-400 bg-green-500/15 dark:bg-green-500/10"
+                  : "border border-amber-500/70 text-amber-700 dark:text-amber-400 bg-amber-500/15 dark:bg-amber-500/10 hover:bg-amber-500/25 dark:hover:bg-amber-500/20"
               }`}
               onClick={handleCopyCode}
               data-tauri-drag-region="false"
@@ -676,12 +711,12 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
             <Button
               variant="outline"
               size="sm"
-              className={`h-6 gap-1 text-[10px] px-2 rounded-full border-dashed transition-all duration-200 ${
+              className={`h-6 gap-1 text-[10px] font-medium px-2 rounded-full transition-all duration-200 ${
                 setupResult?.startsWith('✅')
-                  ? 'border-green-500 text-green-400 bg-green-500/10'
+                  ? 'border border-green-500/70 text-green-700 dark:text-green-400 bg-green-500/15 dark:bg-green-500/10'
                   : setupResult?.startsWith('❌')
-                  ? 'border-red-500 text-red-400 bg-red-500/10'
-                  : 'border-violet-500/50 text-violet-300 bg-violet-500/5 hover:bg-violet-500/15'
+                  ? 'border border-red-500/70 text-red-700 dark:text-red-400 bg-red-500/15 dark:bg-red-500/10'
+                  : 'border border-violet-500/70 text-violet-700 dark:text-violet-400 bg-violet-500/15 dark:bg-violet-500/10 hover:bg-violet-500/25 dark:hover:bg-violet-500/20'
               }`}
               onClick={handleSetupTracks}
               disabled={setupLoading}

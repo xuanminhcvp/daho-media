@@ -1,31 +1,42 @@
-// src/api/resolveApi.ts
-import { fetch } from '@tauri-apps/plugin-http';
+// src/api/resolve-api.ts
+// ============================================================
+// Giao tiếp với Lua HTTP server (DaVinci Resolve) qua Tauri IPC.
+//
+// NGUYÊN NHÂN THAY ĐỔI: @tauri-apps/plugin-http v2.5.1 bị lỗi
+//   "invalid args `streamChannel` for command `fetch_read_body`"
+//   do version mismatch với Rust crate tauri-plugin-http.
+//
+// GIẢI PHÁP: invoke('call_lua_server') → Rust reqwest → localhost:56003
+//   - reqwest chạy trong Rust process, không qua WebView
+//   - Không bị CORS, ATS (macOS), CSP chặn
+//   - Không bị version mismatch plugin
+// ============================================================
+
+import { invoke } from '@tauri-apps/api/core';
 import { downloadDir } from '@tauri-apps/api/path';
 import { getTranscriptPath } from '@/utils/file-utils';
 import { Speaker } from '@/types/interfaces';
 
-const resolveAPI = "http://127.0.0.1:56003/";
+// ===== HELPER TRUNG TÂM =====
+// Tất cả hàm trong file này đều gọi qua đây
+// Rust command 'call_lua_server' → src-tauri/src/resolve_bridge.rs
+async function callLua(params: Record<string, any>): Promise<any> {
+  return await invoke('call_lua_server', { params });
+}
 
 /**
  * Gửi Ping tới Lua server để kiểm tra kết nối còn sống không
- * Trả về true nếu server phản hồi, false nếu timeout hoặc lỗi
+ * Trả về true nếu server phản hồi đúng {"message":"Pong"}, false nếu lỗi
  */
 export async function pingResolve(): Promise<boolean> {
+  console.log('[pingResolve] 🔍 Ping → Lua server via Rust invoke...');
   try {
-    const controller = new AbortController();
-    // Timeout 3 giây để tránh treo UI
-    const timeout = setTimeout(() => controller.abort(), 3000);
-    const response = await fetch(resolveAPI, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ func: "Ping" }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    const data = await response.json();
-    return data?.message === "Pong";
-  } catch (err) {
-    console.error("[pingResolve] Lỗi khi Ping tới Resolve:", err);
+    const data = await callLua({ func: "Ping" });
+    const isPong = data?.message === "Pong";
+    console.log(`[pingResolve] ${isPong ? '✅ Pong OK' : '❌ Phản hồi lạ:'}`, data);
+    return isPong;
+  } catch (err: any) {
+    console.error('[pingResolve] ❌ Lỗi:', err?.message ?? err);
     return false;
   }
 }
@@ -34,205 +45,155 @@ export async function pingResolve(): Promise<boolean> {
  * Gọi Lua server tạo đủ 7V+5A tracks và đặt tên chuẩn
  * Chỉ dùng AddTrack + SetTrackName, không xoá gì
  */
-export async function setupTimelineTracks(): Promise<any> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
+export async function setupTimelineTracks(config?: any): Promise<any> {
   try {
-    const response = await fetch(resolveAPI, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ func: "SetupTimelineTracks" }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    return await response.json();
-  } catch (err) {
-    clearTimeout(timeout);
+    return await callLua({ func: "SetupTimelineTracks", config });
+  } catch (err: any) {
+    console.error('[setupTimelineTracks] Lỗi:', err?.message ?? err);
     throw err;
   }
 }
 
+/**
+ * Export audio từ timeline DaVinci Resolve
+ * Kết quả ghi vào Downloads folder
+ */
 export async function exportAudio(inputTracks: Array<string>) {
   const outputDir = await downloadDir();
-  const response = await fetch(resolveAPI, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      func: "ExportAudio",
-      outputDir,
-      inputTracks,
-    }),
+  const data = await callLua({
+    func: "ExportAudio",
+    outputDir,
+    inputTracks,
   });
-  const data = await response.json();
 
-  // Check for errors in starting export
   if (data.error) {
     throw new Error(data.message || "Failed to start audio export");
   }
-
-  // New non-blocking API returns started: true instead of timeline data
   if (!data.started) {
     throw new Error("Export did not start successfully");
   }
-
   return data;
 }
 
+/**
+ * Di chuyển playhead DaVinci đến vị trí (giây) — preview
+ */
 export async function jumpToTime(seconds: number) {
-  const response = await fetch(resolveAPI, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ func: "JumpToTime", seconds }),
-  });
-  return response.json();
+  return await callLua({ func: "JumpToTime", seconds });
 }
 
+/**
+ * Lấy thông tin timeline hiện tại từ DaVinci Resolve
+ * Trả về: name, timelineId, templates, inputTracks, ...
+ */
 export async function getTimelineInfo() {
+  console.log('[getTimelineInfo] 🔍 GetTimelineInfo via Rust invoke...');
   try {
-    const response = await fetch(resolveAPI, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ func: "GetTimelineInfo" }),
-    });
-    const data = await response.json();
-    if (!data.timelineId) {
+    const data = await callLua({ func: "GetTimelineInfo" });
+
+    if (!data?.timelineId) {
+      console.warn('[getTimelineInfo] ⚠️ Không có timelineId:', data);
       throw new Error("No timeline detected in Resolve.");
     }
+    console.log('[getTimelineInfo] ✅ Timeline:', data.name, '— ID:', data.timelineId);
     return data;
-  } catch (err) {
-    console.error("[getTimelineInfo] Lỗi khi gọi GetTimelineInfo:", err);
+  } catch (err: any) {
+    console.error('[getTimelineInfo] ❌ Lỗi:', err?.message ?? err);
     throw err;
   }
 }
 
-export async function addSubtitlesToTimeline(filename: string, currentTemplate: string, outputTrack: string) {
+/**
+ * Thêm phụ đề chính lên timeline DaVinci Resolve
+ */
+export async function addSubtitlesToTimeline(
+  filename: string,
+  currentTemplate: string,
+  outputTrack: string
+) {
   const filePath = await getTranscriptPath(filename);
-  const response = await fetch(resolveAPI, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      func: "AddSubtitles",
-      filePath,
-      templateName: currentTemplate,
-      trackIndex: outputTrack,
-    }),
+  return await callLua({
+    func: "AddSubtitles",
+    filePath,
+    templateName: currentTemplate,
+    trackIndex: outputTrack,
   });
-  return response.json();
 }
 
+/**
+ * Gửi lệnh tắt Lua server (dùng khi đóng app)
+ */
 export async function closeResolveLink() {
-  const response = await fetch(resolveAPI, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ func: "Exit" }),
-  });
-  return response.json();
+  try {
+    return await callLua({ func: "Exit" });
+  } catch {
+    // Có thể lỗi khi server đã tắt — bỏ qua
+  }
 }
 
+/**
+ * Kiểm tra tiến độ export audio
+ */
 export async function getExportProgress() {
-  const response = await fetch(resolveAPI, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ func: "GetExportProgress" }),
-  });
-  return response.json();
+  return await callLua({ func: "GetExportProgress" });
 }
 
+/**
+ * Hủy export đang chạy
+ */
 export async function cancelExport() {
-  const response = await fetch(resolveAPI, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ func: "CancelExport" }),
-  });
-  return response.json();
+  return await callLua({ func: "CancelExport" });
 }
 
 export async function getRenderJobStatus() {
-  const response = await fetch(resolveAPI, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ func: "GetRenderJobStatus" }),
-  });
-  return response.json();
+  return await callLua({ func: "GetRenderJobStatus" });
 }
 
-export async function generatePreview(speaker: Speaker, templateName: string, exportPath: string) {
-  const response = await fetch(resolveAPI, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ func: "GeneratePreview", speaker, templateName, exportPath }),
-  });
-  return response.json();
+/**
+ * Tạo preview phụ đề trước khi render
+ */
+export async function generatePreview(
+  speaker: Speaker,
+  templateName: string,
+  exportPath: string
+) {
+  return await callLua({ func: "GeneratePreview", speaker, templateName, exportPath });
 }
 
 /**
  * Import media clips lên VIDEO TRACK trên timeline DaVinci Resolve
- * Mỗi clip cần: filePath, startTime, endTime
- * Timeout 120 giây — footage import có thể lâu (import + Fusion zoom)
+ * Timeout 120s — footage import có thể lâu (import + Fusion zoom)
  * @param clips - Mảng clips cần import
- * @param trackIndex - Track video đích (số thứ tự track)
- * @param videoOnly - Nếu true chỉ import video, bỏ audio (dùng cho footage V2)
+ * @param trackIndex - Track video đích
+ * @param videoOnly - Nếu true chỉ import video, bỏ audio
  */
 export async function addMediaToTimeline(
   clips: Array<{ filePath: string; startTime: number; endTime: number; trimStart?: number; trimEnd?: number }>,
   trackIndex: string,
   videoOnly?: boolean
 ) {
-  // Timeout 120 giây — footage import có thể lâu (import + Fusion zoom)
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 120000);
   try {
-    const body: any = {
-      func: "AddMediaToTimeline",
-      clips,
-      trackIndex,
-    };
-    // Chỉ gửi videoOnly khi true (tránh gửi false/undefined)
+    const body: any = { func: "AddMediaToTimeline", clips, trackIndex };
     if (videoOnly) body.videoOnly = true;
-
-    const response = await fetch(resolveAPI, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    return response.json();
+    return await callLua(body);
   } catch (err: any) {
-    clearTimeout(timeout);
-    if (err.name === 'AbortError') {
-      return { error: true, message: "Timeout 120s — DaVinci Resolve không phản hồi." };
-    }
-    throw err;
+    console.error('[addMediaToTimeline] Lỗi:', err?.message ?? err);
+    return { error: true, message: err?.message ?? "Không kết nối được DaVinci Resolve." };
   }
 }
 
 /**
- * Import 1 file audio vào AUDIO TRACK MỚI trên timeline DaVinci Resolve
- * File được đặt ở vị trí 0s (đầu timeline), tạo track audio mới
- * Dùng cho BGM render — user có thể xoá track nếu không ưng
- * @param filePath - Đường dẫn tuyệt đối tới file audio (vd: final_bgm_ducked.wav)
- * @param trackName - Tên track (vd: "BGM - AutoSubs") — optional
+ * Import 1 file audio vào AUDIO TRACK MỚI (dùng cho BGM render)
  */
 export async function addAudioToTimeline(
   filePath: string,
   trackName?: string
 ): Promise<{ success?: boolean; audioTrack?: number; trackName?: string; message?: string; error?: boolean }> {
-  const response = await fetch(resolveAPI, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      func: "AddAudioToTimeline",
-      filePath,
-      trackName,
-    }),
-  });
-  return response.json();
+  return await callLua({ func: "AddAudioToTimeline", filePath, trackName });
 }
 
 /**
- * Quét track trên timeline DaVinci Resolve
- * Trả về danh sách số trích từ tên clip trên track đó
+ * Quét track trên timeline — trả về danh sách số trích từ tên clip
  * Dùng để so khớp với matching JSON → tìm câu chưa import
  */
 export async function getTrackClipNumbers(trackIndex: string): Promise<{
@@ -242,20 +203,11 @@ export async function getTrackClipNumbers(trackIndex: string): Promise<{
   error?: boolean;
   message?: string;
 }> {
-  const response = await fetch(resolveAPI, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      func: "GetTrackClipNumbers",
-      trackIndex,
-    }),
-  });
-  return response.json();
+  return await callLua({ func: "GetTrackClipNumbers", trackIndex });
 }
 
 /**
- * Di chuyển playhead trên timeline DaVinci đến vị trí (giây)
- * Dùng để preview — bấm vào số câu → nhảy đến vị trí đó
+ * Di chuyển playhead đến vị trí (giây) — preview
  */
 export async function seekToTime(seconds: number): Promise<{
   success?: boolean;
@@ -263,170 +215,73 @@ export async function seekToTime(seconds: number): Promise<{
   error?: boolean;
   message?: string;
 }> {
-  const response = await fetch(resolveAPI, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      func: "SeekToTime",
-      seconds,
-    }),
-  });
-  return response.json();
+  return await callLua({ func: "SeekToTime", seconds });
 }
 
 /**
- * Thêm Subtitles vào timeline với mỗi câu là 1 template riêng biệt
- * Dựa vào kết quả AI Template Assignment
+ * Thêm Subtitles với mỗi câu là 1 template riêng biệt (AI Template Assignment)
  */
 export async function addTemplateSubtitlesToTimeline(
   clips: Array<{ start: number; end: number; text: string; template: string; color?: string }>,
   trackIndex: string
 ) {
-  const response = await fetch(resolveAPI, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      func: "AddTemplateSubtitles",
-      clips,
-      trackIndex,
-    }),
-  });
-  return response.json();
+  return await callLua({ func: "AddTemplateSubtitles", clips, trackIndex });
 }
 
 /**
- * Thêm nhiều SFX clips trực tiếp vào AUDIO TRACK trên timeline DaVinci Resolve
- * Mỗi clip được đặt đúng vị trí (exactStartTime) — chỉ thêm cue có whisper timing chính xác
- * @param clips - Danh sách SFX: {filePath, startTime} (startTime tính bằng giây)
- * @param trackName - Tên audio track mới (vd: "SFX - AutoSubs")
+ * Thêm nhiều SFX clips trực tiếp vào AUDIO TRACK
+ * Mỗi clip đặt đúng vị trí (exactStartTime)
  */
 export async function addSfxClipsToTimeline(
   clips: Array<{ filePath: string; startTime: number; trimStartSec?: number; trimEndSec?: number }>,
   trackName?: string
 ): Promise<{ success?: boolean; audioTrack?: number; clipsAdded?: number; message?: string; error?: boolean }> {
-  // Timeout 60 giây — DaVinci có thể mất thời gian import nhiều SFX
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60000);
   try {
-    const response = await fetch(resolveAPI, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        func: "AddSfxClipsToTimeline",
-        clips,
-        trackName,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    return response.json();
+    return await callLua({ func: "AddSfxClipsToTimeline", clips, trackName });
   } catch (err: any) {
-    clearTimeout(timeout);
-    if (err.name === 'AbortError') {
-      return { error: true, message: "Timeout 60s — DaVinci Resolve không phản hồi. Hãy kiểm tra DaVinci đang mở và Lua server đang chạy." };
-    }
-    throw err;
+    return { error: true, message: err?.message ?? "Không kết nối được DaVinci Resolve." };
   }
 }
 
 /**
  * Tạo 5 template folder trong DaVinci Resolve Media Pool
- * Mỗi folder chứa 1 bản copy của Default Template để user customize riêng
- * @param templateNames - Danh sách tên template cần tạo
  */
-export async function createTemplateSet(
-  templateNames: string[]
-) {
-  const response = await fetch(resolveAPI, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      func: "CreateTemplateSet",
-      templateNames,
-    }),
-  });
-  return response.json();
+export async function createTemplateSet(templateNames: string[]) {
+  return await callLua({ func: "CreateTemplateSet", templateNames });
 }
 
 /**
- * Import ảnh tham khảo thực tế lên Track V4 trong DaVinci Resolve
- * Kèm theo: Ken Burns nhẹ (zoom 100→108%) + Cross Dissolve transition
- * Full-frame nếu priority=high + type portrait/headline/evidence
- * Overlay (80% size, 90% opacity) nếu priority không phải high
- * Đồng thời import SFX kèm (nếu có) lên Audio Track
- *
- * @param clips - Danh sách ảnh cần import: filePath, startTime, endTime, priority, imageType
- * @param sfxClips - Danh sách SFX kèm theo (optional): filePath, startTime
+ * Import ảnh tham khảo lên Track V4 kèm Ken Burns + Cross Dissolve
+ * Và SFX kèm (nếu có) lên Audio Track
  */
 export async function addRefImagesToTimeline(
   clips: Array<{
     filePath: string;
     startTime: number;
     endTime: number;
-    priority: string;      // "high" | "medium" | "low"
-    imageType: string;     // "portrait" | "headline" | "evidence" | ...
+    priority: string;
+    imageType: string;
   }>,
   sfxClips?: Array<{ filePath: string; startTime: number }>
 ): Promise<{ success?: boolean; clipsAdded?: number; sfxAdded?: number; message?: string; error?: boolean }> {
-  const controller = new AbortController();
-  // 120 giây timeout — Fusion composition apply có thể chậm
-  const timeout = setTimeout(() => controller.abort(), 120000);
   try {
-    const body: any = {
-      func: "AddRefImagesToTimeline",
-      clips,
-    };
-    // Chỉ gửi sfxClips khi có data (tránh gửi mảng rỗng)
-    if (sfxClips && sfxClips.length > 0) {
-      body.sfxClips = sfxClips;
-    }
-
-    const response = await fetch(resolveAPI, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    return response.json();
+    const body: any = { func: "AddRefImagesToTimeline", clips };
+    if (sfxClips && sfxClips.length > 0) body.sfxClips = sfxClips;
+    return await callLua(body);
   } catch (err: any) {
-    clearTimeout(timeout);
-    if (err.name === 'AbortError') {
-      return { error: true, message: "Timeout 120s — DaVinci Resolve không phản hồi." };
-    }
-    throw err;
+    return { error: true, message: err?.message ?? "Không kết nối được DaVinci Resolve." };
   }
 }
 
 /**
  * Relink lại tất cả clip bị offline trong Media Pool
- * Gọi khi mở project lại thấy "Media not found"
- * Resolve sẽ scan folderPath và sub-folders để tìm lại file
- *
- * @param folderPath - Thư mục chứa media (mặc định ~/Desktop/Auto_media)
  */
 export async function autoRelinkMedia(
   folderPath?: string
 ): Promise<{ success?: boolean; relinkedCount?: number; offlineCount?: number; message?: string; error?: boolean }> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000); // 30s
   try {
-    const response = await fetch(resolveAPI, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        func: "AutoRelinkMedia",
-        folderPath: folderPath || null,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    return response.json();
+    return await callLua({ func: "AutoRelinkMedia", folderPath: folderPath || null });
   } catch (err: any) {
-    clearTimeout(timeout);
-    if (err.name === 'AbortError') {
-      return { error: true, message: "Timeout 30s — DaVinci không phản hồi." };
-    }
-    throw err;
+    return { error: true, message: err?.message ?? "Không kết nối được DaVinci Resolve." };
   }
 }

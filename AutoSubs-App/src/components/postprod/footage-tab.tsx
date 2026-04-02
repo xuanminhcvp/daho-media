@@ -10,15 +10,16 @@
 import * as React from "react"
 import {
     Film, FolderOpen, Sparkles, Loader2,
-    CheckCircle2, AlertCircle, X, Upload, Lightbulb, Copy, Save
+    CheckCircle2, AlertCircle, X, Upload, Lightbulb, Copy, Save, PlusCircle, Check
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { open } from "@tauri-apps/plugin-dialog"
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http"
+const tauriFetch = window.fetch; // Bypass streamChannel bug
 import { useProject } from "@/contexts/ProjectContext"
 import { getSavedFolder, saveFolderPath } from "@/services/saved-folders-service"
 import { getAudioScanApiKey } from "@/services/saved-folders-service"
+import { getFootageFolderPath } from "@/services/auto-media-storage"
 import type { FootageItem, FootageSuggestion } from "@/types/footage-types"
 
 // ======================== COMPONENT ========================
@@ -49,16 +50,24 @@ export function FootageTab() {
     const [kwMessage, setKwMessage] = React.useState("")
 
     // ===== Load saved folder on mount =====
+    // Nếu chưa từng lưu folder nào → fallback vào ~/Desktop/Auto_media/footage
     React.useEffect(() => {
         (async () => {
-            const saved = await getSavedFolder("footageFolder")
-            if (saved) {
-                setFootageFolder(saved)
-                // Tự load metadata đã có
-                const { loadFootageMetadata } = await import("@/services/footage-library-service")
-                const items = await loadFootageMetadata(saved)
-                setFootageItems(items)
+            // Ưu tiên: folder đã lưu
+            let folderToLoad = await getSavedFolder("footageFolder")
+
+            // Fallback: ~/Desktop/Auto_media/footage (đường dẫn động theo máy)
+            if (!folderToLoad) {
+                folderToLoad = await getFootageFolderPath()
+                console.log("[FootageTab] Dùng Auto_media fallback:", folderToLoad)
             }
+
+            setFootageFolder(folderToLoad)
+            // Tự load metadata đã có
+            const { loadFootageMetadata } = await import("@/services/footage-library-service")
+            const items = await loadFootageMetadata(folderToLoad)
+            setFootageItems(items)
+            if (items.length > 0) setScanMessage(`📂 ${items.length} footage đã có metadata`)
         })()
     }, [])
 
@@ -107,19 +116,13 @@ export function FootageTab() {
 
     // ======================== GỢI Ý KEYWORDS FOOTAGE ========================
     const handleSuggestKeywords = React.useCallback(async () => {
-        const matchData = project?.matchingSentences
-        if (!matchData || matchData.length === 0) {
-            setKwMessage("❌ Cần load matching data trước (bấm Load Script ở tab Nhạc Nền)")
-            return
-        }
-
         setIsSuggestingKw(true)
-        setKwMessage("Đang phân tích kịch bản...")
+        setKwMessage("Đang tạo ý tưởng...")
 
         try {
-            const { suggestFootageKeywords } = await import("@/services/audio-director-service")
-            const keywords = await suggestFootageKeywords(
-                matchData,
+            const { generateMediaIdeas } = await import("@/services/idea-generator-service")
+            const keywords = await generateMediaIdeas(
+                "footage",
                 (msg) => setKwMessage(msg)
             )
             setFootageKeywords(keywords)
@@ -129,7 +132,7 @@ export function FootageTab() {
         } finally {
             setIsSuggestingKw(false)
         }
-    }, [project?.matchingSentences])
+    }, [])
 
     // ======================== COPY KEYWORDS ========================
     const handleCopyKeywords = React.useCallback(() => {
@@ -137,6 +140,52 @@ export function FootageTab() {
         navigator.clipboard.writeText(text)
         setKwMessage("✅ Đã copy tất cả keywords!")
     }, [footageKeywords])
+
+    // ======================== MANUAL SCAN TOOLS ========================
+    const handleRevealInFinder = React.useCallback(async (filePath: string) => {
+        try {
+            const { Command } = await import('@tauri-apps/plugin-shell');
+            await Command.create("exec-sh", ["-c", `open -R "${filePath}"`]).execute();
+        } catch (e) {
+            console.error("Lỗi khi mở Finder:", e);
+        }
+    }, []);
+
+    const handleCopyPrompt = React.useCallback((item: FootageItem) => {
+        const prompt = `Phân tích video này và trả về định dạng JSON chính xác sau (CHỈ TRẢ VỀ JSON, KHÔNG THÊM BẤT KỲ VĂN BẢN NÀO KHÁC):\n{\n  "description": "b-roll mô tả ngắn gọn hành động/khung cảnh (dưới 15 từ, tiếng Anh)",\n  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],\n  "mood": "cảm xúc hoặc vibe của video (tiếng Anh)"\n}`;
+        navigator.clipboard.writeText(prompt);
+        setScanMessage(`✅ Đã copy prompt thủ công cho ${item.fileName}`);
+    }, []);
+
+    const handlePasteJson = React.useCallback(async (item: FootageItem) => {
+        const jsonStr = window.prompt(`Dán JSON từ Gemini cho file ${item.fileName}:\nVD: {"description":"...","tags":["..."],"mood":"..."}`);
+        if (!jsonStr) return;
+        try {
+            const match = jsonStr.match(/\\{[\\s\\S]*\\}/);
+            if (!match) throw new Error("Không tìm thấy dấu {} JSON hợp lệ");
+            const parsed = JSON.parse(match[0]);
+
+            const newItem: FootageItem = {
+                ...item,
+                aiDescription: parsed.description || "Manual",
+                aiTags: Array.isArray(parsed.tags) ? parsed.tags : [],
+                aiMood: parsed.mood || "Manual",
+                durationSec: item.durationSec || 5, // fallback if 0
+                scannedAt: new Date().toISOString()
+            };
+
+            const allItems = footageItems.map(i => i.filePath === item.filePath ? newItem : i);
+            setFootageItems(allItems);
+
+            if (footageFolder) {
+                const { saveFootageMetadata } = await import("@/services/footage-library-service");
+                await saveFootageMetadata(footageFolder, allItems);
+            }
+            setScanMessage(`✅ Đã cập nhật metadata thủ công cho ${item.fileName}`);
+        } catch (e) {
+            alert("Lỗi parse JSON: " + String(e));
+        }
+    }, [footageItems, footageFolder]);
 
     // ======================== AI MATCHING ========================
     const handleMatch = React.useCallback(async () => {
@@ -278,11 +327,10 @@ export function FootageTab() {
                         <Button
                             variant={folderSaved ? "secondary" : "outline"}
                             size="icon"
-                            className={`h-9 w-9 shrink-0 transition-all ${
-                                folderSaved
+                            className={`h-9 w-9 shrink-0 transition-all ${folderSaved
                                     ? "bg-green-500/20 border-green-500/40 text-green-400"
                                     : "hover:border-green-500/40 hover:text-green-400"
-                            }`}
+                                }`}
                             onClick={() => {
                                 saveFolderPath("footageFolder", footageFolder)
                                 setFolderSaved(true)
@@ -336,23 +384,54 @@ export function FootageTab() {
                     <p className="text-[10px] text-muted-foreground">{scanMessage}</p>
                 )}
 
-                {/* Danh sách footage (compact) */}
-                {analyzedCount > 0 && (
-                    <div className="max-h-32 overflow-y-auto space-y-0.5">
-                        {footageItems.filter(i => i.aiDescription).map((item, idx) => (
-                            <div
-                                key={idx}
-                                className="flex items-center gap-1.5 text-[10px] py-0.5 px-1.5 rounded bg-muted/30"
-                                title={item.aiDescription || ""}
-                            >
-                                <Film className="h-3 w-3 shrink-0 text-orange-400" />
-                                <span className="truncate font-medium">{item.fileName}</span>
-                                <span className="shrink-0 text-muted-foreground">{item.durationSec}s</span>
-                                {item.aiMood && (
-                                    <span className="shrink-0 text-orange-400/70">{item.aiMood}</span>
-                                )}
-                            </div>
-                        ))}
+                {/* Danh sách footage (toàn bộ, gồm cả chưa scan) */}
+                {footageItems.length > 0 && (
+                    <div className="max-h-48 overflow-y-auto space-y-1">
+                        {footageItems.map((item, idx) => {
+                            const isScanned = !!item.aiDescription && item.aiMood !== "Error";
+                            return (
+                                <div
+                                    key={idx}
+                                    className={`flex items-center gap-1.5 text-[10px] py-1 px-1.5 rounded transition-colors ${isScanned ? "bg-muted/30 hover:bg-muted/50" : "bg-red-500/5 border border-red-500/20 hover:bg-red-500/10"
+                                        }`}
+                                    title={item.aiDescription || "Chưa scan AI"}
+                                >
+                                    <Film className={`h-3 w-3 shrink-0 ${isScanned ? "text-orange-400" : "text-red-400/60"}`} />
+                                    <span className="truncate font-medium flex-1 min-w-0" title={item.fileName}>{item.fileName}</span>
+
+                                    {isScanned ? (
+                                        <>
+                                            <span className="shrink-0 text-muted-foreground hidden sm:inline">{item.durationSec}s</span>
+                                            {item.aiMood && (
+                                                <span className="shrink-0 text-orange-400/70 border border-orange-400/30 px-1 rounded-sm">{item.aiMood}</span>
+                                            )}
+                                        </>
+                                    ) : (
+                                        <div className="flex items-center gap-1 shrink-0">
+                                            <span className="text-[9px] text-red-400/80 mr-1 italic pr-1 border-r border-red-400/30">Chưa scan</span>
+                                            <Button
+                                                variant="ghost" size="sm" className="h-5 w-5 p-0 text-muted-foreground hover:text-blue-400"
+                                                onClick={() => handleRevealInFinder(item.filePath)} title="Mở trong Finder"
+                                            >
+                                                <FolderOpen className="h-3 w-3" />
+                                            </Button>
+                                            <Button
+                                                variant="ghost" size="sm" className="h-5 w-5 p-0 text-muted-foreground hover:text-green-400"
+                                                onClick={() => handleCopyPrompt(item)} title="Copy Prompt gửi Gemini"
+                                            >
+                                                <Copy className="h-3 w-3" />
+                                            </Button>
+                                            <Button
+                                                variant="ghost" size="sm" className="h-5 w-5 p-0 text-muted-foreground hover:text-orange-400"
+                                                onClick={() => handlePasteJson(item)} title="Nhúng JSON từ Gemini"
+                                            >
+                                                <PlusCircle className="h-3 w-3" />
+                                            </Button>
+                                        </div>
+                                    )}
+                                </div>
+                            )
+                        })}
                     </div>
                 )}
             </div>
@@ -381,24 +460,21 @@ export function FootageTab() {
                 {/* Danh sách keywords */}
                 {footageKeywords.length > 0 && (
                     <>
-                        <div className="flex flex-wrap gap-1">
-                            {footageKeywords.map((kw, idx) => (
-                                <span
-                                    key={idx}
-                                    className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-400 border border-orange-500/20"
-                                >
-                                    {kw}
-                                </span>
+                        <div className="space-y-0.5 max-h-60 overflow-y-auto">
+                            {footageKeywords.map((item, idx) => (
+                                <FootageKeywordRow key={`${item}-${idx}`} item={item} index={idx + 1} />
                             ))}
                         </div>
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 text-[10px] gap-1 text-muted-foreground"
-                            onClick={handleCopyKeywords}
-                        >
-                            <Copy className="h-3 w-3" /> Copy tất cả
-                        </Button>
+                        <div className="flex justify-end">
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 text-[10px] gap-1 text-muted-foreground"
+                                onClick={handleCopyKeywords}
+                            >
+                                <Copy className="h-3 w-3" /> Copy tất cả
+                            </Button>
+                        </div>
                     </>
                 )}
             </div>
@@ -475,11 +551,10 @@ export function FootageTab() {
 
             {/* Kết quả import */}
             {importResult && (
-                <div className={`flex items-start gap-2 p-2 rounded-md text-xs ${
-                    importResult.success
+                <div className={`flex items-start gap-2 p-2 rounded-md text-xs ${importResult.success
                         ? "bg-green-500/10 text-green-400 border border-green-500/30"
                         : "bg-red-500/10 text-red-400 border border-red-500/30"
-                }`}>
+                    }`}>
                     {importResult.success
                         ? <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0" />
                         : <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
@@ -494,6 +569,42 @@ export function FootageTab() {
                 <p>🤖 <strong>Bước 2</strong>: AI gợi ý 5-10 footage phù hợp với script</p>
                 <p>📤 <strong>Bước 3</strong>: Import lên DaVinci Track V7 (footage)</p>
             </div>
+        </div>
+    )
+}
+
+/**
+ * Hiển thị 1 keyword Footage gợi ý (compact row)
+ * Gồm: số thứ tự, keyword tiếng Anh, nút copy
+ */
+function FootageKeywordRow({ item, index }: { item: string; index: number }) {
+    const [copied, setCopied] = React.useState(false)
+
+    const handleCopy = async () => {
+        await navigator.clipboard.writeText(item)
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+    }
+
+    return (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded text-[11px] hover:bg-muted/50 transition-colors group">
+            {/* Số thứ tự */}
+            <span className="text-muted-foreground font-mono w-5 text-right shrink-0">
+                {index}.
+            </span>
+            {/* Keyword */}
+            <span className="flex-1 min-w-0 font-medium text-foreground">{item}</span>
+            {/* Nút copy */}
+            <button
+                onClick={handleCopy}
+                className={`shrink-0 p-1 rounded transition-colors ${copied
+                        ? "text-green-500"
+                        : "text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground"
+                    }`}
+                title={`Copy "${item}"`}
+            >
+                {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+            </button>
         </div>
     )
 }

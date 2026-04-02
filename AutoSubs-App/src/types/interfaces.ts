@@ -91,6 +91,7 @@ export interface Model {
 export interface Settings {
     // Mode
     isStandaloneMode: boolean,
+    activeProfile: string,
 
     // UI settings
     uiLanguage: SupportedUiLanguage;
@@ -129,6 +130,40 @@ export interface Settings {
     animationType: "none" | "pop-in" | "fade-in" | "slide-in" | "typewriter";
     highlightType: "none" | "outline" | "fill" | "bubble";
     highlightColor: string;
+
+    // ===== AI Performance Settings (Cấu hình Hiệu Năng AI) =====
+    /** Số đợt chia để phân tích Âm thanh (Audio Director) */
+    aiAudioBatches: number;
+    /** Số đợt chia để phân tích SFX (Âm thanh hiệu ứng) */
+    aiSfxBatches: number;
+    /** Số đợt chia để gắn Footage (Footage Matcher) */
+    aiFootageBatches: number;
+    /** Số đợt chia để tìm chú thích Text On Screen */
+    aiTextOnScreenBatches: number;
+    /** Số đợt chia để vẽ Ref Image (Ảnh tham chiếu Midjourney) */
+    aiRefImageBatches: number;
+    /** Số batch chia khi tạo Phụ đề (Subtitle Match) */
+    aiSubtitleBatches: number;
+    /** Số batch chia Whisper transcript khi tạo Master SRT (mặc định: 4) */
+    aiMasterSrtBatches: number;
+    /** Số batch chia transcript khi match trong Video Import (mặc định: 4) */
+    aiMediaImportBatches: number;
+    /** Số batch chia transcript khi match trong Image Import (mặc định: 4) */
+    aiImageImportBatches: number;
+    /** Số luồng API chạy song song tối đa (mặc định: 3) — dùng chung cho tất cả tính năng */
+    aiMaxConcurrency: number;
+    /** Tỷ lệ % overlap (chồng lấn) văn bản/âm thanh giữa các batch để AI không bị trượt bối cảnh ở biên (mặc định: 0.15) */
+    aiBatchOverlapRatio: number;
+    /** Độ sáng tạo AI — 0.0 (chặt chẽ) → 1.0 (bay bổng) (mặc định: 0.7) */
+    aiTemperature: number;
+    /** Thời gian cấm chèn B-Roll ở đầu video (giây, mặc định: 60) */
+    bRollStartTime: number;
+    /** Số lần thử lại tối đa khi API gặp lỗi (mặc định: 3) */
+    aiMaxRetries: number;
+    /** Tổng số SFX tối đa cho toàn video (mặc định: 20) */
+    aiTotalSfxCues: number;
+    /** Tổng số Footage tối đa cho toàn video (mặc định: 15) */
+    aiTotalFootageClips: number;
 }
 
 export interface TranscriptionOptions {
