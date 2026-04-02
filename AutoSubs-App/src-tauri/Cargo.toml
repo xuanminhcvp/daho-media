@@ -7,7 +7,7 @@ resolver = "2"
 
 [package]
 name = "autosubs"
-version = "3.0.14"
+version = "3.0.15"
 description = "Transcribe and diarize audio files"
 authors = ["Tom Moroney"]
 edition = "2024"

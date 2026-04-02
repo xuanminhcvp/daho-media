@@ -52,6 +52,14 @@ export default defineConfig(async () => ({
     esbuild: isProduction ? {
       drop: ["console" as const, "debugger" as const],
     } : undefined,
+    rollupOptions: {
+      output: {
+        // Gộp tất cả Dynamic Imports vào 1 file duy nhất
+        // Tránh lỗi Tauri WebView văng TypeError: 'text/html' is not a valid JavaScript MIME type
+        // khi load file chunk.js trong production.
+        inlineDynamicImports: true,
+      }
+    }
   },
 
   resolve: {

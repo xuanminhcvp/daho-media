@@ -28,7 +28,7 @@ import { addSfxClipsToTimeline, addMediaToTimeline } from '@/api/resolve-api'
 import { normalizeSfxVolume } from '@/services/audio-ffmpeg-service'
 import { readTranscript } from '@/utils/file-utils'
 import { matchWordsToTimestamps } from '@/utils/whisper-words-matcher'
-import { getAudioScanApiKey } from '@/services/saved-folders-service'
+// import removed
 const tauriFetch = window.fetch; // fix tauri-apps/plugin-http streamChannel bug
 import { join } from '@tauri-apps/api/path'
 import { writeTextFile, exists, mkdir } from '@tauri-apps/plugin-fs'
@@ -1170,11 +1170,7 @@ async function runFootagePipeline(
     try {
         checkAbort()
 
-        const apiKey = await getAudioScanApiKey()
-        if (!apiKey) {
-            onStepUpdate('footage', 'error', 'Thiếu Gemini API key', 'Cần set API key trong Settings')
-            return
-        }
+        // Không cần check apiKey cứng ở đây nữa vì đã dùng auto API ở trong matchFootageToScript
 
         // Format sentences
         const sentences = matchedSentences.map((s, i) => ({
@@ -1192,7 +1188,7 @@ async function runFootagePipeline(
         const suggestions = await matchFootageToScript(
             sentences,
             deps.footageItems,
-            apiKey,
+            "", // apiKey đã được deprecate, thay thế bằng AI Provider chung
             totalDuration
         )
 
