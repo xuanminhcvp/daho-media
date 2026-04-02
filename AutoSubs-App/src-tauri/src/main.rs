@@ -4,7 +4,7 @@
 use reqwest::Client;
 use serde_json::json;
 use std::time::Duration;
-use tauri::{RunEvent};
+use tauri::{RunEvent, Manager};
 use tauri::Emitter; // for app.emit
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use tauri_plugin_updater::UpdaterExt;
@@ -54,6 +54,90 @@ fn main() {
         .setup(|app| {
             // Initialize backend logging (file + in-memory ring buffer)
             crate::logging::init_logging(&app.handle());
+
+            // ═══════════════════════════════════════════════════════════════
+            // AUTO-DEPLOY: Copy AutoSubs scripts vào DaVinci Resolve
+            // Mỗi lần app khởi động sẽ kiểm tra + deploy scripts mới nhất
+            // từ app bundle (Resources/resources/) → ~/Library/.../Utility/
+            // Đảm bảo máy user mới cài .pkg cũng có scripts sẵn sàng.
+            // ═══════════════════════════════════════════════════════════════
+            {
+                let resource_dir = app.path().resource_dir()
+                    .unwrap_or_default()
+                    .join("resources");
+
+                // Thư mục đích: ~/Library/.../DaVinci Resolve/.../Scripts/Utility/
+                if let Some(home) = dirs::home_dir() {
+                    let utility_dir = home
+                        .join("Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility");
+
+                    // Chỉ deploy nếu DaVinci Resolve đã cài (thư mục Utility tồn tại)
+                    if utility_dir.exists() {
+                        tracing::info!("[AutoDeploy] DaVinci Resolve detected at {:?}", utility_dir);
+
+                        // 1. Copy AutoSubs.lua
+                        let lua_src = resource_dir.join("AutoSubs.lua");
+                        let lua_dst = utility_dir.join("AutoSubs.lua");
+                        if lua_src.exists() {
+                            match std::fs::copy(&lua_src, &lua_dst) {
+                                Ok(_) => tracing::info!("[AutoDeploy] ✅ AutoSubs.lua deployed"),
+                                Err(e) => tracing::warn!("[AutoDeploy] ❌ AutoSubs.lua copy failed: {}", e),
+                            }
+                        }
+
+                        // 2. Copy AutoSubs.py
+                        let py_src = resource_dir.join("AutoSubs.py");
+                        let py_dst = utility_dir.join("AutoSubs.py");
+                        if py_src.exists() {
+                            match std::fs::copy(&py_src, &py_dst) {
+                                Ok(_) => tracing::info!("[AutoDeploy] ✅ AutoSubs.py deployed"),
+                                Err(e) => tracing::warn!("[AutoDeploy] ❌ AutoSubs.py copy failed: {}", e),
+                            }
+                        }
+
+                        // 3. Copy thư mục AutoSubs/ (Python server modules)
+                        let autosubs_src = resource_dir.join("AutoSubs");
+                        let autosubs_dst = utility_dir.join("AutoSubs");
+                        if autosubs_src.exists() && autosubs_src.is_dir() {
+                            // Tạo thư mục đích nếu chưa có
+                            let _ = std::fs::create_dir_all(&autosubs_dst);
+
+                            // Copy từng file trong thư mục AutoSubs/
+                            match std::fs::read_dir(&autosubs_src) {
+                                Ok(entries) => {
+                                    let mut count = 0;
+                                    for entry in entries.flatten() {
+                                        let src_path = entry.path();
+                                        let file_name = entry.file_name();
+                                        let dst_path = autosubs_dst.join(&file_name);
+
+                                        if src_path.is_file() {
+                                            match std::fs::copy(&src_path, &dst_path) {
+                                                Ok(_) => count += 1,
+                                                Err(e) => tracing::warn!(
+                                                    "[AutoDeploy] ❌ Copy {:?} failed: {}",
+                                                    file_name, e
+                                                ),
+                                            }
+                                        }
+                                    }
+                                    tracing::info!("[AutoDeploy] ✅ AutoSubs/ folder: {} files deployed", count);
+                                }
+                                Err(e) => tracing::warn!("[AutoDeploy] ❌ Read AutoSubs dir failed: {}", e),
+                            }
+                        }
+
+                        // 4. Ghi install_path.txt để scripts biết đường dẫn app
+                        let install_path_file = autosubs_dst.join("install_path.txt");
+                        if let Ok(exe_path) = std::env::current_exe() {
+                            let _ = std::fs::write(&install_path_file, exe_path.to_string_lossy().as_bytes());
+                            tracing::info!("[AutoDeploy] ✅ install_path.txt updated");
+                        }
+                    } else {
+                        tracing::info!("[AutoDeploy] DaVinci Resolve not found — skipping script deploy");
+                    }
+                }
+            }
 
             // Startup sidecar health check: ffmpeg availability & version
             {
