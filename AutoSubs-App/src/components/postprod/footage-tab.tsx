@@ -64,21 +64,37 @@ export function FootageTab() {
 
             setFootageFolder(folderToLoad)
             // Tự load metadata và gộp với danh sách file thực tế (FIX LỖI SAI ĐƯỜNG DẪN KHI SHARE JOSN)
-            const { loadFootageMetadata, scanFootageFolder } = await import("@/services/footage-library-service")
+            const { loadFootageMetadata, scanFootageFolder, hasUsableAiMetadata } = await import("@/services/footage-library-service")
             const existingItems = await loadFootageMetadata(folderToLoad)
             const scannedItems = await scanFootageFolder(folderToLoad)
 
             const existingMap = new Map(existingItems.map(i => [i.fileName, i]));
             const allItems = scannedItems.map(scanned => {
                 const existing = existingMap.get(scanned.fileName);
-                if (existing) {
-                    return { ...existing, filePath: scanned.filePath }; // Cập nhật filePath mới nhất
+                if (hasUsableAiMetadata(existing)) {
+                    return {
+                        ...scanned,
+                        ...existing,
+                        filePath: scanned.filePath,
+                        fileName: scanned.fileName,
+                        fileHash: scanned.fileHash,
+                    };
                 }
-                return scanned;
+
+                return {
+                    ...scanned,
+                    ...(existing ? {
+                        aiDescription: existing.aiDescription ?? scanned.aiDescription,
+                        aiTags: existing.aiTags ?? scanned.aiTags,
+                        aiMood: existing.aiMood ?? scanned.aiMood,
+                        scannedAt: existing.scannedAt ?? scanned.scannedAt,
+                        durationSec: existing.durationSec ?? scanned.durationSec,
+                    } : {}),
+                };
             });
 
             setFootageItems(allItems)
-            const countScanned = allItems.filter(i => !!i.aiDescription && i.aiMood !== "Error").length;
+            const countScanned = allItems.filter(i => hasUsableAiMetadata(i)).length;
             if (countScanned > 0) setScanMessage(`📂 ${countScanned} footage đã scan AI`)
         })()
     }, [])
@@ -93,21 +109,37 @@ export function FootageTab() {
         saveFolderPath("footageFolder", folderPath)
 
         // Load metadata và merge file thực tế
-        const { loadFootageMetadata, scanFootageFolder } = await import("@/services/footage-library-service")
+        const { loadFootageMetadata, scanFootageFolder, hasUsableAiMetadata } = await import("@/services/footage-library-service")
         const existingItems = await loadFootageMetadata(folderPath)
         const scannedItems = await scanFootageFolder(folderPath)
 
         const existingMap = new Map(existingItems.map(i => [i.fileName, i]));
         const allItems = scannedItems.map(scanned => {
             const existing = existingMap.get(scanned.fileName);
-            if (existing) {
-                return { ...existing, filePath: scanned.filePath }; // Cập nhật filePath mới nhất
+            if (hasUsableAiMetadata(existing)) {
+                return {
+                    ...scanned,
+                    ...existing,
+                    filePath: scanned.filePath,
+                    fileName: scanned.fileName,
+                    fileHash: scanned.fileHash,
+                };
             }
-            return scanned;
+
+            return {
+                ...scanned,
+                ...(existing ? {
+                    aiDescription: existing.aiDescription ?? scanned.aiDescription,
+                    aiTags: existing.aiTags ?? scanned.aiTags,
+                    aiMood: existing.aiMood ?? scanned.aiMood,
+                    scannedAt: existing.scannedAt ?? scanned.scannedAt,
+                    durationSec: existing.durationSec ?? scanned.durationSec,
+                } : {}),
+            };
         });
 
         setFootageItems(allItems)
-        const countScanned = allItems.filter(i => !!i.aiDescription && i.aiMood !== "Error").length;
+        const countScanned = allItems.filter(i => hasUsableAiMetadata(i)).length;
         setScanMessage(countScanned > 0 ? `📂 ${countScanned} footage đã scan AI` : "")
     }, [])
 
@@ -185,20 +217,34 @@ export function FootageTab() {
         const jsonStr = window.prompt(`Dán JSON từ Gemini cho file ${item.fileName}:\nVD: {"description":"...","tags":["..."],"mood":"..."}`);
         if (!jsonStr) return;
         try {
-            const match = jsonStr.match(/\\{[\\s\\S]*\\}/);
-            if (!match) throw new Error("Không tìm thấy dấu {} JSON hợp lệ");
-            const parsed = JSON.parse(match[0]);
+            let parsed: any;
+            // Ưu tiên parse trực tiếp
+            try {
+                parsed = JSON.parse(jsonStr);
+            } catch {
+                // Fallback: trích object JSON từ đoạn text dài hơn (SỬA LỖI REGEX)
+                const match = jsonStr.match(/\{[\s\S]*\}/);
+                if (!match) throw new Error("Không tìm thấy dấu {} JSON hợp lệ");
+                parsed = JSON.parse(match[0]);
+            }
 
             const newItem: FootageItem = {
                 ...item,
-                aiDescription: parsed.description || "Manual",
-                aiTags: Array.isArray(parsed.tags) ? parsed.tags : [],
-                aiMood: parsed.mood || "Manual",
-                durationSec: item.durationSec || 5, // fallback if 0
+                aiDescription: typeof parsed.description === "string" && parsed.description.trim()
+                    ? parsed.description.trim()
+                    : "Manual",
+                aiTags: Array.isArray(parsed.tags)
+                    ? parsed.tags.filter((t: unknown): t is string => typeof t === "string")
+                    : [],
+                aiMood: typeof parsed.mood === "string" && parsed.mood.trim()
+                    ? parsed.mood.trim()
+                    : "Manual",
+                durationSec: item.durationSec > 0 ? item.durationSec : 5,
                 scannedAt: new Date().toISOString()
             };
 
-            const allItems = footageItems.map(i => i.filePath === item.filePath ? newItem : i);
+            // Update theo fileName thay vì filePath để ổn định hơn
+            const allItems = footageItems.map(i => i.fileName === item.fileName ? { ...i, ...newItem } : i);
             setFootageItems(allItems);
 
             if (footageFolder) {
@@ -412,18 +458,17 @@ export function FootageTab() {
                 {footageItems.length > 0 && (
                     <div className="max-h-48 overflow-y-auto space-y-1">
                         {footageItems.map((item, idx) => {
-                            const isScanned = !!item.aiDescription && item.aiMood !== "Error";
                             return (
                                 <div
                                     key={idx}
-                                    className={`flex items-center gap-1.5 text-[10px] py-1 px-1.5 rounded transition-colors ${isScanned ? "bg-muted/30 hover:bg-muted/50" : "bg-red-500/5 border border-red-500/20 hover:bg-red-500/10"
+                                    className={`flex items-center gap-1.5 text-[10px] py-1 px-1.5 rounded transition-colors ${!!item.aiDescription && item.aiMood !== "Error" ? "bg-muted/30 hover:bg-muted/50" : "bg-red-500/5 border border-red-500/20 hover:bg-red-500/10"
                                         }`}
                                     title={item.aiDescription || "Chưa scan AI"}
                                 >
-                                    <Film className={`h-3 w-3 shrink-0 ${isScanned ? "text-orange-400" : "text-red-400/60"}`} />
+                                    <Film className={`h-3 w-3 shrink-0 ${!!item.aiDescription && item.aiMood !== "Error" ? "text-orange-400" : "text-red-400/60"}`} />
                                     <span className="truncate font-medium flex-1 min-w-0" title={item.fileName}>{item.fileName}</span>
 
-                                    {isScanned ? (
+                                    {!!item.aiDescription && item.aiMood !== "Error" ? (
                                         <>
                                             <span className="shrink-0 text-muted-foreground hidden sm:inline">{item.durationSec}s</span>
                                             {item.aiMood && (

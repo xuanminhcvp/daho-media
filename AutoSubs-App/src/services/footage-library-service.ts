@@ -20,6 +20,14 @@ import type {
 } from "@/types/footage-types";
 import { addDebugLog, updateDebugLog, generateLogId } from "@/services/debug-logger";
 
+// ======================== HELPER ========================
+
+/** Định nghĩa tiêu chuẩn "Đã scan AI" */
+export function hasUsableAiMetadata(item?: FootageItem | null): boolean {
+    if (!item) return false;
+    return !!item.aiDescription && item.aiMood !== "Error";
+}
+
 // ======================== CONSTANTS ========================
 
 /** Tên file JSON metadata — nằm ngay trong folder footage */
@@ -374,25 +382,38 @@ export async function scanAndAnalyzeFootageFolder(
     // (FIX): Dùng fileName làm key thay vì filePath để tránh mất scan khi copy folder sang máy mới
     const existingMap = new Map(existingItems.map(i => [i.fileName, i]));
 
-    // Bước 3: Merge — giữ metadata cũ, lọc file mới hoặc file bị lỗi cần re-scan
+    // Bước 3: Merge — giữ metadata cũ nếu đã có AI data usable
     let allItems: FootageItem[] = scannedItems.map(scanned => {
         const existing = existingMap.get(scanned.fileName);
-        // Giữ metadata cũ NẾU: đã scan thành công (có description, không phải Error, duration > 0)
-        if (existing && existing.aiDescription
-            && existing.aiMood !== "Error"
-            && existing.durationSec > 0
-            && existing.fileHash === scanned.fileHash) {
-            // Sửa filePath lại theo máy tính hiện tại!
+
+        if (hasUsableAiMetadata(existing)) {
             return {
-                ...existing,
-                filePath: scanned.filePath
+                ...scanned, // ưu tiên path/hash hiện tại từ lần scan thực tế
+                ...existing, // giữ AI metadata cũ
+                filePath: scanned.filePath, // luôn sửa lại path theo máy hiện tại
+                fileName: scanned.fileName,
+                fileHash: scanned.fileHash, // nếu vẫn muốn lưu thì lấy hash mới nhất
+                durationSec: existing?.durationSec && existing.durationSec > 0
+                    ? existing.durationSec
+                    : scanned.durationSec,
             };
         }
-        return scanned; // File mới HOẶC file lỗi → cần scan lại
+
+        return {
+            ...scanned,
+            // nếu có metadata cũ nhưng chưa hoàn chỉnh thì vẫn có thể giữ vài field hữu ích
+            ...(existing ? {
+                aiDescription: existing.aiDescription ?? scanned.aiDescription,
+                aiTags: existing.aiTags ?? scanned.aiTags,
+                aiMood: existing.aiMood ?? scanned.aiMood,
+                scannedAt: existing.scannedAt ?? scanned.scannedAt,
+                durationSec: existing.durationSec ?? scanned.durationSec,
+            } : {}),
+        };
     });
 
     // Tìm file chưa scan (hoặc cần re-scan)
-    const newItems = allItems.filter(i => !i.aiDescription || i.aiMood === "Error" || i.durationSec === 0);
+    const newItems = allItems.filter(i => !hasUsableAiMetadata(i));
 
     if (newItems.length === 0) {
         onProgress?.({
