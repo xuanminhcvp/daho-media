@@ -12,6 +12,20 @@ import { extractWhisperWords } from "@/utils/media-matcher";
 import { writeTextFile, readTextFile, exists } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 
+// ======================== STATIC IMPORTS CHO CÁC PROFILE ========================
+// ⚡ Import tĩnh để Vite bundle được (fix MIME type error khi dùng dynamic import)
+import * as documentarySubtitleMatch from "@/prompts/documentary/subtitle-match-prompt";
+import * as tiktokSubtitleMatch from "@/prompts/tiktok/subtitle-match-prompt";
+
+/** Trả về prompt module subtitle-match đúng với profile hiện tại */
+function getSubtitleMatchPromptModule(profileId: string) {
+    switch (profileId) {
+        case 'tiktok': return tiktokSubtitleMatch;
+        case 'documentary':
+        default: return documentarySubtitleMatch;
+    }
+}
+
 // ======================== CẤU HÌNH AI ========================
 const AI_CONFIG = {
     baseUrl: "https://ezaiapi.com/v1",
@@ -491,8 +505,9 @@ export async function aiSubtitleMatch(
         const timeRange = `${part.startTime.toFixed(0)}s → ${part.endTime.toFixed(0)}s`;
 
         try {
+            // ⚡ Dùng static lookup thay vì dynamic import (fix MIME type error)
             const { getActiveProfileId } = await import('@/config/activeProfile');
-            const { buildSubtitleMatchPrompt } = await import(`../prompts/${getActiveProfileId()}/subtitle-match-prompt`);
+            const { buildSubtitleMatchPrompt } = getSubtitleMatchPromptModule(getActiveProfileId());
             const prompt = buildSubtitleMatchPrompt(
                 scriptBatches[i],
                 part.text,
@@ -685,8 +700,9 @@ export async function aiSubtitleMatch(
                 console.log(`[Subtitle] Round ${round} cụm ${ci + 1}: dòng ${clusterFirst + 1}-${clusterLast + 1}, transcript ${timeRange}, ${relevantWords.length} words`);
 
                 // Tạo prompt retry
+                // ⚡ Dùng static lookup thay vì dynamic import (fix MIME type error)
                 const { getActiveProfileId } = await import('@/config/activeProfile');
-                const { buildSubtitleRetryPrompt } = await import(`../prompts/${getActiveProfileId()}/subtitle-match-prompt`);
+                const { buildSubtitleRetryPrompt } = getSubtitleMatchPromptModule(getActiveProfileId());
                 let prompt = buildSubtitleRetryPrompt(
                     scriptChunk,
                     whisperSlice,
@@ -813,7 +829,7 @@ export async function aiSubtitleMatchFromSentences(
 
     const { batches, maxConcurrent } = await getSubtitleAIConfig();
     const cleanBatches = Math.max(1, Math.min(batches, matchingSentences.length)); // Không chia số đợt lớn hơn số câu
-    
+
     console.log(`[Subtitle] Dùng Matching_sequence: ${matchingSentences.length} câu → chia ${cleanBatches} batch`);
 
     // Chia mảng matchingSentences thành N batch
@@ -832,9 +848,10 @@ export async function aiSubtitleMatchFromSentences(
     const batchTasks = sentenceBatches.map((batchSentences, i) => async () => {
         const batchNum = i + 1;
         try {
+            // ⚡ Dùng static lookup thay vì dynamic import (fix MIME type error)
             const { getActiveProfileId } = await import('@/config/activeProfile');
-            const { buildSubtitleMatchFromSentencesPrompt } = await import(`../prompts/${getActiveProfileId()}/subtitle-match-prompt`);
-            
+            const { buildSubtitleMatchFromSentencesPrompt } = getSubtitleMatchPromptModule(getActiveProfileId());
+
             // Format sentences cho Prompt
             const sentencesJson = JSON.stringify(
                 batchSentences.map(s => ({

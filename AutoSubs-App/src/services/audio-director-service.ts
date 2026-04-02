@@ -181,9 +181,78 @@ export async function loadMatchingScript(
 // ======================== BUILD CATALOG TEXT ========================
 // Đã chuyển sang file prompts/audio-director-prompt.ts
 // Import lại để dùng trong hàm analyzeScriptForMusic
-// import { buildDirectorPrompt } from "@/prompts/documentary/audio-director-prompt"; // unused — giữ lại để tham khảo
-// import { buildDirectorPrompt } from "@/prompts/documentary/audio-director-prompt"; // unused — giữ lại để tham khảo
+// ⚠️ BẮT BUỘC dùng static import — KHÔNG dynamic import với template literal
+// (Vite không bundle được đường dẫn runtime → trả HTML 404 → lỗi MIME type)
 import type { WhisperWordCompact } from "@/prompts/documentary/sfx-director-prompt";
+
+// ======================== STATIC IMPORTS CHO CÁC PROFILE ========================
+// Import tất cả prompt modules tĩnh để Vite có thể bundle
+// Thêm profile mới: import thêm ở đây + thêm case trong getPromptModuleByProfile()
+
+import * as documentaryPrompts from "@/prompts/documentary/audio-director-prompt";
+import * as documentarySfxPrompts from "@/prompts/documentary/sfx-director-prompt";
+import * as documentaryHighlightPrompts from "@/prompts/documentary/highlight-text-prompt";
+import { formatConfig as documentaryConfig } from "@/prompts/documentary/config";
+
+import * as tiktokPrompts from "@/prompts/tiktok/audio-director-prompt";
+import * as tiktokSfxPrompts from "@/prompts/tiktok/sfx-director-prompt";
+import * as tiktokHighlightPrompts from "@/prompts/tiktok/highlight-text-prompt";
+import { formatConfig as tiktokConfig } from "@/prompts/tiktok/config";
+
+// ======================== HELPER: LẤY MODULE THEO PROFILE ========================
+
+/**
+ * Trả về prompt module audio-director đúng với profile hiện tại
+ * Dùng switch/case tĩnh thay vì dynamic import với template literal
+ */
+function getAudioDirectorPromptModule(profileId: string) {
+    switch (profileId) {
+        case 'tiktok':
+            return tiktokPrompts;
+        case 'documentary':
+        default:
+            return documentaryPrompts;
+    }
+}
+
+/**
+ * Trả về prompt module sfx-director đúng với profile hiện tại
+ */
+function getSfxDirectorPromptModule(profileId: string) {
+    switch (profileId) {
+        case 'tiktok':
+            return tiktokSfxPrompts;
+        case 'documentary':
+        default:
+            return documentarySfxPrompts;
+    }
+}
+
+/**
+ * Trả về prompt module highlight-text đúng với profile hiện tại
+ */
+function getHighlightPromptModule(profileId: string) {
+    switch (profileId) {
+        case 'tiktok':
+            return tiktokHighlightPrompts;
+        case 'documentary':
+        default:
+            return documentaryHighlightPrompts;
+    }
+}
+
+/**
+ * Trả về formatConfig đúng với profile hiện tại
+ */
+function getFormatConfig(profileId: string) {
+    switch (profileId) {
+        case 'tiktok':
+            return tiktokConfig;
+        case 'documentary':
+        default:
+            return documentaryConfig;
+    }
+}
 
 // ======================== GỌI AI ========================
 
@@ -209,8 +278,9 @@ export async function analyzeScriptForMusic(
     const totalMinutes = Math.round(totalDuration / 60);
 
     // Đọc Config từ Profile động và Settings (Tauri Store)
+    // ⚡ Dùng static import helper thay vì dynamic template literal (fix MIME type error)
     const { getActiveProfileId } = await import('@/config/activeProfile');
-    const { formatConfig } = await import(`../prompts/${getActiveProfileId()}/config`);
+    const formatConfig = getFormatConfig(getActiveProfileId());
 
     let MUSIC_BATCH_COUNT = formatConfig.MUSIC_BATCH_COUNT || 1;
     try {
@@ -262,8 +332,9 @@ export async function analyzeScriptForMusic(
         onProgress?.(`📦 Batch ${batchNum}/${MUSIC_BATCH_COUNT}: ${batchSentences.length} câu (${Math.round(batchTimeStart)}s-${Math.round(batchTimeEnd)}s)...`);
 
         // Build prompt — truyền coherence reference (từ batch 1)
+        // ⚡ Dùng static lookup thay vì dynamic import (fix MIME type error)
         const { getActiveProfileId } = await import('@/config/activeProfile');
-        const { buildDirectorBatchPrompt } = await import(`../prompts/${getActiveProfileId()}/audio-director-prompt`);
+        const { buildDirectorBatchPrompt } = getAudioDirectorPromptModule(getActiveProfileId());
         const prompt = buildDirectorBatchPrompt(
             batchSentences,
             musicItems,
@@ -750,8 +821,9 @@ export async function analyzeScriptForSFX(
     // totalMinutes used to be here, deleted to fix lint
 
     // Lấy config SFX từ profile động và Settings (Tauri Store)
+    // ⚡ Dùng static lookup thay vì dynamic import (fix MIME type error)
     const { getActiveProfileId } = await import('@/config/activeProfile');
-    const { formatConfig } = await import(`../prompts/${getActiveProfileId()}/config`);
+    const formatConfig = getFormatConfig(getActiveProfileId());
 
     let SFX_BATCH_COUNT = formatConfig.SFX_BATCH_COUNT || 1;
     let totalSfxCues = formatConfig.MAX_SFX_CUES_PER_BATCH || 10;
@@ -828,8 +900,9 @@ export async function analyzeScriptForSFX(
         onProgress?.(`📦 Batch ${batch.batchNum}/${SFX_BATCH_COUNT}: ${batch.sentences.length} câu đang phân tích...`);
 
         // Build prompt cho batch này
+        // ⚡ Dùng static lookup thay vì dynamic import (fix MIME type error)
         const { getActiveProfileId } = await import('@/config/activeProfile');
-        const { buildSfxBatchPrompt } = await import(`../prompts/${getActiveProfileId()}/sfx-director-prompt`);
+        const { buildSfxBatchPrompt } = getSfxDirectorPromptModule(getActiveProfileId());
         const prompt = buildSfxBatchPrompt(
             batch.sentences,
             sfxItems!,  // Gửi TOÀN BỘ thư viện (kể cả item chưa scan)
@@ -954,8 +1027,9 @@ async function analyzeScriptForSFX_legacy(
 
     onProgress?.("Đang gửi kịch bản cho AI Director (SFX) — chế độ cũ...");
 
+    // ⚡ Dùng static lookup thay vì dynamic import (fix MIME type error)
     const { getActiveProfileId } = await import('@/config/activeProfile');
-    const { buildSfxDirectorPrompt } = await import(`../prompts/${getActiveProfileId()}/sfx-director-prompt`);
+    const { buildSfxDirectorPrompt } = getSfxDirectorPromptModule(getActiveProfileId());
     const prompt = buildSfxDirectorPrompt(sentences);
 
     try {
@@ -1016,8 +1090,9 @@ export async function analyzeScriptForHighlightText(
     onProgress?.("Đang gửi kịch bản cho AI Director (Highlight Text)...");
 
     // ==== PROMPT từ file prompts/ (dễ chỉnh sửa riêng) ====
+    // ⚡ Dùng static lookup thay vì dynamic import (fix MIME type error)
     const { getActiveProfileId } = await import('@/config/activeProfile');
-    const { buildHighlightTextPrompt } = await import(`../prompts/${getActiveProfileId()}/highlight-text-prompt`);
+    const { buildHighlightTextPrompt } = getHighlightPromptModule(getActiveProfileId());
     const prompt = buildHighlightTextPrompt(sentences);
 
     try {

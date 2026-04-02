@@ -24,6 +24,20 @@ import {
 } from "@/prompts/documentary/voice-pacing-prompt"
 import type { ScriptSentence } from "@/utils/media-matcher"
 
+// ======================== STATIC IMPORTS CHO CÁC PROFILE ========================
+// ⚡ Import tĩnh để Vite bundle được (fix MIME type error khi dùng dynamic import)
+import * as documentaryVoicePacing from "@/prompts/documentary/voice-pacing-prompt";
+import * as tiktokVoicePacing from "@/prompts/tiktok/voice-pacing-prompt";
+
+/** Trả về prompt module voice-pacing đúng với profile hiện tại */
+function getVoicePacingPromptModule(profileId: string) {
+    switch (profileId) {
+        case 'tiktok': return tiktokVoicePacing;
+        case 'documentary':
+        default: return documentaryVoicePacing;
+    }
+}
+
 // ======================== TYPES ========================
 
 // Kết quả phân tích pause cho 1 câu
@@ -362,8 +376,9 @@ async function analyzeByAIBatch(
     }
 
     // Build prompt
+    // ⚡ Dùng static lookup thay vì dynamic import (fix MIME type error)
     const { getActiveProfileId } = await import('@/config/activeProfile');
-    const { buildVoicePacingPrompt } = await import(`../prompts/${getActiveProfileId()}/voice-pacing-prompt`);
+    const { buildVoicePacingPrompt } = getVoicePacingPromptModule(getActiveProfileId());
     const prompt = buildVoicePacingPrompt(scriptText)
 
     // Round-robin Claude/Gemini

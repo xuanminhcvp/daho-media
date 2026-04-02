@@ -29,6 +29,20 @@ import {
 } from "@/prompts/documentary/auto-color-prompt";
 import type { AutoColorClip } from "@/api/auto-color-api";
 
+// ======================== STATIC IMPORTS CHO CÁC PROFILE ========================
+// ⚡ Import tĩnh để Vite bundle được (fix MIME type error khi dùng dynamic import)
+import * as documentaryAutoColor from "@/prompts/documentary/auto-color-prompt";
+import * as tiktokAutoColor from "@/prompts/tiktok/auto-color-prompt";
+
+/** Trả về prompt module auto-color đúng với profile hiện tại */
+function getAutoColorPromptModule(profileId: string) {
+    switch (profileId) {
+        case 'tiktok': return tiktokAutoColor;
+        case 'documentary':
+        default: return documentaryAutoColor;
+    }
+}
+
 
 // ======================== CONSTANTS ========================
 
@@ -65,8 +79,8 @@ export async function extractClipFrame(
 ): Promise<string | null> {
     try {
         const cacheDir = await appCacheDir();
-        const safeName   = clipName.replace(/[^a-zA-Z0-9]/g, "_").slice(0, 28);
-        const suffix     = `${Math.round(seekRatio * 100)}`;
+        const safeName = clipName.replace(/[^a-zA-Z0-9]/g, "_").slice(0, 28);
+        const suffix = `${Math.round(seekRatio * 100)}`;
         const outputPath = await join(cacheDir, `autocolor_frame_${safeName}_${suffix}.jpg`);
 
         // Trích frame tại vị trí seekRatio của duration
@@ -182,20 +196,21 @@ export async function analyzeFrameForPrimaries(args: {
 
         // Build parts cho Gemini
         const hasRefImages = !!(refBase64List && refBase64List.length > 0);
-        
+
+        // ⚡ Dùng static lookup thay vì dynamic import (fix MIME type error)
         const { getActiveProfileId } = await import('@/config/activeProfile');
-        const { buildFrameAnalysisPrompt } = await import(`../prompts/${getActiveProfileId()}/auto-color-prompt`);
-        
+        const { buildFrameAnalysisPrompt } = getAutoColorPromptModule(getActiveProfileId());
+
         const promptText = buildFrameAnalysisPrompt(historyContext, clipName);
         const parts: any[] = [{ text: promptText }];
-        
+
         // Nhét REFERENCE IMAGES vào trước (nếu có truyền xuống)
         if (hasRefImages) {
             for (const refB64 of refBase64List!) {
                 parts.push({ inline_data: { mime_type: "image/jpeg", data: refB64 } });
             }
         }
-        
+
         // Nhét TARGET FRAME vào cuối cùng
         parts.push({ inline_data: { mime_type: "image/jpeg", data: base64 } });
 
@@ -209,8 +224,8 @@ export async function analyzeFrameForPrimaries(args: {
             requestBody: JSON.stringify({
                 promptToAI: promptText, // Hiện đầy đủ prompt để user xem
                 has_history_shots: historyContext.length,
-                attached_images: hasRefImages 
-                    ? `[Đã đính kèm trực tiếp ${refBase64List!.length} ảnh Reference và 1 ảnh Frame]` 
+                attached_images: hasRefImages
+                    ? `[Đã đính kèm trực tiếp ${refBase64List!.length} ảnh Reference và 1 ảnh Frame]`
                     : `[Chỉ có 1 ảnh Frame]`,
             }, null, 2),
             status: null,
@@ -222,7 +237,7 @@ export async function analyzeFrameForPrimaries(args: {
         });
 
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${VISION_MODEL}:generateContent?key=${apiKey}`;
-        
+
         // --- RETRY LOGIC (Exponential Backoff cho lỗi Rate Limit) ---
         let attempt = 0;
         const maxRetries = 5;
@@ -244,20 +259,20 @@ export async function analyzeFrameForPrimaries(args: {
                 if (response.ok) break; // Thành công thì thoát loop
 
                 lastErrText = await response.text();
-                
+
                 // Nếu lỗi 429 (Too Many Requests) hoặc lỗi quá tải 503/500 → Đợi rồi thử lại
                 if (response.status === 429 || response.status >= 500) {
                     attempt++;
                     if (attempt > maxRetries) throw new Error(`Gemini HTTP ${response.status}: Rate limit exhausted. ${lastErrText.slice(0, 150)}`);
-                    
+
                     const waitTime = Math.pow(2, attempt) * 2000 + Math.random() * 1000; // 4s, 8s, 16s...
-                    console.warn(`[AutoColor] ⚠️ Lỗi ${response.status} (Rate limit/Quota). Đợt ${attempt}/${maxRetries}. Đợi ${Math.round(waitTime/1000)}s rồi thử lại...`);
-                    
+                    console.warn(`[AutoColor] ⚠️ Lỗi ${response.status} (Rate limit/Quota). Đợt ${attempt}/${maxRetries}. Đợi ${Math.round(waitTime / 1000)}s rồi thử lại...`);
+
                     updateDebugLog(logId, {
                         status: response.status,
-                        responseBody: `[RETRY ${attempt}] Lỗi quá tải/API limit. Chờ ${Math.round(waitTime/1000)}s...`,
+                        responseBody: `[RETRY ${attempt}] Lỗi quá tải/API limit. Chờ ${Math.round(waitTime / 1000)}s...`,
                     });
-                    
+
                     await sleep(waitTime);
                     // Sau khi ngủ xong, vòng lặp tiếp tục
                 } else {
@@ -377,9 +392,9 @@ function smoothResults(results: AutoColorResult[]): AutoColorResult[] {
 
             // Threshold cho mỗi thông số
             const thresholds: Record<keyof PrimariesValues, number> = {
-                contrast:    0.05,
-                pivot:       0.03,
-                saturation:  8,
+                contrast: 0.05,
+                pivot: 0.03,
+                saturation: 8,
                 lift_master: 0.02,
                 gain_master: 0.04,
             };
@@ -410,10 +425,10 @@ function smoothResults(results: AutoColorResult[]): AutoColorResult[] {
 export function convertPrimariesToCDL(p: PrimariesValues): CDLData {
     // 1. CDL Slope = Gain Master * Contrast
     const slopeVal = p.gain_master * p.contrast;
-    
+
     // 2. CDL Offset = Lift * Contrast + Pivot * (1 - Contrast)
     const offsetVal = (p.lift_master * p.contrast) + (p.pivot * (1 - p.contrast));
-    
+
     // 3. Saturation: Base DaVinci của user = 40, CDL base = 1.0 => sat / 40.0 
     const satVal = p.saturation / 40.0;
 
@@ -480,7 +495,7 @@ export async function analyzeAllClipsV2(
     const worker = async () => {
         while (queue.length > 0) {
             if (abortSignal?.aborted) return;
-            
+
             // Pop item tiếp theo
             const clip = queue.shift()!;
             let resultStatus: "analyzed" | "skipped" | "error" = "analyzed";
@@ -504,15 +519,15 @@ export async function analyzeAllClipsV2(
                     } else {
                         const analysis = await analyzeFrameForPrimaries({
                             framePath,
-                            historyContext: session.recent_shots, 
+                            historyContext: session.recent_shots,
                             clipName: clip.name,
                             apiKey,
                             refBase64List
                         });
-                        
+
                         // Cleanup
                         const { remove } = await import("@tauri-apps/plugin-fs");
-                        await remove(framePath).catch(() => {});
+                        await remove(framePath).catch(() => { });
 
                         if (!analysis) {
                             resultStatus = "error";
@@ -548,7 +563,7 @@ export async function analyzeAllClipsV2(
             });
 
             completedCount++;
-            
+
             onProgress?.({
                 current: completedCount,
                 total: total,
@@ -577,7 +592,7 @@ export async function analyzeAllClipsV2(
         current: total,
         total: total,
         clipName: "",
-        message: abortSignal?.aborted 
+        message: abortSignal?.aborted
             ? `⏹️ Dừng! ${analyzed} OK, ${skipped} skipped, ${errors} lỗi`
             : `✅ Xong! ${analyzed} OK, ${skipped} skipped, ${errors} lỗi`,
     });
