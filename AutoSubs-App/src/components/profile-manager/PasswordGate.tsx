@@ -5,30 +5,13 @@
 import * as React from "react"
 import { Lock, Eye, EyeOff, ShieldCheck, AlertCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { validateLicenseKey } from "@/services/license-service"
+import { validateLicenseKey, checkLicenseExists } from "@/services/license-service"
 
 interface PasswordGateProps {
     onSuccess: (password: string) => void  // Trả password về để dùng giải mã AES
     onCancel: () => void
 }
 
-/** Trích xuất Identifier từ HEX trong License Key */
-function getIdentifierFromKey(key: string): string | null {
-    try {
-        const parts = key.split('-');
-        if (parts.length < 3) return null;
-        
-        // Cụm thân giữa là Hex encoding của Identifier
-        const hex = parts.slice(1, -1).join('');
-        const bytes = new Uint8Array(hex.length / 2);
-        for (let i = 0; i < hex.length; i += 2) {
-            bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
-        }
-        return new TextDecoder().decode(bytes);
-    } catch {
-        return null;
-    }
-}
 
 export function PasswordGate({ onSuccess, onCancel }: PasswordGateProps) {
     const [password, setPassword] = React.useState("")
@@ -37,10 +20,15 @@ export function PasswordGate({ onSuccess, onCancel }: PasswordGateProps) {
     const [loading, setLoading] = React.useState(false)
     const inputRef = React.useRef<HTMLInputElement>(null)
 
-    // Focus input khi mở
+    // Auto-check stored license
     React.useEffect(() => {
         setTimeout(() => inputRef.current?.focus(), 100)
-    }, [])
+        checkLicenseExists().then(info => {
+            if (info && info.key) {
+                onSuccess(info.key); // Chấp nhận mọi License hợp lệ trong máy
+            }
+        }).catch(err => console.error("[PasswordGate] Error checking auto-license", err));
+    }, [onSuccess])
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
@@ -57,15 +45,9 @@ export function PasswordGate({ onSuccess, onCancel }: PasswordGateProps) {
                 return
             }
 
-            // 2. Decode danh tính
-            const identifier = getIdentifierFromKey(key)
+            // Không check quyền theo identifier nữa
 
-            // 3. Phân quyền: Khoá phải dành cho Admin (chứa chữ ADMIN hoặc BOSS)
-            if (!identifier || (!identifier.includes("ADMIN") && !identifier.includes("BOSS"))) {
-                setError(`Mã cấp cho "${identifier || 'Unknown'}" KHÔNG có quyền Admin!`)
-                return
-            }
-
+            // Không cần check ID ADMIN nữa, vì user binh thuong cung vao duoc
             onSuccess(key)
         } catch (err) {
             setError("Lỗi hệ thống: " + String(err))
