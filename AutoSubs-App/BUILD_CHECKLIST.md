@@ -135,6 +135,55 @@ grep "SECRET_KEY" src-tauri/src/license.rs
 
 ---
 
+### 8. Dynamic Import trong Services — KHÔNG dùng template literal runtime
+
+**Lỗi thường gặp:** `TypeError: 'text/html' is not a valid JavaScript MIME type` khi chạy các pipeline AI (Nhạc nền, SFX, Subtitle, Voice Pacing, Auto Color).
+
+**Nguyên nhân gốc rễ:**
+Vite/Rollup không thể bundle dynamic import với đường dẫn là runtime string:
+```typescript
+// ❌ SAI — Vite không bundle được, browser nhận HTML 404 → lỗi MIME type
+const { foo } = await import(`../prompts/${getActiveProfileId()}/some-prompt`);
+```
+
+**Quy tắc bắt buộc:**
+- **KHÔNG BAO GIỜ** dùng `await import(\`../prompts/${getActiveProfileId()}/...\`)` trong bất kỳ service nào
+- Phải dùng **static import ở đầu file** + **switch/case tĩnh**
+
+```typescript
+// ✅ ĐÚNG — static import + switch/case
+import * as documentaryPrompts from "@/prompts/documentary/some-prompt";
+import * as tiktokPrompts from "@/prompts/tiktok/some-prompt";
+
+function getPromptModule(profileId: string) {
+    switch (profileId) {
+        case 'tiktok': return tiktokPrompts;
+        default: return documentaryPrompts;
+    }
+}
+```
+
+**Kiểm tra trước khi build:**
+```bash
+# Quét toàn bộ src/services/ tìm dynamic import lỗi — kết quả PHẢI TRỐNG
+grep -r "import(\`../prompts/\${" src/services/
+
+# Xác nhận Vite build không có warning dynamic import
+npm run build 2>&1 | grep "invalid import"
+# Kết quả phải TRỐNG
+```
+
+**Các file đã được fix (2026-04-02):**
+- `src/services/audio-director-service.ts` — 6 chỗ
+- `src/services/voice-pacing-service.ts` — 1 chỗ
+- `src/services/auto-color-service.ts` — 1 chỗ
+- `src/services/subtitle-matcher-service.ts` — 3 chỗ
+
+**Khi thêm service mới sử dụng prompt theo profile:**
+Phải import tĩnh tất cả profile modules + viết helper `getXxxPromptModule(profileId)` theo switch/case.
+
+---
+
 ## 📝 Quy trình build PRODUCTION hoàn chỉnh
 
 ```bash
@@ -203,22 +252,52 @@ console.log('BLAUTO-' + dataString + '-' + sig);
 
 ## 🧹 Xóa sạch app trên máy user (nếu cần cài lại)
 
+> ⚠️ Chạy từng nhóm lệnh cẩn thận. Lệnh cuối cùng (Auto_media) xoá hết media đã scan!
+
 ```bash
-# Xóa app
+# ===== 1. XOÁ APP =====
 sudo rm -rf /Applications/DahoMedia.app
 
-# Xóa dữ liệu hệ thống (License, config)
+# ===== 2. APP DATA — tất cả bundle ID theo lịch sử version =====
 rm -rf ~/Library/Application\ Support/com.dahomedia.app
-rm -rf ~/Library/Caches/com.dahomedia.app
-rm -rf ~/Library/WebKit/com.dahomedia.app
-rm -f ~/Library/Preferences/com.dahomedia.app.plist
+rm -rf ~/Library/Application\ Support/com.autosubs-media
+rm -rf ~/Library/Application\ Support/com.autosubs
 
-# Xóa script DaVinci Resolve (nếu có)
+# ===== 3. CACHES =====
+rm -rf ~/Library/Caches/com.dahomedia.app
+rm -rf ~/Library/Caches/com.autosubs-media
+rm -rf ~/Library/Caches/com.autosubs
+
+# ===== 4. WEBKIT / WEBVIEW DATA =====
+rm -rf ~/Library/WebKit/com.dahomedia.app
+rm -rf ~/Library/WebKit/com.autosubs-media
+rm -rf ~/Library/WebKit/com.autosubs
+rm -rf ~/Library/WebKit/autosubs
+
+# ===== 5. PREFERENCES (plist) =====
+rm -f ~/Library/Preferences/com.dahomedia.app.plist
+rm -f ~/Library/Preferences/com.autosubs-media.plist
+rm -f ~/Library/Preferences/com.autosubs.plist
+rm -f ~/Library/Preferences/autosubs.plist
+
+# ===== 6. LOGS =====
+rm -rf ~/Library/Logs/com.dahomedia.app
+rm -rf ~/Library/Logs/com.autosubs-media
+rm -rf ~/Library/Logs/com.autosubs
+
+# ===== 7. DAVINCI RESOLVE SCRIPTS =====
 rm -f ~/Library/Application\ Support/Blackmagic\ Design/DaVinci\ Resolve/Fusion/Scripts/Utility/AutoSubs.lua
 rm -f ~/Library/Application\ Support/Blackmagic\ Design/DaVinci\ Resolve/Fusion/Scripts/Utility/AutoSubs.py
+rm -rf ~/Library/Application\ Support/Blackmagic\ Design/DaVinci\ Resolve/Fusion/Scripts/Utility/AutoSubs
 
-# (TÙY CHỌN) Xóa thư mục Media — CẢNH BÁO: mất hết ảnh/nhạc đã lưu
+# ===== 8. (TÙY CHỌN) XOÁ MEDIA — CẢNH BÁO: mất hết footage/nhạc đã scan! =====
 # rm -rf ~/Desktop/Auto_media
+```
+
+**Kiểm tra còn sót không:**
+```bash
+find ~/Library -name "*autosubs*" -o -name "*dahomedia*" -o -name "*com.dahomedia*" 2>/dev/null
+# Nếu kết quả trống → đã sạch hoàn toàn
 ```
 
 ---
@@ -245,7 +324,8 @@ rm -f ~/Library/Application\ Support/Blackmagic\ Design/DaVinci\ Resolve/Fusion/
 
 | Version | Ngày | Thay đổi |
 |---------|------|----------|
-| 3.0.15 | 2026-04-02 | Fix lỗi Production văng TypeError 'text/html' ở AutoMedia pipeline bằng inlineDynamicImports, gỡ bỏ khai báo thừa getAudioScanApiKey cũ |
+| 3.0.16 | 2026-04-02 | Fix triệt để dynamic import template literal runtime gây lỗi MIME type ở voice-pacing, auto-color, subtitle-matcher (11 chỗ tổng cộng 4 files) |
+| 3.0.15 | 2026-04-02 | Fix lỗi Production văng TypeError 'text/html' ở AutoMedia pipeline (audio-director 6 chỗ), gỡ bỏ khai báo thừa getAudioScanApiKey cũ |
 | 3.0.14 | 2026-04-02 | Sửa tab Manual Scan: dùng chung helper hasUsableAiMetadata thư viện đồng bộ Footage, sửa lỗi đè chưa scan và lọc |
 | 3.0.13 | 2026-04-02 | Fix hoàn toàn bug liên quan đến quét thủ công Footage (sửa parse JSON RegExp, đổi key map thành fileName, dùng hasUsableAiMetadata, bỏ check fileHash) |
 | 3.0.12 | 2026-04-02 | Tắt mặc định Nhạc Nền + SFX trong Auto Media |
