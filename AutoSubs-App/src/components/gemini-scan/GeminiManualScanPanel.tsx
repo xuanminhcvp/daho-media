@@ -105,18 +105,18 @@ export default function GeminiManualScanPanel() {
                 const scanned = await scanFootageFolder(folder);
                 const existing = await loadFootageMetadata(folder);
                 
-                // TỰ ĐỘNG DỌN DẸP FOOTAGE
+                // Tự động dọn dẹp footage và lấy helper
+                const { saveFootageMetadata, hasUsableAiMetadata } = await import('@/services/footage-library-service');
                 const currentPaths = new Set(scanned.map(i => i.filePath));
                 const cleanedExisting = existing.filter((item: any) => currentPaths.has(item.filePath));
                 if (existing.length - cleanedExisting.length > 0) {
-                    const { saveFootageMetadata } = await import('@/services/footage-library-service');
                     await saveFootageMetadata(folder, cleanedExisting);
                 }
 
-                const existingMap = new Map(cleanedExisting.map((i: any) => [i.filePath, i]));
+                const existingMap = new Map(cleanedExisting.map((i: any) => [i.fileName, i]));
                 const newFiles = scanned.filter((s: any) => {
-                    const ex = existingMap.get(s.filePath);
-                    return !(ex && ex.aiDescription && ex.aiMood !== 'Error' && ex.durationSec > 0 && ex.fileHash === s.fileHash);
+                    const ex = existingMap.get(s.fileName);
+                    return !hasUsableAiMetadata(ex);
                 });
                 console.log('[ManualScan] footage scanned:', scanned.length, 'new:', newFiles.length);
                 setFilesForType(newFiles.map((f: any) => f.filePath), 'footage');

@@ -118,15 +118,20 @@ export async function loadFootageMetadata(folderPath: string): Promise<FootageIt
     try {
         const metaFilePath = await join(folderPath, METADATA_FILE_NAME);
         if (!await exists(metaFilePath)) {
-            console.log(`[FootageLib] 📂 Chưa có metadata file tại ${folderPath}`);
+            console.log(`[FootageLib][DEBUG] 📂 Chưa có metadata file tại ${folderPath}`);
             return [];
         }
         const raw = await readTextFile(metaFilePath);
         const data: FootageMetadataFile = JSON.parse(raw);
-        console.log(`[FootageLib] ✅ Loaded ${data.items.length} items từ ${METADATA_FILE_NAME}`);
+        console.log(`[FootageLib][DEBUG] ✅ Loaded ${data.items.length} items từ ${metaFilePath}`);
+        console.log(`[FootageLib][DEBUG] Mẫu item đầu tiên:`, data.items[0] ? {
+            fileName: data.items[0].fileName,
+            hasDesc: !!data.items[0].aiDescription,
+            aiMood: data.items[0].aiMood
+        } : "Empty");
         return Array.isArray(data.items) ? data.items : [];
     } catch (error) {
-        console.error("[FootageLib] ❌ Lỗi load metadata:", error);
+        console.error("[FootageLib][ERROR] ❌ Lỗi load metadata (parse JSON):", error);
         return [];
     }
 }
@@ -383,20 +388,27 @@ export async function scanAndAnalyzeFootageFolder(
     const existingMap = new Map(existingItems.map(i => [i.fileName, i]));
 
     // Bước 3: Merge — giữ metadata cũ nếu đã có AI data usable
+    console.log(`[FootageLib][DEBUG] existingMap keys count: ${existingMap.size}`);
+
     let allItems: FootageItem[] = scannedItems.map(scanned => {
         const existing = existingMap.get(scanned.fileName);
 
-        if (hasUsableAiMetadata(existing)) {
-            return {
-                ...scanned, // ưu tiên path/hash hiện tại từ lần scan thực tế
-                ...existing, // giữ AI metadata cũ
-                filePath: scanned.filePath, // luôn sửa lại path theo máy hiện tại
-                fileName: scanned.fileName,
-                fileHash: scanned.fileHash, // nếu vẫn muốn lưu thì lấy hash mới nhất
-                durationSec: existing?.durationSec && existing.durationSec > 0
-                    ? existing.durationSec
-                    : scanned.durationSec,
-            };
+        if (existing) {
+            console.log(`[FootageLib][DEBUG] Đã tìm thấy match cho ${scanned.fileName}. Check usable: ${hasUsableAiMetadata(existing)}`);
+            if (hasUsableAiMetadata(existing)) {
+                return {
+                    ...scanned, // ưu tiên path/hash hiện tại từ lần scan thực tế
+                    ...existing, // giữ AI metadata cũ
+                    filePath: scanned.filePath, // luôn sửa lại path theo máy hiện tại
+                    fileName: scanned.fileName,
+                    fileHash: scanned.fileHash, // nếu vẫn muốn lưu thì lấy hash mới nhất
+                    durationSec: existing?.durationSec && existing.durationSec > 0
+                        ? existing.durationSec
+                        : scanned.durationSec,
+                };
+            }
+        } else {
+            console.log(`[FootageLib][DEBUG] KHÔNG tìm thấy match cho ${scanned.fileName} trong existingMap`);
         }
 
         return {
@@ -414,6 +426,7 @@ export async function scanAndAnalyzeFootageFolder(
 
     // Tìm file chưa scan (hoặc cần re-scan)
     const newItems = allItems.filter(i => !hasUsableAiMetadata(i));
+    console.log(`[FootageLib][DEBUG] Số file cần scan: ${newItems.length}. Scanned Items Check: ${allItems.filter(i => hasUsableAiMetadata(i)).length} file đã có data.`);
 
     if (newItems.length === 0) {
         onProgress?.({

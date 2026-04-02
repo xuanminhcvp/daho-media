@@ -245,6 +245,7 @@ rm -f ~/Library/Application\ Support/Blackmagic\ Design/DaVinci\ Resolve/Fusion/
 
 | Version | Ngày | Thay đổi |
 |---------|------|----------|
+| 3.0.14 | 2026-04-02 | Sửa tab Manual Scan: dùng chung helper hasUsableAiMetadata thư viện đồng bộ Footage, sửa lỗi đè chưa scan và lọc |
 | 3.0.13 | 2026-04-02 | Fix hoàn toàn bug liên quan đến quét thủ công Footage (sửa parse JSON RegExp, đổi key map thành fileName, dùng hasUsableAiMetadata, bỏ check fileHash) |
 | 3.0.12 | 2026-04-02 | Tắt mặc định Nhạc Nền + SFX trong Auto Media |
 | 3.0.11 | 2026-04-02 | Fix ffmpeg path mismatch (DahoMedia.app thay vì AutoSubs_Media.app), đổi theme mặc định sang light, cập nhật checklist |

@@ -65,8 +65,12 @@ export function FootageTab() {
             setFootageFolder(folderToLoad)
             // Tự load metadata và gộp với danh sách file thực tế (FIX LỖI SAI ĐƯỜNG DẪN KHI SHARE JOSN)
             const { loadFootageMetadata, scanFootageFolder, hasUsableAiMetadata } = await import("@/services/footage-library-service")
+            console.log(`[FootageTab Mount][DEBUG] Bắt đầu load folder: ${folderToLoad}`);
             const existingItems = await loadFootageMetadata(folderToLoad)
             const scannedItems = await scanFootageFolder(folderToLoad)
+
+            console.log(`[FootageTab Mount][DEBUG] Fetched ${existingItems.length} existing items from metadata`);
+            console.log(`[FootageTab Mount][DEBUG] Fetched ${scannedItems.length} scanned items from folder`);
 
             const existingMap = new Map(existingItems.map(i => [i.fileName, i]));
             const allItems = scannedItems.map(scanned => {
@@ -93,8 +97,11 @@ export function FootageTab() {
                 };
             });
 
-            setFootageItems(allItems)
+            console.log(`[FootageTab Mount][DEBUG] Đã gộp thành công ${allItems.length} items.`);
             const countScanned = allItems.filter(i => hasUsableAiMetadata(i)).length;
+            console.log(`[FootageTab Mount][DEBUG] Filtered hasUsableAiMetadata: ${countScanned} items hợp lệ.`);
+            
+            setFootageItems(allItems)
             if (countScanned > 0) setScanMessage(`📂 ${countScanned} footage đã scan AI`)
         })()
     }, [])
@@ -214,19 +221,29 @@ export function FootageTab() {
     }, []);
 
     const handlePasteJson = React.useCallback(async (item: FootageItem) => {
+        console.log(`[FootageTab Paste][DEBUG] Bắt đầu dán JSON cho: ${item.fileName}`);
         const jsonStr = window.prompt(`Dán JSON từ Gemini cho file ${item.fileName}:\nVD: {"description":"...","tags":["..."],"mood":"..."}`);
-        if (!jsonStr) return;
+        if (!jsonStr) {
+            console.log(`[FootageTab Paste][DEBUG] Hủy bỏ bới user.`);
+            return;
+        }
+
         try {
             let parsed: any;
             // Ưu tiên parse trực tiếp
             try {
                 parsed = JSON.parse(jsonStr);
+                console.log(`[FootageTab Paste][DEBUG] JSON parse trực tiếp thành công.`);
             } catch {
+                console.log(`[FootageTab Paste][DEBUG] JSON parse trực tiếp fail. Dùng fallback match...`);
                 // Fallback: trích object JSON từ đoạn text dài hơn (SỬA LỖI REGEX)
                 const match = jsonStr.match(/\{[\s\S]*\}/);
                 if (!match) throw new Error("Không tìm thấy dấu {} JSON hợp lệ");
                 parsed = JSON.parse(match[0]);
+                console.log(`[FootageTab Paste][DEBUG] Fallback regex parse thành công.`);
             }
+
+            console.log(`[FootageTab Paste][DEBUG] Nội dung parsed:`, parsed);
 
             const newItem: FootageItem = {
                 ...item,
@@ -249,10 +266,12 @@ export function FootageTab() {
 
             if (footageFolder) {
                 const { saveFootageMetadata } = await import("@/services/footage-library-service");
+                console.log(`[FootageTab Paste][DEBUG] Lưu metadata thủ công tổng: ${allItems.length} items`);
                 await saveFootageMetadata(footageFolder, allItems);
             }
             setScanMessage(`✅ Đã cập nhật metadata thủ công cho ${item.fileName}`);
         } catch (e) {
+            console.error(`[FootageTab Paste][ERROR] Lỗi dán JSON:`, e);
             alert("Lỗi parse JSON: " + String(e));
         }
     }, [footageItems, footageFolder]);
