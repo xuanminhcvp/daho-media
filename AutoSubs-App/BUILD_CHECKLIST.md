@@ -184,6 +184,25 @@ Phải import tĩnh tất cả profile modules + viết helper `getXxxPromptModu
 
 ---
 
+### 9. Auto-Deploy DaVinci Resolve Scripts (đã tự động)
+
+**Vấn đề:** Khi cài `.pkg` lên máy user mới, các scripts DaVinci Resolve (`AutoSubs.lua`, `AutoSubs.py`, `AutoSubs/`) không được deploy tự động → Transcribe/Lua server timeout.
+
+**Giải pháp (đã implement):**
+- File `src-tauri/src/main.rs` → block `setup()` có logic **Auto-Deploy**
+- Mỗi lần app khởi động sẽ tự động copy scripts từ `DahoMedia.app/Contents/Resources/resources/` → `~/Library/.../Fusion/Scripts/Utility/`
+- Chỉ deploy nếu DaVinci Resolve đã cài (thư mục `Utility/` tồn tại)
+- Update luôn `install_path.txt` với đường dẫn app hiện tại
+
+**Files được auto-deploy:**
+- `AutoSubs.lua` — Lua entry point cho DaVinci
+- `AutoSubs.py` — Python launcher
+- `AutoSubs/` — Toàn bộ Python server (server.py, helpers.py, media_import.py, ...)
+
+**Không cần làm thêm gì khi build** — chỉ cần đảm bảo `src-tauri/resources/` chứa đầy đủ files.
+
+---
+
 ## 📝 Quy trình build PRODUCTION hoàn chỉnh
 
 ```bash
@@ -317,6 +336,7 @@ find ~/Library -name "*autosubs*" -o -name "*dahomedia*" -o -name "*com.dahomedi
 | Đường dẫn cứng `/Users/may1/...` | Hardcode path máy dev | Dùng `os.getenv("HOME")` hoặc dynamic path |
 | Profile Manager hỏi license lần 2 | PasswordGate dùng validateLicenseKey cũ | Dùng mật khẩu cứng `Daho@2026` |
 | App mặc định dark mode | `defaultTheme="system"` hoặc `"dark"` | Đổi thành `defaultTheme="light"` trong App.tsx |
+| Transcribe timeout (`operation timed out`) | Scripts DaVinci chưa được deploy | Đã fix: app tự deploy khi khởi động (mục 9). Nếu vẫn lỗi: khởi động lại DaVinci Resolve |
 
 ---
 
@@ -324,6 +344,7 @@ find ~/Library -name "*autosubs*" -o -name "*dahomedia*" -o -name "*com.dahomedi
 
 | Version | Ngày | Thay đổi |
 |---------|------|----------|
+| 3.0.17 | 2026-04-02 | Auto-deploy DaVinci Resolve scripts (Lua + Python) khi app khởi động — máy user mới cài .pkg sẽ có sẵn scripts |
 | 3.0.16 | 2026-04-02 | Fix triệt để dynamic import template literal runtime gây lỗi MIME type ở voice-pacing, auto-color, subtitle-matcher (11 chỗ tổng cộng 4 files) |
 | 3.0.15 | 2026-04-02 | Fix lỗi Production văng TypeError 'text/html' ở AutoMedia pipeline (audio-director 6 chỗ), gỡ bỏ khai báo thừa getAudioScanApiKey cũ |
 | 3.0.14 | 2026-04-02 | Sửa tab Manual Scan: dùng chung helper hasUsableAiMetadata thư viện đồng bộ Footage, sửa lỗi đè chưa scan và lọc |
