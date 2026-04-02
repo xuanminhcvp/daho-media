@@ -21,6 +21,8 @@ pub fn run() {
             greet,
             // Command xác thực license key — gọi từ frontend
             license::validate_license_key,
+            // Command lấy device fingerprint (placeholder, frontend tự tính)
+            license::get_device_fingerprint,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

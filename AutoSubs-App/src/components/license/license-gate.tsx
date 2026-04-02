@@ -1,17 +1,18 @@
 // license-gate.tsx
 // ============================================================
 // Màn hình nhập License Key — chặn toàn bộ app cho đến khi kích hoạt
-// Hiển thị khi mở app lần đầu (hoặc khi chưa có license trong store)
+// Hiển thị Mã thiết bị + ô nhập key
 // Sau khi kích hoạt thành công → ẩn đi, hiển thị app bình thường
 // ============================================================
 
 import * as React from "react"
-import { KeyRound, Loader2, CheckCircle2, XCircle, Shield } from "lucide-react"
+import { KeyRound, Loader2, CheckCircle2, XCircle, Shield, Copy, Check } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
     checkLicenseExists,
     validateLicenseKey,
     saveLicenseKey,
+    getDeviceFingerprint,
 } from "@/services/license-service"
 
 // ======================== PROPS ========================
@@ -32,15 +33,28 @@ export function LicenseGate({ children }: LicenseGateProps) {
     const [validating, setValidating] = React.useState(false);
     // State: kết quả xác thực
     const [result, setResult] = React.useState<{ valid: boolean; message: string } | null>(null);
+    // State: mã thiết bị (device fingerprint)
+    const [deviceFp, setDeviceFp] = React.useState<string>("...");
+    // State: đã copy mã máy chưa
+    const [copied, setCopied] = React.useState(false);
 
-    // === Kiểm tra license khi mở app ===
+    // === Kiểm tra license + tính mã máy khi mở app ===
     React.useEffect(() => {
-        async function check() {
+        async function init() {
             try {
+                // Tính mã thiết bị để hiển thị cho user
+                const fp = await getDeviceFingerprint();
+                setDeviceFp(fp);
+
+                // Kiểm tra xem đã có license lưu sẵn chưa
                 const info = await checkLicenseExists();
                 if (info) {
-                    // Đã có license trong store → vào app thẳng
-                    setActivated(true);
+                    // Đã có license trong store → validate lại xem có đúng máy không
+                    const res = await validateLicenseKey(info.key);
+                    if (res.valid) {
+                        setActivated(true);
+                    }
+                    // Nếu key không hợp lệ (đổi máy) → vẫn hiện form nhập key mới
                 }
             } catch (err) {
                 console.error("[LicenseGate] Lỗi kiểm tra license:", err);
@@ -48,8 +62,20 @@ export function LicenseGate({ children }: LicenseGateProps) {
                 setChecking(false);
             }
         }
-        check();
+        init();
     }, []);
+
+    // === Copy mã máy vào clipboard ===
+    const handleCopyFp = async () => {
+        try {
+            await navigator.clipboard.writeText(deviceFp);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        } catch {
+            // Fallback nếu clipboard API không hoạt động
+            console.warn("[LicenseGate] Không thể copy vào clipboard");
+        }
+    };
 
     // === Xử lý khi user bấm "Kích hoạt" ===
     const handleActivate = async () => {
@@ -59,11 +85,11 @@ export function LicenseGate({ children }: LicenseGateProps) {
         setResult(null);
 
         try {
-            // Gọi Rust backend kiểm tra key bằng HMAC
+            // Gọi Rust backend kiểm tra key + device fingerprint
             const res = await validateLicenseKey(inputKey.trim());
 
             if (res.valid) {
-                // Key hợp lệ → lưu vào store
+                // Key hợp lệ + đúng máy → lưu vào store
                 await saveLicenseKey(inputKey.trim());
                 setResult(res);
                 // Delay 1.5s cho user thấy thông báo xanh rồi mới vào app
@@ -125,7 +151,30 @@ export function LicenseGate({ children }: LicenseGateProps) {
 
                     {/* Form nhập key */}
                     <div className="px-8 pb-8 pt-6 space-y-5">
-                        {/* Input */}
+                        {/* Hiển thị Mã thiết bị — user gửi cho admin để tạo key */}
+                        <div className="flex items-center justify-between rounded-lg bg-muted/50 border border-border/40 px-4 py-3">
+                            <div>
+                                <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
+                                    Mã thiết bị
+                                </p>
+                                <p className="text-sm font-mono font-bold text-foreground tracking-widest mt-0.5">
+                                    {deviceFp}
+                                </p>
+                            </div>
+                            <button
+                                onClick={handleCopyFp}
+                                className="p-2 rounded-md hover:bg-muted transition-colors"
+                                title="Copy mã thiết bị"
+                            >
+                                {copied ? (
+                                    <Check className="h-4 w-4 text-green-500" />
+                                ) : (
+                                    <Copy className="h-4 w-4 text-muted-foreground" />
+                                )}
+                            </button>
+                        </div>
+
+                        {/* Input License Key */}
                         <div className="space-y-2">
                             <label className="text-sm font-medium text-foreground">
                                 License Key
@@ -157,7 +206,7 @@ export function LicenseGate({ children }: LicenseGateProps) {
                                 ) : (
                                     <XCircle className="h-4 w-4 shrink-0 mt-0.5" />
                                 )}
-                                <span>{result.message}</span>
+                                <span className="whitespace-pre-line">{result.message}</span>
                             </div>
                         )}
 
@@ -182,7 +231,7 @@ export function LicenseGate({ children }: LicenseGateProps) {
 
                         {/* Footer note */}
                         <p className="text-xs text-center text-muted-foreground/60">
-                            Liên hệ admin để nhận License Key
+                            Gửi <strong>Mã thiết bị</strong> + <strong>Email</strong> cho Admin để nhận License Key
                         </p>
                     </div>
                 </div>

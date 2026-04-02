@@ -181,6 +181,7 @@ fn main() {
             logging::get_log_dir,
             logging::export_backend_logs,
             license::validate_license_key,
+            license::get_device_fingerprint,
             resolve_bridge::call_lua_server,  // ← Command gọi Lua HTTP server qua Rust reqwest
             ai_stream::call_claude_stream     // ← Command gọi Claude API streaming qua Rust reqwest
         ])

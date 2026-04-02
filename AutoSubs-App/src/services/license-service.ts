@@ -2,7 +2,8 @@
 // ============================================================
 // Service quản lý license key — giao tiếp với Rust backend
 // Flow: Kiểm tra local store → nếu chưa có → hiện màn hình nhập key
-//       → gửi key lên Rust kiểm tra HMAC → lưu vào store
+//       → tính device fingerprint → gửi key + fingerprint lên Rust
+//       → Rust kiểm tra HMAC + fingerprint → lưu vào store
 // ============================================================
 
 import { invoke } from "@tauri-apps/api/core";
@@ -24,6 +25,40 @@ export interface LicenseResult {
 export interface LicenseInfo {
     key: string;
     activatedAt: string; // ISO date string
+}
+
+// ======================== DEVICE FINGERPRINT ========================
+/**
+ * Tính fingerprint ổn định từ thông số trình duyệt/máy tính
+ * Dùng các giá trị ít thay đổi: timezone, ngôn ngữ, CPU, màn hình, OS
+ * → SHA-256 → lấy 8 ký tự hex đầu (UPPERCASE)
+ *
+ * QUAN TRỌNG: Thuật toán này PHẢI giống hệt với script tạo key (Node.js)
+ * và file licenseService.ts cũ để đảm bảo cùng 1 máy → cùng 1 fingerprint
+ */
+export async function getDeviceFingerprint(): Promise<string> {
+    const components = [
+        // Múi giờ (ổn định)
+        Intl.DateTimeFormat().resolvedOptions().timeZone || 'unknown',
+        // Ngôn ngữ hệ thống
+        navigator.language || 'unknown',
+        // Số nhân CPU
+        String(navigator.hardwareConcurrency || 0),
+        // Độ phân giải màn hình
+        `${screen.width}x${screen.height}`,
+        // Độ sâu màu
+        String(screen.colorDepth || 0),
+        // Nền tảng OS
+        navigator.platform || 'unknown',
+    ].join('|');
+
+    // Hash bằng SHA-256 → lấy 8 ký tự đầu (hex uppercase)
+    const encoder = new TextEncoder();
+    const data = encoder.encode(components);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hexFull = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    return hexFull.substring(0, 8).toUpperCase();
 }
 
 // ======================== API ========================
@@ -49,14 +84,20 @@ export async function checkLicenseExists(): Promise<LicenseInfo | null> {
 }
 
 /**
- * Xác thực license key bằng Rust backend (HMAC-SHA256)
+ * Xác thực license key bằng Rust backend (HMAC-SHA256 + Device Fingerprint)
  * Gọi Tauri command → Rust kiểm tra → trả về kết quả
+ *
+ * Đã tích hợp: tự tính device fingerprint và gửi kèm cho Rust so sánh
  */
 export async function validateLicenseKey(licenseKey: string): Promise<LicenseResult> {
     try {
-        // Gọi Rust command validate_license_key
+        // Tính device fingerprint của máy hiện tại
+        const deviceFp = await getDeviceFingerprint();
+
+        // Gọi Rust command validate_license_key (truyền cả key + fingerprint)
         const result = await invoke<LicenseResult>("validate_license_key", {
             licenseKey: licenseKey.trim(),
+            deviceFingerprint: deviceFp,
         });
         return result;
     } catch (error) {

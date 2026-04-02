@@ -1,77 +1,122 @@
 // license.rs
 // ============================================================
 // Module xác thực License Key nội bộ bằng HMAC-SHA256
-// Không cần server, không cần internet
-// Bạn (admin) tạo key bằng script Python, user nhập vào app
+// Có ràng buộc Device Fingerprint — mỗi key chỉ dùng được trên 1 máy
 // ============================================================
 //
+// Key Format: BLAUTO-{email_hex_chunks}-{device_fp_8}-{hmac_16}
+//
 // Flow:
-// 1. Admin tạo key bằng script: email → HMAC-SHA256(secret, email) → key
-// 2. User nhập key vào app
-// 3. App kiểm tra: HMAC-SHA256(SECRET_KEY nhúng, email) == key?
-// 4. Nếu đúng → lưu vào tauri-plugin-store → lần sau không hỏi lại
+//   1. User mở app → thấy "Mã thiết bị: XXXXXXXX"
+//   2. User gửi mã máy + email cho Admin
+//   3. Admin chạy script tạo key (node generate_license.js)
+//   4. Key nhúng sẵn fingerprint bên trong
+//   5. App kiểm tra: fingerprint trong key == fingerprint máy hiện tại?
+//      + HMAC signature hợp lệ?
+//   6. Nếu cả 2 OK → lưu vào Tauri Store → lần sau không hỏi lại
 //
 
 use hmac::{Hmac, Mac};
-use sha2::Sha256;
+use sha2::{Sha256, Digest};
 
 // ======================== SECRET KEY ========================
-// ⚠️ QUAN TRỌNG: Đây là "con dấu bí mật" của bạn
-// Chỉ bạn biết key này. Nhúng trong Rust binary → không ai đọc được.
-// Khi cần đổi: sửa giá trị này + build lại app + tạo key mới cho team
-const SECRET_KEY: &[u8] = b"AutoSubs_Media_2026_Internal_Team_Secret_Key_DO_NOT_SHARE";
+// ⚠️ QUAN TRỌNG: Phải khớp với SECRET_KEY trong script tạo key (Node.js)
+// Key cũ: "AutoSubs_Media_2026_..."
+// Key mới (đồng bộ với hệ thống BLAUTO):
+const SECRET_KEY: &[u8] = b"BlackAuto_2026_Internal_Team_Secret_DO_NOT_SHARE";
 
-// Prefix cho license key (để dễ nhận diện)
-const KEY_PREFIX: &str = "DAHO";
+// Prefix cho license key
+const KEY_PREFIX: &str = "BLAUTO";
 
 // Alias cho HMAC-SHA256
 type HmacSha256 = Hmac<Sha256>;
 
-// ======================== KIỂM TRA KEY ========================
-/// Xác thực license key có hợp lệ không
-/// Input: license_key = "ASUBS-A1B2C3D4E5F6..." (user nhập)
-/// Output: (valid, message)
+// ======================== DEVICE FINGERPRINT ========================
+/// Tính fingerprint từ thông số hệ thống (phải khớp với frontend JS)
+/// Components: timezone|language|cpu_cores|screen_WxH|color_depth|platform
+/// → SHA-256 → lấy 8 ký tự hex đầu (UPPERCASE)
+///
+/// LƯU Ý: Hàm này chạy trên Rust/Tauri backend, nên dùng Tauri command
+/// để frontend gọi lấy fingerprint hiển thị cho user.
+/// Nhưng việc KIỂM TRA fingerprint khi validate key thì dùng fingerprint
+/// mà FRONTEND gửi lên (vì frontend mới có access đến navigator/screen).
 #[tauri::command]
-pub fn validate_license_key(license_key: String) -> Result<LicenseResult, String> {
-    let license_key = license_key.trim().to_uppercase();
+pub fn get_device_fingerprint() -> String {
+    // Rust backend không có access trực tiếp đến browser APIs
+    // (navigator, screen, Intl...) nên mã máy được tính ở frontend JS
+    // và truyền vào khi validate. Hàm này chỉ là placeholder.
+    // Frontend sẽ tự tính fingerprint bằng Web Crypto API.
+    "USE_FRONTEND".to_string()
+}
 
-    // Kiểm tra format: phải bắt đầu bằng DAHO-
-    if !license_key.starts_with(&format!("{}-", KEY_PREFIX)) {
+// ======================== KIỂM TRA KEY ========================
+/// Xác thực license key có hợp lệ + đúng thiết bị không
+///
+/// Input:
+///   - license_key: "BLAUTO-6D696E68-40676D61-...-0E3B638D-3197DC0B576D7975"
+///   - device_fingerprint: "0E3B638D" (frontend tính và gửi lên)
+///
+/// Kiểm tra:
+///   1. Format key đúng (bắt đầu bằng BLAUTO-)
+///   2. Fingerprint trong key == fingerprint máy hiện tại
+///   3. HMAC signature hợp lệ
+#[tauri::command]
+pub fn validate_license_key(license_key: String, device_fingerprint: String) -> Result<LicenseResult, String> {
+    let license_key = license_key.trim().to_uppercase();
+    let device_fp = device_fingerprint.trim().to_uppercase();
+
+    // Bước 0: Kiểm tra format prefix
+    let prefix_with_dash = format!("{}-", KEY_PREFIX);
+    if !license_key.starts_with(&prefix_with_dash) {
         return Ok(LicenseResult {
             valid: false,
-            message: "Key không đúng định dạng. Key phải bắt đầu bằng DAHO-".to_string(),
+            message: format!("Key không đúng định dạng. Key phải bắt đầu bằng {}-", KEY_PREFIX),
         });
     }
 
-    // Tách phần sau prefix: "DAHO-xxxx-yyyy" → "xxxx-yyyy"
+    // Tách phần sau prefix: "BLAUTO-xxxx-yyyy-zzzz" → "xxxx-yyyy-zzzz"
     let key_data = &license_key[KEY_PREFIX.len() + 1..];
 
-    // Tách email hash và signature
-    // Format: DAHO-{email_hex_8chars}-{signature_hex_16chars}
+    // Tách thành các phần bằng dấu '-'
     let parts: Vec<&str> = key_data.split('-').collect();
-    if parts.len() < 2 {
+    // Cần ít nhất 3 phần: [email_hex...], [device_fp_8], [hmac_16]
+    if parts.len() < 3 {
         return Ok(LicenseResult {
             valid: false,
-            message: "Key không đúng định dạng.".to_string(),
+            message: "Key không đúng định dạng (thiếu thành phần).".to_string(),
         });
     }
 
-    // Ghép lại thành payload (bỏ prefix DAHO-)
-    let full_payload = key_data.to_string();
-
-    // Tách signature (phần cuối cùng, 16 ký tự hex)
+    // Phần cuối = HMAC signature (16 ký tự hex)
     let signature = parts.last().unwrap_or(&"");
-    // Phần data = tất cả trừ phần signature cuối
+
+    // Phần áp cuối = Device Fingerprint (8 ký tự hex)
+    let fp_in_key = parts[parts.len() - 2];
+
+    // Bước 1: Kiểm tra device fingerprint
+    // Fingerprint trong key phải khớp với fingerprint máy hiện tại
+    if fp_in_key.to_uppercase() != device_fp {
+        return Ok(LicenseResult {
+            valid: false,
+            message: format!(
+                "❌ Key không dành cho thiết bị này.\nMã thiết bị của bạn: {}\nKey này được cấp cho thiết bị: {}",
+                device_fp, fp_in_key
+            ),
+        });
+    }
+
+    // Bước 2: Kiểm tra HMAC signature
+    // Data = tất cả các phần TRỪ phần HMAC cuối (giống lúc tạo key)
     let data_parts: Vec<&str> = parts[..parts.len() - 1].to_vec();
     let data = data_parts.join("-");
 
-    // Tạo HMAC từ data
+    // Tính HMAC-SHA256
     let mut mac = HmacSha256::new_from_slice(SECRET_KEY)
         .map_err(|e| format!("HMAC error: {}", e))?;
     mac.update(data.as_bytes());
     let result = mac.finalize().into_bytes();
 
-    // Lấy 8 bytes đầu của HMAC → 16 ký tự hex
+    // Lấy 8 bytes đầu → 16 ký tự hex (khớp với script Node.js)
     let expected_sig = hex::encode(&result[..8]).to_uppercase();
 
     if expected_sig == signature.to_uppercase() {

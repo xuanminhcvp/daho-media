@@ -6,7 +6,7 @@
 -- Nhiệm vụ duy nhất: Lấy resolve object → gọi init.lua
 -- ============================================================
 
-local DEV_MODE = true
+local DEV_MODE = false
 
 -- ===== FILE LOGGER =====
 local LOG_PATH = os.getenv("HOME") .. "/Desktop/autosubs_resolve.log"
@@ -86,7 +86,7 @@ local function main()
         app_executable = install_path .. "\\AutoSubs.exe"
         resources_folder = install_path .. "\\resources"
     elseif ffi.os == "OSX" then
-        app_executable = "/Applications/AutoSubs_Media.app"
+        app_executable = "/Applications/DahoMedia.app"
         resources_folder = app_executable .. "/Contents/Resources/resources"
     else
         app_executable = "/usr/bin/autosubs"

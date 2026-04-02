@@ -46,7 +46,8 @@
     "targets": [
       "nsis",
       "app",
-      "deb"
+      "deb",
+      "dmg"
     ],
     "icon": [
       "icons/32x32.png",
@@ -112,7 +113,7 @@
         ]
       }
     },
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": false
   },
   "plugins": {
     "updater": {
