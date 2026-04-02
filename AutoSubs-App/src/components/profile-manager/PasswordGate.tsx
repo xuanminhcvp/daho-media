@@ -1,11 +1,10 @@
 // PasswordGate.tsx
-// Màn hình nhập mã bảo mật (License Key) — bảo vệ cửa vào Profile Manager
-// Chỉ chấp nhận License Key được tạo cho danh tính "ADMIN"
+// Màn hình nhập mật khẩu quản trị viên bảo vệ cửa vào Profile Manager
+
 
 import * as React from "react"
 import { Lock, Eye, EyeOff, ShieldCheck, AlertCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { validateLicenseKey, checkLicenseExists } from "@/services/license-service"
 
 interface PasswordGateProps {
     onSuccess: (password: string) => void  // Trả password về để dùng giải mã AES
@@ -20,15 +19,10 @@ export function PasswordGate({ onSuccess, onCancel }: PasswordGateProps) {
     const [loading, setLoading] = React.useState(false)
     const inputRef = React.useRef<HTMLInputElement>(null)
 
-    // Auto-check stored license
+    // Focus input khi mở
     React.useEffect(() => {
         setTimeout(() => inputRef.current?.focus(), 100)
-        checkLicenseExists().then(info => {
-            if (info && info.key) {
-                onSuccess(info.key); // Chấp nhận mọi License hợp lệ trong máy
-            }
-        }).catch(err => console.error("[PasswordGate] Error checking auto-license", err));
-    }, [onSuccess])
+    }, [])
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
@@ -36,18 +30,13 @@ export function PasswordGate({ onSuccess, onCancel }: PasswordGateProps) {
         setLoading(true)
 
         try {
-            const key = password.trim().toUpperCase()
+            const key = password.trim()
 
-            // 1. Kiểm tra bằng Rust backend
-            const res = await validateLicenseKey(key)
-            if (!res.valid) {
-                setError("Mã bảo mật không hợp lệ!")
+            if (key !== "Daho@2026") {
+                setError("Mật khẩu không đúng!")
                 return
             }
 
-            // Không check quyền theo identifier nữa
-
-            // Không cần check ID ADMIN nữa, vì user binh thuong cung vao duoc
             onSuccess(key)
         } catch (err) {
             setError("Lỗi hệ thống: " + String(err))
@@ -65,7 +54,7 @@ export function PasswordGate({ onSuccess, onCancel }: PasswordGateProps) {
                 <div className="text-center">
                     <p className="text-sm font-bold text-foreground">Xác nhận Quản Trị Viên</p>
                     <p className="text-[10px] text-muted-foreground mt-0.5">
-                        Nhập License Key của ADMIN để truy cập
+                        Nhập Mật khẩu quản trị để truy cập
                     </p>
                 </div>
             </div>
@@ -75,13 +64,13 @@ export function PasswordGate({ onSuccess, onCancel }: PasswordGateProps) {
                     <input
                         ref={inputRef}
                         type={showPw ? "text" : "password"}
-                        placeholder="DAHO-..."
+                        placeholder="Mật khẩu..."
                         value={password}
                         onChange={e => { setPassword(e.target.value); setError("") }}
                         className="
-                            w-full h-9 pl-3 pr-9 text-sm rounded-lg font-mono
+                            w-full h-9 pl-3 pr-9 text-sm rounded-lg
                             bg-muted/50 border border-border/60 text-foreground
-                            placeholder:text-muted-foreground/50 uppercase
+                            placeholder:text-muted-foreground/50
                             focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary/50
                             transition-all
                         "
