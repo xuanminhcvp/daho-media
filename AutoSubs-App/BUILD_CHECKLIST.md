@@ -245,5 +245,6 @@ rm -f ~/Library/Application\ Support/Blackmagic\ Design/DaVinci\ Resolve/Fusion/
 
 | Version | Ngày | Thay đổi |
 |---------|------|----------|
+| 3.0.12 | 2026-04-02 | Tắt mặc định Nhạc Nền + SFX trong Auto Media |
 | 3.0.11 | 2026-04-02 | Fix ffmpeg path mismatch (DahoMedia.app thay vì AutoSubs_Media.app), đổi theme mặc định sang light, cập nhật checklist |
 | 3.0.10 | 2026-04-02 | Thống nhất License BLAUTO + device fingerprint, ẩn BugReporter production, sửa 2 cổng license, tách PasswordGate dùng mật khẩu admin riêng |

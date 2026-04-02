@@ -72,8 +72,8 @@ export const DEFAULT_AUTO_MEDIA_CONFIG: AutoMediaConfig = {
     enableMasterSrt: false,
     enableImage: true,
     enableSubtitle: false, // ★ Mặc định TẮT — Fusion Text+ ngốn RAM DaVinci
-    enableMusic: true,
-    enableSfx: true,
+    enableMusic: false,
+    enableSfx: false,
     enableFootage: true,
     enableEffects: true,
     effectType: 'kenburns',

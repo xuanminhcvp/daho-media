@@ -63,11 +63,23 @@ export function FootageTab() {
             }
 
             setFootageFolder(folderToLoad)
-            // Tự load metadata đã có
-            const { loadFootageMetadata } = await import("@/services/footage-library-service")
-            const items = await loadFootageMetadata(folderToLoad)
-            setFootageItems(items)
-            if (items.length > 0) setScanMessage(`📂 ${items.length} footage đã có metadata`)
+            // Tự load metadata và gộp với danh sách file thực tế (FIX LỖI SAI ĐƯỜNG DẪN KHI SHARE JOSN)
+            const { loadFootageMetadata, scanFootageFolder } = await import("@/services/footage-library-service")
+            const existingItems = await loadFootageMetadata(folderToLoad)
+            const scannedItems = await scanFootageFolder(folderToLoad)
+
+            const existingMap = new Map(existingItems.map(i => [i.fileName, i]));
+            const allItems = scannedItems.map(scanned => {
+                const existing = existingMap.get(scanned.fileName);
+                if (existing) {
+                    return { ...existing, filePath: scanned.filePath }; // Cập nhật filePath mới nhất
+                }
+                return scanned;
+            });
+
+            setFootageItems(allItems)
+            const countScanned = allItems.filter(i => !!i.aiDescription && i.aiMood !== "Error").length;
+            if (countScanned > 0) setScanMessage(`📂 ${countScanned} footage đã scan AI`)
         })()
     }, [])
 
@@ -80,11 +92,23 @@ export function FootageTab() {
         setFootageFolder(folderPath)
         saveFolderPath("footageFolder", folderPath)
 
-        // Load metadata nếu đã có
-        const { loadFootageMetadata } = await import("@/services/footage-library-service")
-        const items = await loadFootageMetadata(folderPath)
-        setFootageItems(items)
-        setScanMessage(items.length > 0 ? `📂 ${items.length} footage đã có metadata` : "")
+        // Load metadata và merge file thực tế
+        const { loadFootageMetadata, scanFootageFolder } = await import("@/services/footage-library-service")
+        const existingItems = await loadFootageMetadata(folderPath)
+        const scannedItems = await scanFootageFolder(folderPath)
+
+        const existingMap = new Map(existingItems.map(i => [i.fileName, i]));
+        const allItems = scannedItems.map(scanned => {
+            const existing = existingMap.get(scanned.fileName);
+            if (existing) {
+                return { ...existing, filePath: scanned.filePath }; // Cập nhật filePath mới nhất
+            }
+            return scanned;
+        });
+
+        setFootageItems(allItems)
+        const countScanned = allItems.filter(i => !!i.aiDescription && i.aiMood !== "Error").length;
+        setScanMessage(countScanned > 0 ? `📂 ${countScanned} footage đã scan AI` : "")
     }, [])
 
     // ======================== SCAN AI ========================

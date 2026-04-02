@@ -371,17 +371,22 @@ export async function scanAndAnalyzeFootageFolder(
 
     // Bước 2: Load metadata đã có
     const existingItems = await loadFootageMetadata(folderPath);
-    const existingMap = new Map(existingItems.map(i => [i.filePath, i]));
+    // (FIX): Dùng fileName làm key thay vì filePath để tránh mất scan khi copy folder sang máy mới
+    const existingMap = new Map(existingItems.map(i => [i.fileName, i]));
 
     // Bước 3: Merge — giữ metadata cũ, lọc file mới hoặc file bị lỗi cần re-scan
     let allItems: FootageItem[] = scannedItems.map(scanned => {
-        const existing = existingMap.get(scanned.filePath);
+        const existing = existingMap.get(scanned.fileName);
         // Giữ metadata cũ NẾU: đã scan thành công (có description, không phải Error, duration > 0)
         if (existing && existing.aiDescription
             && existing.aiMood !== "Error"
             && existing.durationSec > 0
             && existing.fileHash === scanned.fileHash) {
-            return existing;
+            // Sửa filePath lại theo máy tính hiện tại!
+            return {
+                ...existing,
+                filePath: scanned.filePath
+            };
         }
         return scanned; // File mới HOẶC file lỗi → cần scan lại
     });
