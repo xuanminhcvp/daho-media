@@ -24,6 +24,23 @@ otool -L src-tauri/binaries/ffmpeg-aarch64-apple-darwin | grep homebrew
 # Kết quả phải TRỐNG (không còn /opt/homebrew)
 ```
 
+### 1.5. FFmpeg Path trong TypeScript — PHẢI khớp tên app
+
+**Lỗi thường gặp:** `ffmpeg: command not found` trên máy user vì `ffmpeg-path.ts` tham chiếu
+tên app cũ (`AutoSubs_Media.app`) thay vì tên app hiện tại (`DahoMedia.app`).
+
+**Quy tắc:**
+- File `src/utils/ffmpeg-path.ts` → `FFMPEG_CANDIDATES` và `FFPROBE_CANDIDATES`
+- Đường dẫn bundled phải trỏ đúng tên app: `/Applications/DahoMedia.app/Contents/MacOS/...`
+- **Mỗi lần đổi tên app**, file này phải được cập nhật theo
+
+**Kiểm tra:**
+```bash
+grep -n "Applications/" src/utils/ffmpeg-path.ts
+# Phải thấy DahoMedia.app (tên app hiện tại)
+# Nếu thấy tên app cũ (AutoSubs_Media.app) mà KHÔNG có DahoMedia.app → sai!
+```
+
 ### 2. FFprobe — Phải bundle cùng app
 
 **Quy tắc:**
@@ -66,6 +83,19 @@ grep -n "DEV_MODE\|/Users/" src-tauri/resources/AutoSubs.lua
 # Tìm BugReporter trong output JS → phải không có hoặc bị tree-shake
 grep -r "BugReporter" dist/assets/ | wc -l
 # Kết quả nên = 0
+```
+
+### 4.5. Theme mặc định — Phải là LIGHT (sáng)
+
+**Quy tắc:**
+- File `src/App.tsx` → `<ThemeProvider defaultTheme="light" ...>`
+- User lần đầu mở app sẽ thấy giao diện sáng (chuyên nghiệp hơn)
+- User tự chuyển sang dark nếu muốn (lưu vào localStorage)
+
+**Kiểm tra:**
+```bash
+grep 'defaultTheme' src/App.tsx
+# Phải thấy: defaultTheme="light"
 ```
 
 ### 5. License System — Thống nhất BLAUTO
@@ -198,6 +228,8 @@ rm -f ~/Library/Application\ Support/Blackmagic\ Design/DaVinci\ Resolve/Fusion/
 | Lỗi | Nguyên nhân | Cách tránh |
 |-----|------------|------------|
 | `Library not loaded: /opt/homebrew/...` | ffmpeg chưa patch dylib | Chạy `patch_ffmpeg_macos.sh` |
+| `ffmpeg: command not found` trên máy user | `ffmpeg-path.ts` trỏ tên app cũ | Kiểm tra mục 1.5 — đường dẫn bundled phải khớp tên app hiện tại |
+| Footage scan hiện "Chưa scan" dù đã scan | ffmpeg path sai → duration=0, extractFrames fail → metadata Error | Fix ffmpeg path (mục 1.5) xong scan lại |
 | `__LINKEDIT segment` error | Strip signature trước khi patch | **KHÔNG** strip signature trước |
 | BugReporter hiện trên màn hình user | Quên wrap `import.meta.env.DEV` | Kiểm tra `App.tsx` dòng BugReporterPanel |
 | User phải nhập license 2 lần | Có 2 LicenseGate (main.tsx + App.tsx) | Xóa LicenseGate cũ trong `main.tsx` |
@@ -205,6 +237,7 @@ rm -f ~/Library/Application\ Support/Blackmagic\ Design/DaVinci\ Resolve/Fusion/
 | `DEV_MODE = true` trong Lua | Quên đổi sang production | Grep kiểm tra trước build |
 | Đường dẫn cứng `/Users/may1/...` | Hardcode path máy dev | Dùng `os.getenv("HOME")` hoặc dynamic path |
 | Profile Manager hỏi license lần 2 | PasswordGate dùng validateLicenseKey cũ | Dùng mật khẩu cứng `Daho@2026` |
+| App mặc định dark mode | `defaultTheme="system"` hoặc `"dark"` | Đổi thành `defaultTheme="light"` trong App.tsx |
 
 ---
 
@@ -212,4 +245,5 @@ rm -f ~/Library/Application\ Support/Blackmagic\ Design/DaVinci\ Resolve/Fusion/
 
 | Version | Ngày | Thay đổi |
 |---------|------|----------|
+| 3.0.11 | 2026-04-02 | Fix ffmpeg path mismatch (DahoMedia.app thay vì AutoSubs_Media.app), đổi theme mặc định sang light, cập nhật checklist |
 | 3.0.10 | 2026-04-02 | Thống nhất License BLAUTO + device fingerprint, ẩn BugReporter production, sửa 2 cổng license, tách PasswordGate dùng mật khẩu admin riêng |

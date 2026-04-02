@@ -84,7 +84,7 @@ function AppContent() {
 
 function App() {
   return (
-    <ThemeProvider defaultTheme="system" storageKey="vite-ui-theme">
+    <ThemeProvider defaultTheme="light" storageKey="vite-ui-theme">
       {/* LicenseGate: chặn app cho đến khi nhập license key hợp lệ */}
       <LicenseGate>
         <AppContent />
