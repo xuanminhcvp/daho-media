@@ -133,6 +133,18 @@ export interface AutoMediaDependencies {
     capcutTargetDraftPath?: string
     /** Effects settings từ CapCutEffectsSettingsPanel */
     capCutEffectsSettings?: any
+    /** Branding theo kênh cho CapCut (logo + vị trí) */
+    capcutChannelBranding?: {
+        channelId: string
+        channelName: string
+        logoPath: string
+        position: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+        /** Toạ độ transform custom theo hệ normalized của CapCut */
+        x?: number
+        y?: number
+        /** Scale custom của logo (1.0 = 100%) */
+        scale?: number
+    }
 }
 
 // ======================== ABORT CONTROLLER ========================
@@ -533,6 +545,37 @@ export async function runAutoMedia(
         const segments = transcript.originalSegments || transcript.segments || []
         const totalDurationRaw = segments.length > 0 ? segments[segments.length - 1].end : 300
         const avgDurationPerSentence = totalDurationRaw / Math.max(1, sentences.length)
+        // Word timing thật (ưu tiên) để Footage dùng cụm [timestamp] word theo yêu cầu.
+        // Nguồn này hỗ trợ cả transcript từ Whisper và transcript build từ CapCut draft subtitle.
+        const footageWordTimingTokens: Array<{ timestamp: number; word: string }> = []
+        for (const seg of segments) {
+            const segWords = Array.isArray(seg.words) ? seg.words : []
+            if (segWords.length > 0) {
+                for (const w of segWords) {
+                    const token = String(w.word ?? w.w ?? '').trim()
+                    const ts = Number(w.start ?? w.t ?? seg.start ?? 0)
+                    if (!token || !Number.isFinite(ts)) continue
+                    footageWordTimingTokens.push({ timestamp: ts, word: token })
+                }
+                continue
+            }
+
+            // Fallback khi segment không có words[]: tách text theo từ và nội suy tuyến tính.
+            const rawText = String(seg.text || '').trim()
+            if (!rawText) continue
+            const tokens = rawText.split(/\s+/).map(t => t.trim()).filter(Boolean)
+            if (!tokens.length) continue
+            const s = Number(seg.start ?? 0)
+            const e = Number(seg.end ?? s)
+            const dur = Math.max(0.01, e - s)
+            const step = dur / tokens.length
+            for (let i = 0; i < tokens.length; i++) {
+                footageWordTimingTokens.push({
+                    timestamp: s + (i * step),
+                    word: tokens[i],
+                })
+            }
+        }
 
         const srtRawSentences: ScriptSentence[] = sentences.map((s, i) => ({
             num: s.num,
@@ -575,7 +618,12 @@ export async function runAutoMedia(
         if (config.enableFootage && deps.footageItems.filter(i => i.aiDescription).length >= MIN_SCANNED_FILES) {
             activeQueueTasks.push(runStepWithDebugPause('footage', async () => {
                 onStepUpdate('footage', 'running', '🎬 Footage: chạy song song dùng SRT thô...');
-                timelineFootageClips = await runFootagePipeline(deps, srtRawSentences, onStepUpdate);
+                timelineFootageClips = await runFootagePipeline(
+                    deps,
+                    srtRawSentences,
+                    footageWordTimingTokens,
+                    onStepUpdate
+                );
             }));
         } else {
             onStepUpdate('footage', 'skipped', 'Bỏ qua — thiếu folder footage');
@@ -652,6 +700,7 @@ export async function runAutoMedia(
                 projectName: deps.projectName,
                 targetDraftPath: deps.capcutTargetDraftPath,
                 effectsSettings: deps.capCutEffectsSettings,
+                channelBranding: deps.capcutChannelBranding,
             })
         } else {
             console.warn(`[AutoMedia] ⚠️ Engine "${targetEngine}" chưa có adapter — bỏ qua export`)
@@ -1449,6 +1498,7 @@ async function runSfxPipeline(
 async function runFootagePipeline(
     deps: AutoMediaDependencies,
     matchedSentences: ScriptSentence[],
+    wordTimingTokens: Array<{ timestamp: number; word: string }>,
     onStepUpdate: OnStepUpdate
 ): Promise<TimelineFootageClip[]> {
     onStepUpdate('footage', 'running', '🎬 Chuẩn bị dữ liệu footage + kiểm tra API key...')
@@ -1473,7 +1523,8 @@ async function runFootagePipeline(
             sentences,
             deps.footageItems,
             "", // apiKey đã được deprecate
-            totalDuration
+            totalDuration,
+            wordTimingTokens
         )
 
         checkAbort()

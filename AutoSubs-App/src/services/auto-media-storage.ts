@@ -22,7 +22,7 @@ import { readTextFile, writeTextFile, exists, mkdir } from '@tauri-apps/plugin-f
 const AUTO_MEDIA_ROOT = 'Auto_media'
 
 /** Tên 4 sub-folder media cố định */
-const MEDIA_FOLDERS = ['nhac_nen', 'sfx', 'footage', 'ref_images'] as const
+const MEDIA_FOLDERS = ['nhac_nen', 'sfx', 'footage', 'ref_images', 'channel_logos'] as const
 
 /** Tên folder data */
 const DATA_FOLDER = 'data'
@@ -106,6 +106,15 @@ export async function getFootageFolderPath(): Promise<string> {
 export async function getRefImagesFolderPath(): Promise<string> {
     const root = await getAutoMediaRoot()
     return join(root, 'ref_images')
+}
+
+/**
+ * Lấy đường dẫn folder logo kênh:
+ * ~/Desktop/Auto_media/channel_logos/
+ */
+export async function getChannelLogosFolderPath(): Promise<string> {
+    const root = await getAutoMediaRoot()
+    return join(root, 'channel_logos')
 }
 
 // ======================== KHỞI TẠO FOLDER ========================

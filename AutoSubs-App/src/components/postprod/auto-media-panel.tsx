@@ -7,7 +7,7 @@ import {
     Rocket, Square, Loader2,
     Image, Subtitles, Music, Zap, Film, Sparkles,
     Mic, Brain, CheckCircle2, XCircle, AlertTriangle,
-    SkipForward, Clock, FolderOpen, Info, Play
+    SkipForward, Clock, FolderOpen, Info, Play, FileAudio, RefreshCw, Copy
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
@@ -44,11 +44,97 @@ import {
     checkPrerequisites,
 } from "@/services/auto-media-service"
 import type { AutoMediaDependencies } from "@/services/auto-media-service"
+import {
+    logTranscribePhaseTimingToDebug,
+    startTranscribePhaseDebugLog,
+    updateTranscribePhasePendingProgress,
+} from "@/services/transcribe-phase-debug-service"
+import {
+    buildTranscriptFromCapCutDraftSubtitle,
+    listCapCutDraftsFast,
+    type CapCutDraftSubtitleOption,
+} from "@/services/capcut-subtitle-source-service"
+import { addDebugLog, generateLogId } from "@/services/debug-logger"
 
 import { getActiveProfileId } from "@/config/activeProfile"
 
 import { open } from "@tauri-apps/plugin-dialog"
 import { readDir } from "@tauri-apps/plugin-fs"
+
+import { CapCutEffectsSettingsPanel } from "./capcut-effects-settings"
+
+type ChannelLogoPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+
+interface CapCutChannelProfile {
+    id: string
+    name: string
+    logoPath: string
+    position: ChannelLogoPosition
+    /** Offset ngang custom theo hệ transform CapCut (normalized). */
+    x: number
+    /** Offset dọc custom theo hệ transform CapCut (normalized). */
+    y: number
+    /** Scale logo (1.0 = 100%). */
+    scale: number
+}
+
+function getDefaultLogoTransform(position: ChannelLogoPosition): { x: number; y: number } {
+    // Y dương trong CapCut đi lên phía trên.
+    // Default theo yêu cầu user: X=0.87, Y=0.75 (top-right) và đối xứng cho các góc còn lại.
+    const presetMap: Record<ChannelLogoPosition, { x: number; y: number }> = {
+        'top-left': { x: -0.87, y: 0.75 },
+        'top-right': { x: 0.87, y: 0.75 },
+        'bottom-left': { x: -0.87, y: -0.75 },
+        'bottom-right': { x: 0.87, y: -0.75 },
+    }
+    return presetMap[position]
+}
+
+function getDefaultLogoScale(): number {
+    // 17% theo yêu cầu user.
+    return 0.17
+}
+
+/**
+ * Copy logo kênh vào thư mục nội bộ Auto_media để tránh lỗi CapCut Unsupported media
+ * do quyền truy cập file ở Desktop/Downloads không ổn định.
+ */
+async function ensureCapCutSafeLogoPath(rawLogoPath: string, channelId: string): Promise<string> {
+    if (!rawLogoPath) return rawLogoPath
+    // Nếu đã nằm trong thư mục an toàn thì dùng luôn.
+    if (rawLogoPath.includes('/Auto_media/channel_logos/')) {
+        return rawLogoPath
+    }
+
+    const { getChannelLogosFolderPath } = await import('@/services/auto-media-storage')
+    const { join } = await import('@tauri-apps/api/path')
+    const { exists, mkdir, copyFile, remove } = await import('@tauri-apps/plugin-fs')
+
+    const logosDir = await getChannelLogosFolderPath()
+    if (!(await exists(logosDir))) {
+        await mkdir(logosDir, { recursive: true })
+    }
+
+    const extRaw = (rawLogoPath.split('.').pop() || 'png').toLowerCase()
+    const ext = ['png', 'jpg', 'jpeg', 'webp'].includes(extRaw) ? extRaw : 'png'
+    const destPath = await join(logosDir, `${channelId}_${Date.now()}.${ext}`)
+    // Dọn file logo cũ của channel để thư mục gọn, chỉ giữ bản mới nhất.
+    // Không xóa ảnh user ở nơi khác, chỉ xóa file đã copy trước đó trong channel_logos.
+    try {
+        const { readDir } = await import('@tauri-apps/plugin-fs')
+        const entries = await readDir(logosDir)
+        for (const entry of entries) {
+            const name = (entry.name || '').toLowerCase()
+            if (!name.startsWith(`${channelId.toLowerCase()}_`)) continue
+            const oldPath = await join(logosDir, entry.name || '')
+            await remove(oldPath)
+        }
+    } catch (cleanupErr) {
+        console.warn('[AutoMedia] Không dọn được logo cũ của channel:', cleanupErr)
+    }
+    await copyFile(rawLogoPath, destPath)
+    return destPath
+}
 
 // ======================== STEP CONFIG — icon, label, mô tả cho từng bước ========================
 
@@ -194,6 +280,320 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
     const [musicItems, setMusicItems] = React.useState<any[]>(project.musicLibrary.musicItems || [])
     const [sfxFolder, setSfxFolder] = React.useState(project.sfxLibrary.sfxFolder || '')
     const [sfxItems, setSfxItems] = React.useState<any[]>(project.sfxLibrary.sfxItems || [])
+
+    // File VO (Voice Over) — chỉ dùng cho CapCut mode (không có DaVinci export)
+    const [voFile, setVoFile] = React.useState('')
+    // Settings effect CapCut hiện tại (nhận từ CapCutEffectsSettingsPanel)
+    const [capCutEffectsSettings, setCapCutEffectsSettings] = React.useState<any>({})
+    // Danh sách kênh CapCut (mỗi kênh: tên + logo + vị trí).
+    const [capcutChannelProfiles, setCapcutChannelProfiles] = React.useState<CapCutChannelProfile[]>([])
+    // Kênh đang chọn cho lần export hiện tại.
+    const [selectedCapcutChannelId, setSelectedCapcutChannelId] = React.useState('')
+    // Chỉ save localStorage sau khi đã load xong dữ liệu cũ.
+    const [isCapcutChannelHydrated, setIsCapcutChannelHydrated] = React.useState(false)
+    // UI tạo kênh mới (thay cho window.prompt để chạy ổn định trong Tauri WebView).
+    const [isCreatingCapcutChannel, setIsCreatingCapcutChannel] = React.useState(false)
+    const [newCapcutChannelName, setNewCapcutChannelName] = React.useState('')
+    // Đường dẫn draft CapCut mà user muốn tận dụng subtitle có sẵn (word timing).
+    const [capcutDraftPath, setCapcutDraftPath] = React.useState('')
+    // Toggle: bật thì ưu tiên lấy timing từ subtitle CapCut, tắt thì luôn chạy Whisper như cũ.
+    const [useCapcutSubtitleTiming, setUseCapcutSubtitleTiming] = React.useState(true)
+    // Danh sách draft CapCut để user chọn nhanh trực tiếp trên UI.
+    const [capcutDraftOptions, setCapcutDraftOptions] = React.useState<CapCutDraftSubtitleOption[]>([])
+    const [isLoadingCapcutDrafts, setIsLoadingCapcutDrafts] = React.useState(false)
+    const [capcutDraftLoadError, setCapcutDraftLoadError] = React.useState('')
+    // Preview word timing để user kiểm tra trực quan trước khi chạy pipeline.
+    const [capcutWordTimingPreview, setCapcutWordTimingPreview] = React.useState('')
+    const [capcutWordTimingStats, setCapcutWordTimingStats] = React.useState<{ sentences: number; words: number } | null>(null)
+    const [isLoadingWordTimingPreview, setIsLoadingWordTimingPreview] = React.useState(false)
+    const [wordTimingPreviewError, setWordTimingPreviewError] = React.useState('')
+
+    // Chọn file VO
+    const handleSelectVoFile = async () => {
+        const selected = await open({
+            multiple: false,
+            filters: [{
+                name: 'Audio',
+                extensions: ['wav', 'mp3', 'aac', 'flac', 'ogg', 'm4a'],
+            }],
+        })
+        if (!selected) return
+        setVoFile(selected as string)
+        console.log('[AutoMedia] VO file:', selected)
+    }
+
+    // ======================== CHANNEL PROFILE (CAPCUT) ========================
+    React.useEffect(() => {
+        setIsCapcutChannelHydrated(false)
+        const profileId = getActiveProfileId()
+        const channelsKey = `capcut-channel-profiles-${profileId}`
+        const selectedKey = `capcut-selected-channel-${profileId}`
+        const legacyChannelsKey = 'capcut-channel-profiles'
+        const legacySelectedKey = 'capcut-selected-channel'
+
+        try {
+            // Fallback theo thứ tự:
+            // 1) key profile hiện tại
+            // 2) key legacy (chưa theo profile)
+            // 3) key profile khác (nếu user đổi profile rồi quay lại)
+            const storageKeysToTry = [
+                channelsKey,
+                legacyChannelsKey,
+                ...Object.keys(localStorage).filter((k) =>
+                    k.startsWith('capcut-channel-profiles-') && k !== channelsKey
+                ),
+            ]
+
+            let loadedProfiles: CapCutChannelProfile[] = []
+            for (const key of storageKeysToTry) {
+                const raw = localStorage.getItem(key)
+                if (!raw) continue
+                const parsed = JSON.parse(raw) as CapCutChannelProfile[]
+                if (!Array.isArray(parsed) || parsed.length === 0) continue
+
+                // Backward-compatible migrate cho dữ liệu cũ chưa có x/y/scale.
+                const migrated = parsed.map((item: any) => {
+                    const pos: ChannelLogoPosition = item?.position || 'top-right'
+                    const defaults = getDefaultLogoTransform(pos)
+                    return {
+                        id: String(item?.id || ''),
+                        name: String(item?.name || ''),
+                        logoPath: String(item?.logoPath || ''),
+                        position: pos,
+                        x: typeof item?.x === 'number' ? item.x : defaults.x,
+                        y: typeof item?.y === 'number' ? item.y : defaults.y,
+                        scale: typeof item?.scale === 'number' ? item.scale : getDefaultLogoScale(),
+                    } as CapCutChannelProfile
+                }).filter(ch => !!ch.id && !!ch.name)
+
+                if (migrated.length > 0) {
+                    loadedProfiles = migrated
+                    // Migrate về key profile hiện tại để lần sau load nhanh.
+                    localStorage.setItem(channelsKey, JSON.stringify(migrated))
+                    break
+                }
+            }
+
+            setCapcutChannelProfiles(loadedProfiles)
+
+            const selectedCandidates = [
+                localStorage.getItem(selectedKey) || '',
+                localStorage.getItem(legacySelectedKey) || '',
+            ]
+            const selected = selectedCandidates.find(Boolean) || ''
+            const selectedExists = loadedProfiles.some(ch => ch.id === selected)
+            if (selectedExists) {
+                setSelectedCapcutChannelId(selected)
+            } else if (loadedProfiles.length > 0) {
+                setSelectedCapcutChannelId(loadedProfiles[0].id)
+            } else {
+                setSelectedCapcutChannelId('')
+            }
+        } catch (err) {
+            console.warn('[AutoMedia] Không đọc được channel profiles:', err)
+            setCapcutChannelProfiles([])
+            setSelectedCapcutChannelId('')
+        } finally {
+            setIsCapcutChannelHydrated(true)
+        }
+    }, [isOpen])
+
+    React.useEffect(() => {
+        if (!isCapcutChannelHydrated) return
+        const profileId = getActiveProfileId()
+        localStorage.setItem(`capcut-channel-profiles-${profileId}`, JSON.stringify(capcutChannelProfiles))
+    }, [capcutChannelProfiles, isCapcutChannelHydrated])
+
+    React.useEffect(() => {
+        if (!isCapcutChannelHydrated) return
+        const profileId = getActiveProfileId()
+        localStorage.setItem(`capcut-selected-channel-${profileId}`, selectedCapcutChannelId)
+    }, [selectedCapcutChannelId, isCapcutChannelHydrated])
+
+    const handleCreateCapCutChannel = async () => {
+        const channelName = newCapcutChannelName.trim()
+        if (!channelName) return
+
+        const selected = await open({
+            multiple: false,
+            filters: [{
+                name: 'Logo Image',
+                extensions: ['png', 'jpg', 'jpeg', 'webp'],
+            }],
+        })
+        if (!selected) return
+
+        const channelId = `channel_${Date.now()}`
+        let safeLogoPath = selected as string
+        try {
+            safeLogoPath = await ensureCapCutSafeLogoPath(selected as string, channelId)
+        } catch (err) {
+            // Fallback vẫn dùng path gốc để không chặn UX tạo kênh.
+            console.warn('[AutoMedia] ⚠️ Không copy được logo về thư mục an toàn, dùng path gốc:', err)
+        }
+
+        const newChannel: CapCutChannelProfile = {
+            id: channelId,
+            name: channelName,
+            logoPath: safeLogoPath,
+            // Mặc định đặt góc phải trên — user có thể đổi ngay sau khi tạo.
+            position: 'top-right',
+            x: getDefaultLogoTransform('top-right').x,
+            y: getDefaultLogoTransform('top-right').y,
+            scale: getDefaultLogoScale(),
+        }
+
+        setCapcutChannelProfiles(prev => [...prev, newChannel])
+        setSelectedCapcutChannelId(newChannel.id)
+        setNewCapcutChannelName('')
+        setIsCreatingCapcutChannel(false)
+        console.log('[AutoMedia] ✅ Tạo channel mới:', newChannel)
+    }
+
+    const handleUpdateCapCutChannelLogo = async () => {
+        if (!selectedCapcutChannelId) {
+            alert('Chưa chọn kênh để cập nhật logo.')
+            return
+        }
+        const selected = await open({
+            multiple: false,
+            filters: [{
+                name: 'Logo Image',
+                extensions: ['png', 'jpg', 'jpeg', 'webp'],
+            }],
+        })
+        if (!selected) return
+
+        let safeLogoPath = selected as string
+        try {
+            safeLogoPath = await ensureCapCutSafeLogoPath(selected as string, selectedCapcutChannelId)
+        } catch (err) {
+            console.warn('[AutoMedia] ⚠️ Không copy được logo về thư mục an toàn, dùng path gốc:', err)
+        }
+
+        setCapcutChannelProfiles(prev =>
+            prev.map(ch => ch.id === selectedCapcutChannelId ? { ...ch, logoPath: safeLogoPath } : ch)
+        )
+    }
+
+    const handleDeleteCapCutChannel = React.useCallback(() => {
+        if (!selectedCapcutChannelId) {
+            alert('Chưa chọn kênh để xoá.')
+            return
+        }
+
+        const channel = capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)
+        if (!channel) return
+
+        const ok = window.confirm(`Xoá kênh "${channel.name}" khỏi danh sách logo?`)
+        if (!ok) return
+
+        const nextProfiles = capcutChannelProfiles.filter(ch => ch.id !== selectedCapcutChannelId)
+        setCapcutChannelProfiles(nextProfiles)
+
+        if (nextProfiles.length > 0) {
+            setSelectedCapcutChannelId(nextProfiles[0].id)
+        } else {
+            setSelectedCapcutChannelId('')
+        }
+    }, [capcutChannelProfiles, selectedCapcutChannelId])
+
+    // Chọn thư mục draft CapCut (thường là: ~/Movies/CapCut/User Data/Projects/com.lveditor.draft/<ProjectName>)
+    const handleSelectCapCutDraftFolder = async () => {
+        const selected = await open({ directory: true, multiple: false })
+        if (!selected) return
+        setCapcutDraftPath(selected as string)
+        console.log('[AutoMedia] CapCut draft folder:', selected)
+    }
+
+    /**
+     * Quét NHANH danh sách draft CapCut để đổ vào dropdown.
+     * Request gửi đi: không có HTTP, chỉ đọc local file system.
+     * Response nhận về: mảng {name, path}.
+     */
+    const loadCapCutDraftOptions = React.useCallback(async () => {
+        setIsLoadingCapcutDrafts(true)
+        setCapcutDraftLoadError('')
+        try {
+            const drafts = await listCapCutDraftsFast()
+            setCapcutDraftOptions(drafts)
+
+            // Nếu chưa có draft nào được chọn, tự chọn draft mới nhất.
+            if (!capcutDraftPath) {
+                if (drafts.length > 0) {
+                    setCapcutDraftPath(drafts[0].path)
+                }
+            }
+        } catch (err) {
+            setCapcutDraftLoadError(String(err))
+            setCapcutDraftOptions([])
+        } finally {
+            setIsLoadingCapcutDrafts(false)
+        }
+    }, [capcutDraftPath])
+
+    // Khi mở panel ở chế độ CapCut thì tự load danh sách draft.
+    React.useEffect(() => {
+        if (!isOpen) return
+        if (config.targetEngine !== 'capcut') return
+        loadCapCutDraftOptions()
+    }, [isOpen, config.targetEngine, loadCapCutDraftOptions])
+
+    /**
+     * Tải preview word timing từ draft CapCut đã chọn.
+     * Request: draft path local.
+     * Response: transcript.segments[].words[] -> format string "[0.15] Excuse [0.47] me ..."
+     */
+    const handlePreviewCapCutWordTiming = React.useCallback(async () => {
+        if (!capcutDraftPath) {
+            setWordTimingPreviewError('Chưa chọn draft CapCut')
+            setCapcutWordTimingPreview('')
+            return
+        }
+
+        setIsLoadingWordTimingPreview(true)
+        setWordTimingPreviewError('')
+        setCapcutWordTimingPreview('')
+        setCapcutWordTimingStats(null)
+
+        try {
+            const result = await buildTranscriptFromCapCutDraftSubtitle(capcutDraftPath)
+            const segments = result.transcript.segments || []
+
+            const parts: string[] = []
+            let wordsCount = 0
+            for (const seg of segments) {
+                const words = Array.isArray(seg.words) ? seg.words : []
+                for (const w of words) {
+                    const stamp = Number(w.start || 0).toFixed(2)
+                    const token = String(w.word || '').trim()
+                    if (!token) continue
+                    parts.push(`[${stamp}] ${token}`)
+                    wordsCount++
+                }
+            }
+
+            setCapcutWordTimingPreview(parts.join(' '))
+            setCapcutWordTimingStats({
+                sentences: result.stats.sentenceCount,
+                words: wordsCount,
+            })
+        } catch (err) {
+            setWordTimingPreviewError(String(err))
+        } finally {
+            setIsLoadingWordTimingPreview(false)
+        }
+    }, [capcutDraftPath])
+
+    /** Copy preview word timing để user mang đi đối chiếu nhanh */
+    const handleCopyWordTimingPreview = React.useCallback(async () => {
+        if (!capcutWordTimingPreview) return
+        try {
+            await navigator.clipboard.writeText(capcutWordTimingPreview)
+        } catch (err) {
+            console.error('[AutoMedia] Copy word timing preview lỗi:', err)
+        }
+    }, [capcutWordTimingPreview])
 
     // Auto-load tất cả folders đã lưu từ settings.json khi popup mở
     React.useEffect(() => {
@@ -345,7 +745,9 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
             alert('Chưa paste script kịch bản!')
             return
         }
-        if (!timelineInfo?.timelineId) {
+        // Chỉ yêu cầu kết nối DaVinci khi targetEngine là 'davinci'
+        const isDaVinci = !config.targetEngine || config.targetEngine === 'davinci'
+        if (isDaVinci && !timelineInfo?.timelineId) {
             alert('Chưa kết nối DaVinci Resolve! Hãy kết nối trước.')
             return
         }
@@ -358,9 +760,61 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
         })
         setMode('running')
 
+        // ======================== XÁC ĐỊNH NGUỒN TIMING CHO CAPCUT ========================
+        // Khi bật reuse + đã chọn draft:
+        // - Không cần VO để transcribe (lấy trực tiếp word timing từ CapCut draft)
+        // - Không import VO vào CapCut draft output
+        const isCapCutEngine = config.targetEngine === 'capcut'
+        const shouldUseCapCutDraftTiming = isCapCutEngine && useCapcutSubtitleTiming && !!capcutDraftPath
+
+        // Transcript ID:
+        // - Nếu có VO: dùng tên file VO để giữ tương thích cũ
+        // - Nếu không có VO nhưng đang reuse CapCut draft: dùng tên draft để dễ phân biệt cache
+        // - Fallback cuối: capcut_vo
+        const capcutTranscriptId = voFile
+            ? (voFile.split('/').pop()?.replace(/\.[^.]+$/, '') || 'capcut_vo')
+            : (capcutDraftPath.split('/').filter(Boolean).pop() || 'capcut_vo')
+
+        // Quan trọng:
+        // - Nếu đang dùng timing từ draft CapCut thì KHÔNG được dùng transcript cũ trong context
+        //   (vì có thể là transcript của project khác, gây lệch/tìm sai file .json ở bước AI Match).
+        // - Khi đó ép pipeline chạy runTranscribe() để đọc draft hiện tại và ghi transcript file mới.
+        const hasTranscriptInContext = subtitles && subtitles.length > 0
+        const shouldReuseContextTranscript = !shouldUseCapCutDraftTiming && hasTranscriptInContext
+
         // Build dependencies
+        const selectedChannelForExport = config.targetEngine === 'capcut' && selectedCapcutChannelId
+            ? capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)
+            : undefined
+        let normalizedChannelLogoPath = selectedChannelForExport?.logoPath || ''
+        if (selectedChannelForExport?.logoPath) {
+            try {
+                // Chuẩn hoá lại logo path trước khi chạy pipeline để xử lý cả dữ liệu kênh cũ.
+                normalizedChannelLogoPath = await ensureCapCutSafeLogoPath(
+                    selectedChannelForExport.logoPath,
+                    selectedChannelForExport.id
+                )
+                if (normalizedChannelLogoPath !== selectedChannelForExport.logoPath) {
+                    setCapcutChannelProfiles(prev =>
+                        prev.map(ch =>
+                            ch.id === selectedChannelForExport.id
+                                ? { ...ch, logoPath: normalizedChannelLogoPath }
+                                : ch
+                        )
+                    )
+                }
+            } catch (err) {
+                console.warn('[AutoMedia] ⚠️ Không chuẩn hoá được logo path trước export:', err)
+            }
+        }
+
         const deps: AutoMediaDependencies = {
-            timelineId: timelineInfo.timelineId,
+            // CapCut mode: không cần timelineId, DaVinci mode: bắt buộc
+            timelineId: timelineInfo?.timelineId || '',
+            // Transcript ID: CapCut dùng tên file VO (không ext), DaVinci dùng timelineId
+            transcriptId: config.targetEngine === 'capcut'
+                ? capcutTranscriptId
+                : (timelineInfo?.timelineId || ''),
             subtitles,
             masterSrt: project.masterSrt,
             imageFolder,
@@ -383,53 +837,226 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
             subtitleFontSize: project.subtitleData.fontSize || 0.04,
             updateMusicLibrary,
             updateSfxLibrary,
+            // CapCut mode: truyền file Voice Over + project name
+            // Nếu đang reuse timing từ draft CapCut -> bỏ VO track hoàn toàn
+            voFilePath: config.targetEngine === 'capcut'
+                ? (shouldUseCapCutDraftTiming ? undefined : voFile)
+                : undefined,
+            projectName: config.targetEngine === 'capcut' ? `AutoMedia_${new Date().toISOString().slice(0, 10)}` : undefined,
+            // Nếu user đã chọn draft nguồn thì ưu tiên ghi đè trực tiếp vào draft đó.
+            capcutTargetDraftPath: config.targetEngine === 'capcut' && capcutDraftPath
+                ? capcutDraftPath
+                : undefined,
+            capCutEffectsSettings: config.targetEngine === 'capcut' ? capCutEffectsSettings : undefined,
+            capcutChannelBranding: (() => {
+                if (!selectedChannelForExport || !normalizedChannelLogoPath) return undefined
+                return {
+                    channelId: selectedChannelForExport.id,
+                    channelName: selectedChannelForExport.name,
+                    logoPath: normalizedChannelLogoPath,
+                    position: selectedChannelForExport.position,
+                    x: selectedChannelForExport.x,
+                    y: selectedChannelForExport.y,
+                    scale: selectedChannelForExport.scale,
+                }
+            })(),
             runTranscribe: async (onStepUpdate) => {
-                // ========== CHẠY WHISPER THẬT ==========
+                // ========== CHẠY WHISPER ==========
+                // Phân nhánh: DaVinci mode → export audio từ Resolve | CapCut mode → dùng file VO
+                const isCapCut = config.targetEngine === 'capcut'
 
-                // ★ FIX ROOT CAUSE: nếu selectedInputTracks rỗng (user bỏ chọn tất cả)
-                // → fallback về ["2"] (track mặc định chứa giọng đọc)
-                // Tránh gửi inputTracks:[] → DaVinci disable hết track → WAV silent
-                const inputTracks = (settings.selectedInputTracks && settings.selectedInputTracks.length > 0)
-                    ? settings.selectedInputTracks
-                    : ['2']  // fallback mặc định
+                let audioPath = ''
+                let audioOffset = 0
 
-                console.log('[AutoMedia] inputTracks để export:', inputTracks, '| settings.selectedInputTracks:', settings.selectedInputTracks)
+                // ===== CAPCUT SUBTITLE REUSE MODE =====
+                // Nếu user bật reuse + đã chọn draft path -> đọc word timing trực tiếp từ CapCut.
+                if (isCapCut && useCapcutSubtitleTiming && capcutDraftPath) {
+                    onStepUpdate('transcribe', 'running', '📚 CapCut mode — đọc subtitle_cache_info (word timing) từ draft...')
 
-                // Sub-step 1: Export audio từ DaVinci
-                onStepUpdate('transcribe', 'running', `🎧 Exporting audio từ DaVinci (Track A${inputTracks.join(', A')})...`)
-                console.log('[AutoMedia] Bắt đầu export audio từ DaVinci...')
-                const audioInfo = await getSourceAudio(
-                    false, // Resolve mode (không phải standalone)
-                    null,
-                    inputTracks  // ★ Dùng inputTracks đã fallback, không phải settings trực tiếp
-                )
-                if (!audioInfo) {
-                    throw new Error('Không export được audio từ DaVinci. Kiểm tra kết nối.')
+                    // Log request/response vào Debug Panel để user kiểm tra rõ nguồn dữ liệu.
+                    const logId = generateLogId()
+                    const startedAt = Date.now()
+                    addDebugLog({
+                        id: logId,
+                        timestamp: new Date(),
+                        method: 'LOCAL_READ',
+                        url: 'local://capcut/subtitle-cache',
+                        requestHeaders: { 'Content-Type': 'application/json' },
+                        requestBody: JSON.stringify({
+                            draftDirPath: capcutDraftPath,
+                            mode: 'capcut_subtitle_reuse',
+                        }, null, 2),
+                        status: null,
+                        responseHeaders: {},
+                        responseBody: '',
+                        duration: 0,
+                        error: null,
+                        label: 'CapCut Subtitle Reuse',
+                    })
+
+                    let result: Awaited<ReturnType<typeof buildTranscriptFromCapCutDraftSubtitle>> | null = null
+                    try {
+                        result = await buildTranscriptFromCapCutDraftSubtitle(capcutDraftPath)
+                    } catch (capcutSubtitleError) {
+                        // Không crash pipeline ngay: fallback về Whisper để vẫn chạy được.
+                        onStepUpdate(
+                            'transcribe',
+                            'running',
+                            '⚠️ Không đọc được subtitle CapCut, fallback sang Whisper...',
+                            undefined,
+                            String(capcutSubtitleError)
+                        )
+                        addDebugLog({
+                            id: `${logId}-error`,
+                            timestamp: new Date(),
+                            method: 'LOCAL_READ',
+                            url: 'local://capcut/subtitle-cache/result',
+                            requestHeaders: {},
+                            requestBody: '',
+                            status: 500,
+                            responseHeaders: {},
+                            responseBody: '',
+                            duration: Date.now() - startedAt,
+                            error: String(capcutSubtitleError),
+                            label: 'CapCut Subtitle Reuse Result',
+                        })
+                    }
+
+                    if (result) {
+                        const transcript = result.transcript as any
+
+                        addDebugLog({
+                            id: `${logId}-done`,
+                            timestamp: new Date(),
+                            method: 'LOCAL_READ',
+                            url: 'local://capcut/subtitle-cache/result',
+                            requestHeaders: {},
+                            requestBody: '',
+                            status: 200,
+                            responseHeaders: {},
+                            responseBody: JSON.stringify({
+                                sentenceCount: result.stats.sentenceCount,
+                                wordCount: result.stats.wordCount,
+                                sourceFile: result.stats.sourceFile,
+                            }, null, 2),
+                            duration: Date.now() - startedAt,
+                            error: null,
+                            label: 'CapCut Subtitle Reuse Result',
+                        })
+
+                        onStepUpdate('transcribe', 'running', `💾 Dùng subtitle CapCut: ${result.stats.sentenceCount} câu / ${result.stats.wordCount} từ`, undefined, `source: ${result.stats.sourceFile}`)
+
+                        const filename = await processTranscriptionResults(
+                            transcript,
+                            settings,
+                            voFile || null,
+                            capcutTranscriptId
+                        )
+
+                        const debugTranscribe = `source: CapCut subtitle_cache_info\nfile: ${filename}\nsegments: ${result.stats.sentenceCount}\nwords: ${result.stats.wordCount}\nsourceFile: ${result.stats.sourceFile}`
+                        onStepUpdate('transcribe', 'done', 'Transcribe hoàn tất ✅ (dùng subtitle CapCut)', undefined, debugTranscribe)
+                        return
+                    }
+                }
+
+                if (isCapCut) {
+                    // ===== CAPCUT MODE: dùng file VO trực tiếp =====
+                    if (!voFile) {
+                        // Nếu user chọn reuse CapCut timing mà đọc draft lỗi, và cũng không có VO fallback:
+                        // báo lỗi rõ ràng để user biết cần làm gì tiếp theo.
+                        if (shouldUseCapCutDraftTiming) {
+                            throw new Error('CapCut mode: Không đọc được word timing từ draft đã chọn, và bạn chưa chọn VO để fallback Whisper.')
+                        }
+                        throw new Error('CapCut mode: Chưa chọn file Voice Over (VO)! Hãy chọn file VO trước khi bắt đầu.')
+                    }
+                    onStepUpdate('transcribe', 'running', `🎙️ CapCut mode — dùng file VO: ${voFile.split('/').pop()}`)
+                    audioPath = voFile
+                    audioOffset = 0 // VO file bắt đầu từ 0s
+                    console.log('[AutoMedia] CapCut mode — VO file:', voFile)
+                } else {
+                    // ===== DAVINCI MODE: export audio từ Resolve =====
+                    // FIX ROOT CAUSE: nếu selectedInputTracks rỗng → fallback ["2"]
+                    const inputTracks = (settings.selectedInputTracks && settings.selectedInputTracks.length > 0)
+                        ? settings.selectedInputTracks
+                        : ['2']  // fallback mặc định
+
+                    console.log('[AutoMedia] inputTracks để export:', inputTracks, '| settings.selectedInputTracks:', settings.selectedInputTracks)
+
+                    onStepUpdate('transcribe', 'running', `🎧 Exporting audio từ DaVinci (Track A${inputTracks.join(', A')})...`)
+                    console.log('[AutoMedia] Bắt đầu export audio từ DaVinci...')
+                    const audioInfo = await getSourceAudio(
+                        false, // Resolve mode
+                        null,
+                        inputTracks
+                    )
+                    if (!audioInfo) {
+                        throw new Error('Không export được audio từ DaVinci. Kiểm tra kết nối.')
+                    }
+                    audioPath = audioInfo.path
+                    audioOffset = audioInfo.offset
                 }
 
                 // Debug: hiện audio info chi tiết
-                onStepUpdate('transcribe', 'running', `🎧 Audio OK: ${audioInfo.path?.split('/').pop()} | offset: ${audioInfo.offset}s | tracks: ${JSON.stringify(settings.selectedInputTracks)}`, undefined, `audioPath: ${audioInfo.path}\noffset: ${audioInfo.offset}\nselectedInputTracks: ${JSON.stringify(settings.selectedInputTracks)}\nmodel: ${settings.model} | lang: ${settings.language} | DTW: ${settings.enableDTW} | GPU: ${settings.enableGpu}`)
+                onStepUpdate('transcribe', 'running', `🎧 Audio OK: ${audioPath?.split('/').pop()} | offset: ${audioOffset}s | mode: ${isCapCut ? 'CapCut' : 'DaVinci'}`, undefined, `audioPath: ${audioPath}\noffset: ${audioOffset}\nmode: ${isCapCut ? 'CapCut (VO file)' : 'DaVinci (Resolve export)'}\nmodel: ${settings.model} | lang: ${settings.language} | DTW: ${settings.enableDTW} | GPU: ${settings.enableGpu}`)
 
                 // Sub-step 2: Gọi Whisper transcribe
                 onStepUpdate('transcribe', 'running', '🤖 Whisper đang phân tích audio → word-level timestamps...')
-                console.log('[AutoMedia] Audio path:', audioInfo.path, '| Offset:', audioInfo.offset)
+                console.log('[AutoMedia] Audio path:', audioPath, '| Offset:', audioOffset)
                 const { invoke } = await import('@tauri-apps/api/core')
                 const { models } = await import('@/lib/models')
-
-                const transcript = await invoke('transcribe_audio', {
-                    options: {
-                        audioPath: audioInfo.path,
-                        offset: Math.round(audioInfo.offset * 1000) / 1000,
-                        model: models[settings.model]?.value || 'ggml-large-v3-turbo-q5_0.bin',
-                        lang: settings.language,
-                        translate: settings.translate,
-                        targetLanguage: settings.targetLanguage,
-                        enableDtw: settings.enableDTW,
-                        enableGpu: settings.enableGpu,
-                        enableDiarize: settings.enableDiarize,
-                        maxSpeakers: settings.maxSpeakers,
-                        density: settings.textDensity,
-                    },
+                const transcribeOptions = {
+                    audioPath: audioPath,
+                    offset: Math.round(audioOffset * 1000) / 1000,
+                    model: models[settings.model]?.value || 'ggml-large-v3-turbo-q5_0.bin',
+                    lang: settings.language,
+                    translate: settings.translate,
+                    targetLanguage: settings.targetLanguage,
+                    enableDtw: settings.enableDTW,
+                    enableGpu: settings.enableGpu,
+                    enableDiarize: settings.enableDiarize,
+                    maxSpeakers: settings.maxSpeakers,
+                    density: settings.textDensity,
+                }
+                // Tạo log pending ngay khi bắt đầu gọi transcribe để Debug Panel hiển thị tức thì.
+                const transcribeDebugLogId = startTranscribePhaseDebugLog({
+                    label: 'Auto Media Pipeline',
+                    options: transcribeOptions,
+                })
+                // Listen progress realtime từ backend để update log pending trong Debug Panel.
+                const { listen } = await import('@tauri-apps/api/event')
+                let unlistenTranscribeProgress: (() => void) | null = null
+                try {
+                    unlistenTranscribeProgress = await listen<any>('labeled-progress', (event) => {
+                        const payload = event.payload || {}
+                        const pType = String(payload?.type || '').toLowerCase()
+                        // Chỉ bắt progress transcribe để tránh spam từ phase khác.
+                        if (!pType.includes('transcribe')) return
+                        updateTranscribePhasePendingProgress({
+                            logId: transcribeDebugLogId,
+                            progress: typeof payload?.progress === 'number' ? payload.progress : undefined,
+                            type: payload?.type,
+                            label: payload?.label,
+                        })
+                    })
+                } catch (listenError) {
+                    console.warn('[AutoMedia] Không listen được labeled-progress:', listenError)
+                }
+                let transcript: unknown
+                try {
+                    transcript = await invoke('transcribe_audio', {
+                        options: transcribeOptions,
+                    })
+                } finally {
+                    if (unlistenTranscribeProgress) {
+                        try { unlistenTranscribeProgress() } catch { /* noop */ }
+                    }
+                }
+                // Ghi log timing chi tiết từng pha để xem bottleneck trong DEBUG Panel.
+                logTranscribePhaseTimingToDebug({
+                    logId: transcribeDebugLogId,
+                    label: 'Auto Media Pipeline',
+                    options: transcribeOptions,
+                    transcript,
                 })
                 console.log('[AutoMedia] Whisper raw result:', transcript)
                 console.log('[AutoMedia] Whisper raw keys:', Object.keys(transcript as any))
@@ -441,12 +1068,18 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                 onStepUpdate('transcribe', 'running', `💾 Whisper xong → ${rawSegCount} segments (raw keys: ${rawKeys})`, undefined, `raw keys: ${rawKeys}\nraw segments count: ${rawSegCount}\nprocessing_time_sec: ${rawT?.processing_time_sec ?? '?'}\nraw first segment: ${JSON.stringify(rawT?.segments?.[0] || rawT?.originalSegments?.[0] || '(empty)').substring(0, 200)}`)
 
                 // Sub-step 3: Save transcript + cập nhật context
+                // CapCut mode: dùng tên file VO làm ID, DaVinci mode: dùng timelineId
+                const transcriptId = isCapCut
+                    ? capcutTranscriptId
+                    : (timelineInfo?.timelineId || 'unknown')
+
                 onStepUpdate('transcribe', 'running', '💾 Đang lưu transcript + cập nhật context...')
                 const filename = await processTranscriptionResults(
                     transcript as any,
                     settings,
-                    null, // không có file input (Resolve mode)
-                    timelineInfo.timelineId
+                    // CapCut: có thể null khi dùng reuse timing từ draft, DaVinci luôn null
+                    isCapCut ? (voFile || null) : null,
+                    transcriptId
                 )
                 console.log('[AutoMedia] Transcript saved:', filename)
 
@@ -459,7 +1092,7 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                 for (const seg of segments) {
                     if (seg.words) totalWords += seg.words.length
                 }
-                // Sample 3 words đầu tiên
+                // Sample 5 words đầu tiên
                 const sampleWords: string[] = []
                 for (const seg of segments) {
                     if (seg.words && sampleWords.length < 5) {
@@ -477,7 +1110,7 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                 const debugTranscribe = `file: ${filename} | segments: ${totalSegments} | words: ${totalWords}\nSample words: ${sampleWords.join(' ')}\nSample segs: ${sampleSegs}`
                 onStepUpdate('transcribe', 'done', 'Transcribe hoàn tất ✅', undefined, debugTranscribe)
             },
-            hasTranscript: subtitles && subtitles.length > 0,
+            hasTranscript: shouldReuseContextTranscript,
             // Debug mode: truyền callback chờ user nhấn "Tiếp tục"
             waitForContinue: config.debugMode ? waitForContinue : undefined,
         }
@@ -549,6 +1182,7 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
             updateSfxLibrary: () => {},
             runTranscribe: async (_onStepUpdate) => {},
             hasTranscript: subtitles && subtitles.length > 0,
+            capcutChannelBranding: undefined,
         }
         return checkPrerequisites(deps, config)
     // musicFolder, sfxFolder là local state — phải có trong deps để re-check sau khi useEffect load xong
@@ -650,6 +1284,157 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                             </div>
                         </div>
 
+                        {/* Chọn file VO — chỉ hiện khi CapCut mode */}
+                        {config.targetEngine === 'capcut' && (
+                            <div className="space-y-1.5">
+                                <label className="text-sm font-medium flex items-center gap-1.5">
+                                    <FileAudio className="h-3.5 w-3.5 text-blue-400" />
+                                    File Voice Over (VO)
+                                </label>
+                                <div className="flex items-center gap-2">
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="gap-1.5"
+                                        onClick={handleSelectVoFile}
+                                    >
+                                        <Mic className="h-3.5 w-3.5" />
+                                        Chọn File VO
+                                    </Button>
+                                    {voFile ? (
+                                        <span className="text-xs text-muted-foreground truncate max-w-[200px]" title={voFile}>
+                                            🎙️ {voFile.split('/').pop()}
+                                        </span>
+                                    ) : (
+                                        <span className="text-xs text-yellow-500/70">
+                                            {useCapcutSubtitleTiming && capcutDraftPath
+                                                ? 'ℹ️ Chưa chọn VO (không sao — đang dùng word timing từ draft)'
+                                                : '⚠️ Chưa chọn file VO'}
+                                        </span>
+                                    )}
+                                </div>
+                                <p className="text-[10px] text-muted-foreground">
+                                    {useCapcutSubtitleTiming && capcutDraftPath
+                                        ? 'Đang ưu tiên word timing từ draft CapCut: VO là tuỳ chọn, không bắt buộc import vào draft mới.'
+                                        : 'File giọng đọc (.wav/.mp3) sẽ được đặt vào track Voice Over trong CapCut Draft.'}
+                                </p>
+
+                                <div className="mt-2 rounded-md border p-2 bg-muted/30 space-y-2">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-[11px] font-medium text-muted-foreground uppercase">
+                                            Nguồn Timing Ưu Tiên
+                                        </span>
+                                        <Switch
+                                            checked={useCapcutSubtitleTiming}
+                                            onCheckedChange={() => setUseCapcutSubtitleTiming(prev => !prev)}
+                                        />
+                                    </div>
+                                    <p className="text-[10px] text-muted-foreground">
+                                        Bật: lấy trực tiếp word timing từ subtitle_cache_info trong draft CapCut (nếu có), bỏ qua Whisper.
+                                    </p>
+                                    <div className="flex items-center gap-2">
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            className="gap-1.5"
+                                            onClick={loadCapCutDraftOptions}
+                                            disabled={isLoadingCapcutDrafts}
+                                        >
+                                            <RefreshCw className={`h-3.5 w-3.5 ${isLoadingCapcutDrafts ? 'animate-spin' : ''}`} />
+                                            Quét Draft
+                                        </Button>
+                                    </div>
+
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] text-muted-foreground">Danh sách Draft CapCut gần đây</label>
+                                        <select
+                                            className="w-full rounded border bg-background px-2 py-1.5 text-xs"
+                                            value={capcutDraftPath}
+                                            onChange={(e) => setCapcutDraftPath(e.target.value)}
+                                            disabled={isLoadingCapcutDrafts || capcutDraftOptions.length === 0}
+                                        >
+                                            <option value="">-- Chọn draft --</option>
+                                            {capcutDraftOptions.map((d) => (
+                                                <option key={d.path} value={d.path}>
+                                                    {d.name}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        {capcutDraftLoadError && (
+                                            <p className="text-[10px] text-red-400 break-words">
+                                                ❌ Lỗi quét draft: {capcutDraftLoadError}
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    <div className="flex items-center gap-2">
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            className="gap-1.5"
+                                            onClick={handlePreviewCapCutWordTiming}
+                                            disabled={isLoadingWordTimingPreview || !capcutDraftPath}
+                                        >
+                                            {isLoadingWordTimingPreview ? (
+                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                            ) : (
+                                                <FileAudio className="h-3.5 w-3.5" />
+                                            )}
+                                            Xem Word Timing
+                                        </Button>
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            className="gap-1.5"
+                                            onClick={handleCopyWordTimingPreview}
+                                            disabled={!capcutWordTimingPreview}
+                                        >
+                                            <Copy className="h-3.5 w-3.5" />
+                                            Copy
+                                        </Button>
+                                    </div>
+                                    {capcutWordTimingStats && (
+                                        <p className="text-[10px] text-muted-foreground">
+                                            ✅ Preview: {capcutWordTimingStats.sentences} câu • {capcutWordTimingStats.words} từ
+                                        </p>
+                                    )}
+                                    {wordTimingPreviewError && (
+                                        <p className="text-[10px] text-red-400 break-words">
+                                            ❌ Không đọc được word timing: {wordTimingPreviewError}
+                                        </p>
+                                    )}
+                                    {capcutWordTimingPreview && (
+                                        <Textarea
+                                            value={capcutWordTimingPreview}
+                                            readOnly
+                                            className="h-32 text-[10px] font-mono resize-y"
+                                        />
+                                    )}
+
+                                    <div className="flex items-center gap-2">
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            className="gap-1.5"
+                                            onClick={handleSelectCapCutDraftFolder}
+                                        >
+                                            <FolderOpen className="h-3.5 w-3.5" />
+                                            Chọn Draft CapCut
+                                        </Button>
+                                        {capcutDraftPath ? (
+                                            <span className="text-xs text-muted-foreground truncate max-w-[210px]" title={capcutDraftPath}>
+                                                📁 {capcutDraftPath.split('/').pop()}
+                                            </span>
+                                        ) : (
+                                            <span className="text-xs text-muted-foreground/70">
+                                                Chưa chọn draft
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
                         {/* Toggle từng bước */}
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Bước tự động</label>
@@ -701,6 +1486,229 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                                             ? "Khuyên dùng cho Phim Tài Liệu. Rất nhẹ, không ăn RAM, tự import vào Native Subtitle Track." 
                                             : "Khuyên dùng cho Short/Stories. Ăn nhiều RAM vì render từng hiệu ứng chuyển động."}
                                     </p>
+                                </div>
+                            )}
+
+                            {/* Export Target Toggle */}
+                            <div className="mt-4 space-y-2">
+                                <label className="text-sm font-medium">Export Target</label>
+                                <div className="grid grid-cols-2 gap-1.5 bg-muted/30 border rounded-md p-1.5">
+                                    <button 
+                                        onClick={() => setConfig(prev => ({...prev, targetEngine: 'davinci'}))}
+                                        className={`flex items-center justify-center gap-1.5 text-xs py-2 rounded-sm font-medium transition-colors ${(!config.targetEngine || config.targetEngine === 'davinci') ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-muted text-muted-foreground'}`}
+                                    >
+                                        <img src="/davinci-resolve-logo.png" className="h-4 w-4 object-contain" alt="DaVinci" />
+                                        DaVinci Resolve
+                                    </button>
+                                    <button 
+                                        onClick={() => setConfig(prev => ({...prev, targetEngine: 'capcut'}))}
+                                        className={`flex items-center justify-center gap-1.5 text-xs py-2 rounded-sm font-medium transition-colors ${config.targetEngine === 'capcut' ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-muted text-muted-foreground'}`}
+                                    >
+                                        <span className="font-bold text-[13px] tracking-tight text-white bg-black rounded p-0.5 px-1 leading-none">C</span>
+                                        CapCut Draft (v3)
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Panel cài đặt hiệu ứng (chỉ hiện cho CapCut) */}
+                            {config.targetEngine === 'capcut' && (
+                                <div className="mt-2">
+                                    <CapCutEffectsSettingsPanel 
+                                        onSettingsChange={(effConfig) => {
+                                            // Quan trọng: phải đưa settings effect vào deps pipeline.
+                                            // Nếu chỉ console.log thì export CapCut sẽ nhận {} và không inject transition/video effect.
+                                            setCapCutEffectsSettings(effConfig)
+                                            console.log('[AutoMedia] CapCut Effects:', effConfig)
+                                        }} 
+                                    />
+                                </div>
+                            )}
+
+                            {/* Channel Branding cho CapCut: chỉ chọn kênh + logo + vị trí */}
+                            {config.targetEngine === 'capcut' && (
+                                <div className="mt-2 rounded-md border p-2 bg-muted/20 space-y-2">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-xs font-medium">Kênh YouTube (Logo Auto Overlay)</span>
+                                        <div className="flex items-center gap-1">
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                className="h-6 text-[10px]"
+                                                onClick={() => setIsCreatingCapcutChannel(prev => !prev)}
+                                            >
+                                                {isCreatingCapcutChannel ? 'Đóng' : '+ Tạo kênh'}
+                                            </Button>
+                                            <Button type="button" variant="outline" size="sm" className="h-6 text-[10px]" onClick={handleUpdateCapCutChannelLogo} disabled={!selectedCapcutChannelId}>
+                                                Cập nhật logo
+                                            </Button>
+                                            <Button
+                                                type="button"
+                                                variant="outline"
+                                                size="sm"
+                                                className="h-6 text-[10px] text-red-500 border-red-200 hover:bg-red-50"
+                                                onClick={handleDeleteCapCutChannel}
+                                                disabled={!selectedCapcutChannelId}
+                                            >
+                                                Xoá kênh
+                                            </Button>
+                                        </div>
+                                    </div>
+
+                                    {isCreatingCapcutChannel && (
+                                        <div className="flex items-center gap-1.5">
+                                            <input
+                                                value={newCapcutChannelName}
+                                                onChange={(e) => setNewCapcutChannelName(e.target.value)}
+                                                placeholder="Nhập tên kênh..."
+                                                className="h-8 flex-1 rounded-md border bg-background px-2 text-xs"
+                                            />
+                                            <Button
+                                                type="button"
+                                                size="sm"
+                                                className="h-8 text-[10px]"
+                                                onClick={handleCreateCapCutChannel}
+                                                disabled={!newCapcutChannelName.trim()}
+                                            >
+                                                Lưu + Chọn logo
+                                            </Button>
+                                        </div>
+                                    )}
+
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <div className="space-y-1">
+                                            <label className="text-[11px] text-muted-foreground">Chọn kênh</label>
+                                            <select
+                                                value={selectedCapcutChannelId}
+                                                onChange={(e) => setSelectedCapcutChannelId(e.target.value)}
+                                                className="w-full h-8 rounded-md border bg-background px-2 text-xs"
+                                            >
+                                                <option value="">Không dùng logo kênh</option>
+                                                {capcutChannelProfiles.map(ch => (
+                                                    <option key={ch.id} value={ch.id}>{ch.name}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+
+                                        <div className="space-y-1">
+                                            <label className="text-[11px] text-muted-foreground">Vị trí logo</label>
+                                            <select
+                                                value={capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.position || 'top-right'}
+                                                onChange={(e) => {
+                                                    const pos = e.target.value as ChannelLogoPosition
+                                                    const defaults = getDefaultLogoTransform(pos)
+                                                    setCapcutChannelProfiles(prev =>
+                                                        prev.map(ch => ch.id === selectedCapcutChannelId ? {
+                                                            ...ch,
+                                                            position: pos,
+                                                            x: defaults.x,
+                                                            y: defaults.y,
+                                                        } : ch)
+                                                    )
+                                                }}
+                                                disabled={!selectedCapcutChannelId}
+                                                className="w-full h-8 rounded-md border bg-background px-2 text-xs disabled:opacity-60"
+                                            >
+                                                <option value="top-left">Trên trái</option>
+                                                <option value="top-right">Trên phải</option>
+                                                <option value="bottom-left">Dưới trái</option>
+                                                <option value="bottom-right">Dưới phải</option>
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    {selectedCapcutChannelId && (
+                                        <div className="space-y-2 rounded-md border bg-background/60 p-2">
+                                            <div className="flex items-center justify-end">
+                                                <Button
+                                                    type="button"
+                                                    variant="outline"
+                                                    size="sm"
+                                                    className="h-6 text-[10px]"
+                                                    onClick={() => {
+                                                        setCapcutChannelProfiles(prev =>
+                                                            prev.map(ch => {
+                                                                if (ch.id !== selectedCapcutChannelId) return ch
+                                                                const defaults = getDefaultLogoTransform(ch.position)
+                                                                return {
+                                                                    ...ch,
+                                                                    x: defaults.x,
+                                                                    y: defaults.y,
+                                                                    scale: getDefaultLogoScale(),
+                                                                }
+                                                            })
+                                                        )
+                                                    }}
+                                                >
+                                                    Về mặc định
+                                                </Button>
+                                            </div>
+                                            <div className="grid grid-cols-3 gap-2">
+                                                <div className="space-y-1">
+                                                    <label className="text-[11px] text-muted-foreground">X (trái/phải)</label>
+                                                    <input
+                                                        type="range"
+                                                        min={-1.2}
+                                                        max={1.2}
+                                                        step={0.01}
+                                                        value={capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.x ?? 0.87}
+                                                        onChange={(e) => {
+                                                            const nextX = Number(e.target.value)
+                                                            setCapcutChannelProfiles(prev =>
+                                                                prev.map(ch => ch.id === selectedCapcutChannelId ? { ...ch, x: nextX } : ch)
+                                                            )
+                                                        }}
+                                                        className="w-full"
+                                                    />
+                                                    <div className="text-[10px] text-muted-foreground">
+                                                        {(capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.x ?? 0.8).toFixed(2)}
+                                                    </div>
+                                                </div>
+
+                                                <div className="space-y-1">
+                                                    <label className="text-[11px] text-muted-foreground">Y (lên/xuống)</label>
+                                                    <input
+                                                        type="range"
+                                                        min={-1.2}
+                                                        max={1.2}
+                                                        step={0.01}
+                                                        value={capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.y ?? 0.75}
+                                                        onChange={(e) => {
+                                                            const nextY = Number(e.target.value)
+                                                            setCapcutChannelProfiles(prev =>
+                                                                prev.map(ch => ch.id === selectedCapcutChannelId ? { ...ch, y: nextY } : ch)
+                                                            )
+                                                        }}
+                                                        className="w-full"
+                                                    />
+                                                    <div className="text-[10px] text-muted-foreground">
+                                                        {(capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.y ?? 0.56).toFixed(2)}
+                                                    </div>
+                                                </div>
+
+                                                <div className="space-y-1">
+                                                    <label className="text-[11px] text-muted-foreground">Scale</label>
+                                                    <input
+                                                        type="range"
+                                                        min={0.05}
+                                                        max={1.2}
+                                                        step={0.01}
+                                                        value={capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.scale ?? getDefaultLogoScale()}
+                                                        onChange={(e) => {
+                                                            const nextScale = Number(e.target.value)
+                                                            setCapcutChannelProfiles(prev =>
+                                                                prev.map(ch => ch.id === selectedCapcutChannelId ? { ...ch, scale: nextScale } : ch)
+                                                            )
+                                                        }}
+                                                        className="w-full"
+                                                    />
+                                                    <div className="text-[10px] text-muted-foreground">
+                                                        {(((capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.scale ?? getDefaultLogoScale()) * 100)).toFixed(0)}%
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             )}
 
@@ -806,13 +1814,17 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                 {/* ====== FOOTER — Nút hành động ====== */}
                 <DialogFooter className="flex items-center gap-2">
                     {mode === 'input' && (() => {
-                        const btnDisabled = !scriptText.trim() || !timelineInfo?.timelineId
+                        // Chỉ yêu cầu timelineId khi DaVinci mode, CapCut mode không cần
+                        const isDaVinci = !config.targetEngine || config.targetEngine === 'davinci'
+                        const btnDisabled = !scriptText.trim() || (isDaVinci && !timelineInfo?.timelineId)
                         if (btnDisabled) {
                             console.log('[AutoMedia] ⚠️ Nút disabled:', {
                                 scriptEmpty: !scriptText.trim(),
                                 scriptLen: scriptText.length,
                                 timelineId: timelineInfo?.timelineId || '(null)',
                                 timelineInfo: timelineInfo || '(null)',
+                                targetEngine: config.targetEngine || 'davinci (default)',
+                                isDaVinci,
                             })
                         }
                         return (

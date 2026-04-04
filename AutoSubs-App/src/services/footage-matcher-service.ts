@@ -25,6 +25,20 @@ const CLAUDE_CONFIG = {
     maxTokens: 16000,
 };
 
+/**
+ * Bật chế độ mới:
+ * - Chỉ gửi 1 request AI cho footage matching.
+ * - Script gửi đi là 15 cụm timing (~30s/cụm) thay vì full kịch bản.
+ */
+const FOOTAGE_SINGLE_REQUEST_MODE = true;
+const FOOTAGE_CLUSTER_COUNT = 15;
+const FOOTAGE_CLUSTER_WINDOW_SEC = 30;
+
+interface WordTimingToken {
+    timestamp: number;
+    word: string;
+}
+
 // ======================== HELPER: TẠO SCRIPT TIMING TEXT ========================
 
 /**
@@ -40,6 +54,96 @@ export function formatScriptWithTiming(
         const idx = s.index ?? i;
         return `[Sentence ${idx}] ${s.start.toFixed(1)}s - ${s.end.toFixed(1)}s: "${s.text}"`;
     }).join("\n");
+}
+
+/**
+ * Tạo cụm timing cho Footage prompt:
+ * - Lấy tối đa `clusterCount` cụm, mỗi cụm ~`windowSec` giây.
+ * - Mỗi cụm chứa danh sách câu có overlap với khoảng thời gian cụm.
+ *
+ * Mục tiêu:
+ * - Giảm payload script gửi AI.
+ * - Vẫn giữ mốc timing thật để AI đặt footage khớp nhịp kể chuyện.
+ */
+function buildFootageTimingClustersText(
+    sentences: Array<{ text: string; start: number; end: number; index?: number }>,
+    totalDurationSec: number,
+    clusterCount: number = FOOTAGE_CLUSTER_COUNT,
+    windowSec: number = FOOTAGE_CLUSTER_WINDOW_SEC
+): string {
+    if (!sentences.length) return "";
+
+    const safeDuration = Math.max(
+        totalDurationSec,
+        ...sentences.map(s => Number.isFinite(s.end) ? s.end : 0),
+        1
+    );
+    const count = Math.max(1, clusterCount);
+    const step = Math.max(1, safeDuration / count);
+
+    const chunks: string[] = [];
+    for (let i = 0; i < count; i++) {
+        const start = Math.max(0, i * step);
+        const end = Math.min(safeDuration, start + windowSec);
+
+        // Lấy các câu giao với cửa sổ thời gian.
+        const overlapped = sentences.filter(s => s.end >= start && s.start <= end);
+        if (!overlapped.length) continue;
+
+        const lineText = overlapped.map((s) => {
+            const idx = s.index ?? 0;
+            return `[S${idx}] ${s.start.toFixed(2)}-${s.end.toFixed(2)}: "${s.text}"`;
+        }).join("\n");
+
+        chunks.push(
+            `[[CLUSTER ${chunks.length + 1}]] ${start.toFixed(2)}-${end.toFixed(2)}\n${lineText}`
+        );
+    }
+
+    // Nếu video rất ngắn hoặc timing thưa khiến cụm ít hơn mục tiêu, fallback sang format full.
+    if (!chunks.length) {
+        return formatScriptWithTiming(sentences);
+    }
+
+    return chunks.join("\n\n");
+}
+
+/**
+ * Tạo cụm word timing dạng:
+ * [[CLUSTER 1]] 0.00-30.00
+ * [0.15] hello [0.38] world ...
+ */
+function buildWordTimingClustersText(
+    words: WordTimingToken[],
+    totalDurationSec: number,
+    clusterCount: number = FOOTAGE_CLUSTER_COUNT,
+    windowSec: number = FOOTAGE_CLUSTER_WINDOW_SEC
+): string {
+    if (!words.length) return "";
+
+    const safeDuration = Math.max(
+        totalDurationSec,
+        ...words.map(w => Number.isFinite(w.timestamp) ? w.timestamp : 0),
+        1
+    );
+    const count = Math.max(1, clusterCount);
+    const step = Math.max(1, safeDuration / count);
+
+    const chunks: string[] = [];
+    for (let i = 0; i < count; i++) {
+        const start = Math.max(0, i * step);
+        const end = Math.min(safeDuration, start + windowSec);
+        const clusterWords = words.filter(w => w.timestamp >= start && w.timestamp <= end);
+        if (!clusterWords.length) continue;
+
+        const wordsLine = clusterWords
+            .map(w => `[${w.timestamp.toFixed(2)}] ${w.word}`)
+            .join(" ");
+
+        chunks.push(`[[CLUSTER ${chunks.length + 1}]] ${start.toFixed(2)}-${end.toFixed(2)}\n${wordsLine}`);
+    }
+
+    return chunks.join("\n\n");
 }
 
 /**
@@ -75,7 +179,8 @@ export async function matchFootageToScript(
     sentences: Array<{ text: string; start: number; end: number; index?: number }>,
     footageItems: FootageItem[],
     _apiKey: string,   // Không dùng nữa (giữ param để tránh lỗi gọi từ UI)
-    totalDurationSec: number
+    totalDurationSec: number,
+    wordTimingTokens?: WordTimingToken[]
 ): Promise<FootageSuggestion[]> {
     // ── Đọc cấu hình từ Tauri Store (cùng nơi SettingsContext lưu) ────────────────
     let NUM_BATCHES = 1;
@@ -104,19 +209,61 @@ export async function matchFootageToScript(
         throw new Error("Không có footage nào đã được scan AI. Hãy quét thư viện trước!");
     }
 
-    // Build script text
-    const scriptText = formatScriptWithTiming(sentences);
+    // Build script text:
+    // - Mode mới: chỉ gửi 15 cụm timing (giảm payload rất mạnh).
+    // - Mode cũ: gửi full câu có timing.
+    const scriptText = FOOTAGE_SINGLE_REQUEST_MODE
+        ? ((wordTimingTokens && wordTimingTokens.length > 0)
+            ? buildWordTimingClustersText(
+                wordTimingTokens,
+                totalDurationSec,
+                FOOTAGE_CLUSTER_COUNT,
+                FOOTAGE_CLUSTER_WINDOW_SEC
+            )
+            : buildFootageTimingClustersText(
+                sentences,
+                totalDurationSec,
+                FOOTAGE_CLUSTER_COUNT,
+                FOOTAGE_CLUSTER_WINDOW_SEC
+            ))
+        : formatScriptWithTiming(sentences);
 
     // Map fileName → filePath (để gắn lại fullPath sau)
     const pathMap = new Map(footageItems.map(i => [i.fileName, i.filePath]));
 
-    // ===== Chia batch theo thông số NUM_BATCHES =====
+    if (FOOTAGE_SINGLE_REQUEST_MODE) {
+        console.log(
+            `[FootageMatcher] 🧠 Single request mode: clusters=${FOOTAGE_CLUSTER_COUNT}, window≈${FOOTAGE_CLUSTER_WINDOW_SEC}s, totalFootage=${TOTAL_FOOTAGE_CLIPS}`
+        );
+
+        const suggestions = await doMatchRequest(
+            scriptText,
+            analyzedItems,
+            totalDurationSec,
+            pathMap,
+            sentences,
+            TOTAL_FOOTAGE_CLIPS,
+            BROLL_START
+        );
+
+        // Lọc thời gian cấm B-roll đầu video.
+        const filtered = suggestions.filter(s => s.startTime >= BROLL_START);
+
+        // Không dùng quá số lượng user đã set trong AI config.
+        filtered.sort((a, b) => a.startTime - b.startTime);
+        if (TOTAL_FOOTAGE_CLIPS > 0) {
+            return filtered.slice(0, TOTAL_FOOTAGE_CLIPS);
+        }
+        return filtered;
+    }
+
+    // ===== Chia batch theo thông số NUM_BATCHES (legacy mode) =====
     const maxFootagePerBatch = Math.max(1, Math.round(TOTAL_FOOTAGE_CLIPS / NUM_BATCHES));
     const BATCH_SIZE = Math.max(1, Math.ceil(analyzedItems.length / NUM_BATCHES));
 
     if (analyzedItems.length <= BATCH_SIZE) {
         // Gửi 1 lần duy nhất (nhỏ, hoặc do NUM_BATCHES = 1)
-        return await doMatchRequest(scriptText, analyzedItems, totalDurationSec, pathMap, sentences, maxFootagePerBatch);
+        return await doMatchRequest(scriptText, analyzedItems, totalDurationSec, pathMap, sentences, maxFootagePerBatch, BROLL_START);
     }
 
     // Chia thành nhiều batch
@@ -140,7 +287,7 @@ export async function matchFootageToScript(
                 activeTasks++;
                 console.log(`[FootageMatcher] ▶ Batch ${currentIdx + 1}/${batches.length} bắt đầu (${currentBatch.length} items) | Yêu cầu AI chọn ${maxFootagePerBatch}`);
 
-                doMatchRequest(scriptText, currentBatch, totalDurationSec, pathMap, sentences, maxFootagePerBatch)
+                doMatchRequest(scriptText, currentBatch, totalDurationSec, pathMap, sentences, maxFootagePerBatch, BROLL_START)
                     .then(results => {
                         console.log(`[FootageMatcher] ✅ Batch ${currentIdx + 1} xong → ${results.length} gợi ý`);
                         allSuggestions.push(...results);
@@ -198,7 +345,8 @@ async function doMatchRequest(
     totalDurationSec: number,
     pathMap: Map<string, string>,
     sentences: Array<{ text: string; start: number; end: number; index?: number }>,
-    maxFootagePerBatch: number
+    maxFootagePerBatch: number,
+    bRollStartSec: number
 ): Promise<FootageSuggestion[]> {
     const { callAIMultiProvider } = await import("@/utils/ai-provider");
 
@@ -214,9 +362,15 @@ async function doMatchRequest(
 
     const loadModule = footageMatchModules[profileId] ?? footageMatchModules['documentary'];
     const { buildFootageMatchPrompt } = await loadModule();
-    const prompt = buildFootageMatchPrompt(scriptText, footageJson, totalDurationSec, maxFootagePerBatch);
+    const prompt = buildFootageMatchPrompt(
+        scriptText,
+        footageJson,
+        totalDurationSec,
+        maxFootagePerBatch,
+        bRollStartSec
+    );
 
-    const label = `📽️ Footage Match (${footageItems.length} footage × ${sentences.length} câu)`;
+    const label = `📽️ Footage Match (lib=${footageItems.length} items, ask=${maxFootagePerBatch} clips, script=${sentences.length} câu)`;
 
     // Round-robin Claude/Gemini — tự retry rate limit
     const rawText = await callAIMultiProvider(
@@ -235,20 +389,40 @@ async function doMatchRequest(
 
     const parsed: any[] = JSON.parse(jsonMatch[0]);
 
-    // Chuyển thành FootageSuggestion (gắn filePath)
+    // Chuyển thành FootageSuggestion (gắn filePath).
+    // Hỗ trợ cả schema đầy đủ và schema rút gọn để tiết kiệm token:
+    // - full: sentenceIndex/startTime/endTime/footageFile/trimStart/trimEnd
+    // - short: i/s/e/f/ts/te
     const suggestions: FootageSuggestion[] = parsed.map(item => {
-        const sentIdx = item.sentenceIndex ?? 0;
+        const sentIdxRaw = item.i ?? item.sentenceIndex ?? 0;
+        const sentIdx = Number.isFinite(Number(sentIdxRaw)) ? Number(sentIdxRaw) : 0;
         const sentence = sentences[sentIdx];
+
+        const footageFile = String(item.f ?? item.footageFile ?? "");
+        const startRaw = item.s ?? item.startTime;
+        const endRaw = item.e ?? item.endTime;
+        const trimStartRaw = item.ts ?? item.trimStart;
+        const trimEndRaw = item.te ?? item.trimEnd;
+
+        const startTime = Number.isFinite(Number(startRaw))
+            ? Number(startRaw)
+            : (sentence?.start ?? 0);
+        const endTime = Number.isFinite(Number(endRaw))
+            ? Number(endRaw)
+            : (sentence?.end ?? 0);
+        const trimStart = Number.isFinite(Number(trimStartRaw)) ? Number(trimStartRaw) : 0;
+        const trimEnd = Number.isFinite(Number(trimEndRaw)) ? Number(trimEndRaw) : 5;
+
         return {
             sentenceIndex: sentIdx,
             sentenceText: sentence?.text || "",
-            startTime: item.startTime ?? sentence?.start ?? 0,
-            endTime: item.endTime ?? sentence?.end ?? 0,
-            footageFile: item.footageFile || "",
-            footagePath: pathMap.get(item.footageFile) || "",
-            trimStart: item.trimStart ?? 0,
-            trimEnd: item.trimEnd ?? 5,
-            reason: item.reason || "",
+            startTime,
+            endTime,
+            footageFile,
+            footagePath: pathMap.get(footageFile) || "",
+            trimStart,
+            trimEnd,
+            reason: String(item.r ?? item.reason ?? ""),
         };
     }).filter(s => s.footagePath);  // Bỏ items không tìm thấy file
 

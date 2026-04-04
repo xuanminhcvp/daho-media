@@ -17,7 +17,8 @@ export function buildFootageMatchPrompt(
     scriptWithTiming: string,
     footageListJson: string,
     totalDurationSec: number,
-    maxFootagePerBatch: number = 15
+    maxFootagePerBatch: number = 15,
+    bRollStartSec: number = 60
 ): string {
     return `You are a professional video editor selecting B-roll footage for a narration video.
 
@@ -34,29 +35,29 @@ Total video duration: ${totalDurationSec.toFixed(1)} seconds.
 Return a JSON array of selections:
 [
   {
-    "sentenceIndex": 3,
-    "startTime": 72.5,
-    "endTime": 76.0,
-    "footageFile": "city_night.mp4",
-    "trimStart": 2.0,
-    "trimEnd": 5.5,
-    "reason": "Câu nói về thành phố ban đêm — footage aerial city night phù hợp để minh hoạ"
+    "i": 3,
+    "s": 72.5,
+    "e": 76.0,
+    "f": "city_night.mp4",
+    "ts": 2.0,
+    "te": 5.5
   }
 ]
 
 === RULES ===
 1. Select about ${maxFootagePerBatch} footage clips — depending on the density requested
-2. ⚠️ IMPORTANT: Do NOT place any footage in the FIRST 3 SECONDS of the video. All startTime must be >= 3.0.0
+2. ⚠️ IMPORTANT: Do NOT place any footage in the FIRST ${bRollStartSec.toFixed(1)} SECONDS of the video. All startTime must be >= ${bRollStartSec.toFixed(1)}
 3. Footage only needs to be LOOSELY RELATED (illustrative, metaphorical is OK)
 4. Each footage trimmed segment must be 3-8 seconds (never exceed 20 seconds)
 5. "trimStart" and "trimEnd" refer to the footage file's own timeline (not the video timeline)
 6. "startTime" and "endTime" refer to WHERE on the video timeline to place the footage
-7. Spread clips evenly throughout the video (after the first 60s) — don't cluster in one section
-8. DO NOT use the same footage file more than once
-9. Use the word timing to find natural transition points (start/end of sentences)
-10. trimEnd - trimStart must equal endTime - startTime (same duration)
-11. startTime must align with actual word timing from the script
-12. "reason" should be in Vietnamese
+7. Script is grouped into timing CLUSTERS (~30s each). You can place footage anywhere inside a relevant cluster (not required to match exact 30s boundaries)
+8. Spread clips evenly throughout the video (after the blocked intro zone) — don't cluster in one section
+9. Prefer unique footage files; if library is small, reusing a file is allowed to reach target clip count
+10. Use the word timing to find natural transition points (start/end of sentences)
+11. trimEnd - trimStart must equal endTime - startTime (same duration)
+12. startTime must align with actual word timing from the script
+13. Use compact keys ONLY to save tokens: i=sentenceIndex, s=startTime, e=endTime, f=footageFile, ts=trimStart, te=trimEnd
 
 RESPOND WITH JSON ARRAY ONLY. No markdown code blocks.`;
 }
