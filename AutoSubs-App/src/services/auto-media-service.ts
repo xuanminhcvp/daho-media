@@ -1,21 +1,27 @@
 // auto-media-service.ts
-// Service orchestrator cho Auto Media Pipeline
-// KHÔNG viết logic mới — chỉ GỌI LẠI các hàm hiện có theo đúng thứ tự
+// CORE PIPELINE — Orchestrator cho Auto Media
+// 
+// Kiến trúc: Core Pipeline + Adapter Pattern
+// - Core Pipeline (file này): Whisper → AI Match → tạo dữ liệu UniversalTimeline
+// - DaVinci Adapter: nhận UniversalTimeline → gọi Lua API import lên timeline
+// - CapCut Adapter: nhận UniversalTimeline → tạo CapCut Draft JSON
+// - (Tương lai) Premiere Adapter, FinalCut Adapter...
 //
-// 4 bước:
-//   Bước 1: Transcribe (nếu chưa có)
-//   Bước 2: AI so chiếu script ↔ voice timing → matchingSentences
-//   Bước 3: 5 việc song song (Image, Subtitle, Music, SFX, Footage)
-//   Bước 4: Effects (sau khi Image xong)
+// Core Pipeline KHÔNG gọi bất kỳ API engine nào trực tiếp.
+// Mọi sub-pipeline chỉ RETURN dữ liệu → Adapter lo việc "đổ ra đích".
 //
-// Track cố định 7V+5A: V1=Video AI, V2=Ref Images, V3=Adjustment, V4=Text,
-// V5=Số Chương, V6=Tên Chương, V7=Footage | A1=SFX Video, A2=VO, A3=SFX Text,
-// A4=SFX Ref, A5=Nhạc Nền | 24fps mặc định
+// Track layout cố định 7V+5A (chỉ DaVinci dùng, CapCut tự quản lý tracks)
 
 import type {
     AutoMediaConfig,
     OnStepUpdate,
     PrerequisiteCheck,
+    UniversalTimeline,
+    TimelineImageClip,
+    TimelineSubtitleLine,
+    TimelineSfxClip,
+    TimelineFootageClip,
+    TimelineBgmResult,
 } from '@/types/auto-media-types'
 import { MIN_SCANNED_FILES, TRACK_LAYOUT } from '@/types/auto-media-types'
 
@@ -24,12 +30,11 @@ import { MIN_SCANNED_FILES, TRACK_LAYOUT } from '@/types/auto-media-types'
 import { aiMatchScriptToTimeline, saveMatchingResults } from '@/services/ai-matcher'
 import { analyzeScriptForMusic, analyzeScriptForSFX } from '@/services/audio-director-service'
 import { matchFootageToScript } from '@/services/footage-matcher-service'
-import { addSfxClipsToTimeline, addMediaToTimeline } from '@/api/resolve-api'
+// NOTE: addSfxClipsToTimeline, addMediaToTimeline đã chuyển sang davinci-adapter.ts
 import { normalizeSfxVolume } from '@/services/audio-ffmpeg-service'
 import { readTranscript } from '@/utils/file-utils'
 import { matchWordsToTimestamps } from '@/utils/whisper-words-matcher'
-// import removed
-const tauriFetch = window.fetch; // fix tauri-apps/plugin-http streamChannel bug
+// NOTE: tauriFetch đã chuyển sang davinci-adapter.ts — Core Pipeline không gọi API engine
 import { join } from '@tauri-apps/api/path'
 import { writeTextFile, exists, mkdir } from '@tauri-apps/plugin-fs'
 import {
@@ -56,6 +61,8 @@ export interface AutoMediaDependencies {
     // === Data từ contexts ===
     /** Timeline ID từ DaVinci */
     timelineId: string
+    /** Transcript ID — dùng để đọc file transcript đã lưu (CapCut: tên file VO, DaVinci: timelineId) */
+    transcriptId?: string
     /** Subtitles từ TranscriptContext (chứa whisper word-level timestamps) */
     subtitles: Subtitle[]
     /** Master SRT từ ProjectContext — ưu tiên dùng để tạo phụ đề chuẩn và làm nguồn map time */
@@ -116,6 +123,16 @@ export interface AutoMediaDependencies {
     // === Debug mode ===
     /** Callback chờ user nhấn "Tiếp tục" — chỉ dùng khi debugMode = true */
     waitForContinue?: () => Promise<void>
+
+    // === CapCut mode (chỉ cần khi targetEngine = 'capcut') ===
+    /** Đường dẫn file Voice Over (dùng cho CapCut Draft) */
+    voFilePath?: string
+    /** Tên project (dùng cho CapCut Draft) */
+    projectName?: string
+    /** Nếu có: ghi đè trực tiếp vào draft CapCut này (không tạo draft mới) */
+    capcutTargetDraftPath?: string
+    /** Effects settings từ CapCutEffectsSettingsPanel */
+    capCutEffectsSettings?: any
 }
 
 // ======================== ABORT CONTROLLER ========================
@@ -260,19 +277,25 @@ export async function runAutoMedia(
     // Trước đây ghi đè trực tiếp → pipeline cũ vẫn chạy ngầm
     abortController?.abort()
     abortController = new AbortController()
+    incrementalConvertedSet.clear() // Reset tracking cho lần chạy mới
 
     console.log('[AutoMedia] 🚀 Bắt đầu pipeline...')
 
     try {
-        // ====== BƯỚC 0: SETUP TIMELINE TRACKS ======
-        onStepUpdate('transcribe', 'running', '🛠️ Đang khởi tạo cấu trúc 7 Video + 5 Audio Tracks...')
-        try {
-            const { setupTimelineTracks } = await import('@/api/resolve-api')
-            await setupTimelineTracks(TRACK_LAYOUT)
-            console.log('[AutoMedia] ✅ Tự động Setup Timeline Tracks OK')
-        } catch (err) {
-            console.warn('[AutoMedia] ⚠️ Lỗi khi setup tracks DaVinci:', err)
-            onStepUpdate('transcribe', 'running', '⚠️ Không thể khởi tạo track động, bỏ qua bước Setup...')
+        // ====== BƯỚC 0: SETUP TIMELINE TRACKS (chỉ DaVinci mode) ======
+        const isDaVinciTarget = !config.targetEngine || config.targetEngine === 'davinci'
+        if (isDaVinciTarget) {
+            onStepUpdate('transcribe', 'running', '🛠️ Đang khởi tạo cấu trúc 7 Video + 5 Audio Tracks...')
+            try {
+                const { setupTimelineTracks } = await import('@/api/resolve-api')
+                await setupTimelineTracks(TRACK_LAYOUT)
+                console.log('[AutoMedia] ✅ Tự động Setup Timeline Tracks OK')
+            } catch (err) {
+                console.warn('[AutoMedia] ⚠️ Lỗi khi setup tracks DaVinci:', err)
+                onStepUpdate('transcribe', 'running', '⚠️ Không thể khởi tạo track động, bỏ qua bước Setup...')
+            }
+        } else {
+            console.log('[AutoMedia] CapCut mode — bỏ qua setupTimelineTracks')
         }
 
         // ====== BƯỚC 1: TRANSCRIBE ======
@@ -311,7 +334,9 @@ export async function runAutoMedia(
 
         if (config.enableMasterSrt && (!verifiedMasterSrt || verifiedMasterSrt.length === 0)) {
             onStepUpdate('aiMatch', 'running', '🌟 Đang tự động tạo Master SRT từ Whisper...')
-            const transcript = await readTranscript(`${deps.timelineId}.json`)
+            // Dùng transcriptId (CapCut: tên VO) hoặc timelineId (DaVinci)
+            const tId = deps.transcriptId || deps.timelineId
+            const transcript = await readTranscript(`${tId}.json`)
             if (!transcript) {
                 throw new Error('Không tìm thấy transcript file để tạo Master SRT')
             }
@@ -363,141 +388,277 @@ export async function runAutoMedia(
             const { masterSrtToTranscript } = await import('@/utils/master-srt-utils')
             transcript = masterSrtToTranscript(verifiedMasterSrt)
         } else {
-            transcript = await readTranscript(`${deps.timelineId}.json`)
+            const tId2 = deps.transcriptId || deps.timelineId
+            transcript = await readTranscript(`${tId2}.json`)
         }
         
         if (!transcript) {
-            onStepUpdate('aiMatch', 'error', 'Không tìm thấy transcript file', `${deps.timelineId}.json`)
+            onStepUpdate('aiMatch', 'error', 'Không tìm thấy transcript file', `${deps.transcriptId || deps.timelineId}.json`)
             throw new Error('Không tìm thấy transcript file')
         }
         
         onStepUpdate('aiMatch', 'running', `📝 ${sentences.length} câu script + transcript → gọi AI matching...`)
 
-        // Sub-step 2c: Gọi AI match (logic hiện có — có retry 2 vòng)
-        let matchedSentences: ScriptSentence[]
-        try {
-            matchedSentences = await aiMatchScriptToTimeline(
-                sentences,
-                transcript,
-                (progress) => {
-                    // Hiển thị chi tiết progress từ AI matcher (batch 1/5, retry...)
-                    onStepUpdate('aiMatch', 'running', `🤖 AI match: ${progress.message}`)
-                },
-                deps.imageFolder || undefined
-            )
-        } catch (err) {
-            onStepUpdate('aiMatch', 'error', 'AI match lỗi', String(err))
-            throw new Error('AI match thất bại')
-        }
+        
+        // ======================== CHIẾN LƯỢC DYNAMIC QUEUE ========================
+        // Không đợi tuần tự như xưa nữa, ta triển khai Bể chứa Sự kiện (Event-driven Queue)!
+        
+        onStepUpdate('aiMatch', 'running', '🚀 Kích hoạt Tác vụ Lũy tiến (Dynamic Queue)...');
 
-        // Sub-step 2d: Lưu kết quả
-        onStepUpdate('aiMatch', 'running', '💾 Đang lưu matching results...')
-        deps.setMatchingSentences(matchedSentences)
-        if (deps.imageFolder) {
-            deps.setMatchingFolder(deps.imageFolder)
-            await saveMatchingResults(deps.imageFolder, matchedSentences)
-        }
+        // Khởi tạo Promise để giải phóng Làn sóng 2
+        let resolveMatchedSentences!: (val: ScriptSentence[]) => void;
+        let rejectMatchedSentences!: (err: Error) => void;
+        const matchedSentencesReady = new Promise<ScriptSentence[]>((resolve, reject) => {
+            resolveMatchedSentences = resolve;
+            rejectMatchedSentences = reject;
+        });
 
-        // Debug: đếm chi tiết quality
-        const highCount = matchedSentences.filter(s => s.quality === 'high').length
-        const mediumCount = matchedSentences.filter(s => s.quality === 'medium').length
-        const lowCount = matchedSentences.filter(s => s.quality === 'low').length
-        const totalMatched = matchedSentences.filter(s => s.start > 0 || s.end > 0).length
-        console.log(`[AutoMedia] AI match: high=${highCount}, medium=${mediumCount}, low=${lowCount}, total matched=${totalMatched}`)
-        // Debug details cho AI match
-        const debugAiMatch = `total=${matchedSentences.length} | high=${highCount} medium=${mediumCount} low=${lowCount} | withTiming=${totalMatched} | sample: ${matchedSentences.slice(0, 2).map(s => `[${s.num}] ${s.text.substring(0, 30)}... start=${s.start.toFixed(1)} quality=${s.quality}`).join(' | ')}`
-        onStepUpdate('aiMatch', 'done', `✅ ${totalMatched}/${sentences.length} câu matched (high: ${highCount}, medium: ${mediumCount})`, undefined, debugAiMatch)
-        console.log('[AutoMedia] AI match hoàn tất:', matchedSentences.length, 'câu')
+        // ★ EARLY MATCH GATE: Mở khoá cho Music/SFX/Footage ngay khi batch chính xong
+        // TRƯỚC retry loop + save → tiết kiệm 5-15 giây
+        // Music/SFX/Footage chỉ cần timing ước lượng (batch chính đã đủ tốt)
+        // Image Pipeline vẫn chờ matchedSentencesReady (cần timing chính xác sau retry)
+        let resolveEarlyMatch!: (val: ScriptSentence[]) => void;
+        let rejectEarlyMatch!: (err: Error) => void;
+        const earlyMatchReady = new Promise<ScriptSentence[]>((resolve, reject) => {
+            resolveEarlyMatch = resolve;
+            rejectEarlyMatch = reject;
+        });
 
-        checkAbort()
-
-        // Debug mode: dừng chờ user nhấn Tiếp tục sau AI Match
-        if (config.debugMode && deps.waitForContinue) {
-            console.log('[AutoMedia] 🐛 Debug: chờ user nhấn Tiếp tục...')
-            await deps.waitForContinue()
-        }
-
-        // ====== BƯỚC 3: CÁC BƯỚC CON ======
-        // Debug mode: chạy tuần tự + dừng chờ user nhấn "Tiếp tục"
-        // Normal mode: chạy song song (Promise.allSettled)
+        // Hàng đợi Task
+        const activeQueueTasks: Promise<void>[] = [];
 
         // Helper: chạy 1 step + pause nếu debug mode
-        const runStepWithDebugPause = async (
-            _stepName: string,
-            stepFn: () => Promise<void>
-        ) => {
+        const runStepWithDebugPause = async (_stepName: string, stepFn: () => Promise<void>) => {
             await stepFn()
-            // Nếu debug mode → pause chờ user nhấn Tiếp tục
             if (config.debugMode && deps.waitForContinue) {
                 await deps.waitForContinue()
             }
         }
 
-        // Build danh sách steps cần chạy
-        interface StepTask {
-            name: string
-            enabled: boolean
-            skipReason?: string
-            run: () => Promise<void>
-        }
+        // ======================== LÀN SÓNG 1: CHẠY SONG SONG VỚI AI MATCH ========================
 
-        const steps: StepTask[] = [
-            {
-                name: 'image',
-                enabled: config.enableImage && !!deps.imageFolder && deps.imageFiles.length > 0,
-                skipReason: 'Bỏ qua — thiếu folder ảnh hoặc file ảnh',
-                run: () => runImagePipeline(deps, matchedSentences, onStepUpdate, config),
-            },
-            {
-                name: 'subtitle',
-                enabled: config.enableSubtitle && !!deps.scriptText.trim(),
-                skipReason: 'Bỏ qua — thiếu script',
-                run: () => runSubtitlePipeline(deps, matchedSentences, onStepUpdate, config),
-            },
-            {
-                name: 'music',
-                enabled: config.enableMusic && deps.musicItems.filter(i => i.aiMetadata).length >= MIN_SCANNED_FILES,
-                skipReason: 'Bỏ qua — thiếu folder nhạc hoặc chưa scan đủ',
-                run: () => runMusicPipeline(deps, matchedSentences, onStepUpdate),
-            },
-            {
-                name: 'sfx',
-                enabled: config.enableSfx && deps.sfxItems.filter(i => i.aiMetadata).length >= MIN_SCANNED_FILES,
-                skipReason: 'Bỏ qua — thiếu folder SFX hoặc chưa scan đủ',
-                run: () => runSfxPipeline(deps, matchedSentences, onStepUpdate),
-            },
-            {
-                name: 'footage',
-                enabled: config.enableFootage && deps.footageItems.filter(i => i.aiDescription).length >= MIN_SCANNED_FILES,
-                skipReason: 'Bỏ qua — thiếu folder footage hoặc chưa scan đủ',
-                run: () => runFootagePipeline(deps, matchedSentences, onStepUpdate),
-            },
-        ]
+        // 🟢 TASK 1: AI Match (Rường cột) + Incremental Unlock
+        // Khi mỗi batch xong → bắt đầu convert ảnh cho batch đó ngay (không chờ hết)
+        const incrementalImageJobs: Promise<void>[] = [] // Collect convert jobs đang chạy
+        
+        const taskAIMatch = async () => {
+            try {
+                let matchedSentences: ScriptSentence[];
+                matchedSentences = await aiMatchScriptToTimeline(
+                    sentences,
+                    transcript,
+                    (progress) => onStepUpdate('aiMatch', 'running', `🤖 AI match: ${progress.message}`),
+                    deps.imageFolder || undefined,
+                    'video', // importType
+                    // ★ INCREMENTAL UNLOCK: Callback khi mỗi batch hoàn tất → convert ảnh ngay
+                    (batchEvent) => {
+                        console.log(`[AutoMedia] 🔓 Batch ${batchEvent.batchNum}/${batchEvent.totalBatches} xong (${batchEvent.partialResults.length} results) → ${batchEvent.timeRange}`)
+                        onStepUpdate('aiMatch', 'running', `🤖 Batch ${batchEvent.batchNum}/${batchEvent.totalBatches} ✅ (${batchEvent.partialResults.length} câu) — mở khoá sub-tasks...`)
+                        
+                        // Nếu Image Pipeline được bật → bắt đầu convert ảnh cho batch này ngay
+                        // ★ CapCut KHÔNG cần convert ảnh → video (dùng ảnh gốc type="photo")
+                        const isCapCutTarget = config.targetEngine === 'capcut'
+                        if (config.enableImage && deps.imageFolder && deps.imageFiles.length > 0 && !isCapCutTarget) {
+                            const job = startIncrementalImageConvert(
+                                batchEvent.partialResults,
+                                deps.imageFiles,
+                                onStepUpdate,
+                                batchEvent.batchNum,
+                                batchEvent.totalBatches
+                            )
+                            incrementalImageJobs.push(job)
+                        }
+                    },
+                    // ★ EARLY UNLOCK: Mở khoá Music/SFX/Footage ngay khi batch chính xong
+                    // TRƯỚC retry loop → tiết kiệm 5-15 giây
+                    (earlyResults) => {
+                        console.log(`[AutoMedia] ⚡ EARLY UNLOCK: ${earlyResults.length} scenes → mở khoá Music/SFX/Footage`)
+                        onStepUpdate('aiMatch', 'running', `⚡ Batch chính xong — mở khoá Music/SFX/Footage sớm!`)
+                        resolveEarlyMatch(earlyResults)
+                    }
+                );
 
-        if (config.debugMode) {
-            // ========== DEBUG MODE: TUẦN TỰ ==========
-            console.log('[AutoMedia] 🐛 Debug mode: chạy tuần tự từng bước')
-            for (const step of steps) {
-                if (!step.enabled) {
-                    if (step.skipReason) onStepUpdate(step.name as any, 'skipped', step.skipReason)
-                    continue
+                // Lưu kết quả
+                onStepUpdate('aiMatch', 'running', '💾 Đang lưu matching results...')
+                deps.setMatchingSentences(matchedSentences)
+                if (deps.imageFolder) {
+                    deps.setMatchingFolder(deps.imageFolder)
+                    await saveMatchingResults(deps.imageFolder, matchedSentences)
                 }
-                await runStepWithDebugPause(step.name, step.run)
-                checkAbort()
+
+                // Cập nhật UI
+                const highCount = matchedSentences.filter(s => s.quality === 'high').length
+                const mediumCount = matchedSentences.filter(s => s.quality === 'medium').length
+                const lowCount = matchedSentences.filter(s => s.quality === 'low').length
+                const totalMatched = matchedSentences.filter(s => s.start > 0 || s.end > 0).length
+                
+                const debugAiMatch = `total=${matchedSentences.length} | high=${highCount} medium=${mediumCount} low=${lowCount} | withTiming=${totalMatched}`
+                onStepUpdate('aiMatch', 'done', `✅ ${totalMatched}/${sentences.length} câu matched (high: ${highCount})`, undefined, debugAiMatch)
+
+                checkAbort();
+
+                if (config.debugMode && deps.waitForContinue) {
+                    await deps.waitForContinue()
+                }
+
+                // Chờ tất cả incremental image convert jobs hoàn tất
+                if (incrementalImageJobs.length > 0) {
+                    console.log(`[AutoMedia] ⏳ Chờ ${incrementalImageJobs.length} incremental image convert jobs...`)
+                    await Promise.allSettled(incrementalImageJobs)
+                }
+
+                // MỞ KHÓA LUỸ TIẾN (Làn sóng 2) — Image Pipeline + kết quả cuối cùng!
+                resolveMatchedSentences(matchedSentences);
+
+            } catch (err) {
+                onStepUpdate('aiMatch', 'error', 'AI match lỗi', String(err));
+                rejectMatchedSentences(new Error('AI match thất bại'));
+                rejectEarlyMatch(new Error('AI match thất bại')); // Ngưng Music/SFX/Footage đang chờ
             }
+        };
+
+        // Đẩy Task 1 vào Queue lập tức
+        activeQueueTasks.push(taskAIMatch());
+
+        // ====== Thu thập kết quả từ sub-pipelines để đóng gói UniversalTimeline ======
+        let timelineImageClips: TimelineImageClip[] = []
+        let timelineSubtitleData: { subtitleLines: TimelineSubtitleLine[]; srtContent?: string; srtFilePath?: string } = { subtitleLines: [] }
+        let timelineBgm: TimelineBgmResult | null = null
+        let timelineSfxClips: TimelineSfxClip[] = []
+        let timelineFootageClips: TimelineFootageClip[] = []
+        let timelineMatchedSentences: any[] = []
+        // ======================== SRT THÔ SENTENCES ========================
+        // Ước lượng timing cho script sentences từ Whisper transcript
+        // SFX + Footage chỉ cần text + timing "đủ tốt" → KHÔNG cần chờ AI Match
+        const segments = transcript.originalSegments || transcript.segments || []
+        const totalDurationRaw = segments.length > 0 ? segments[segments.length - 1].end : 300
+        const avgDurationPerSentence = totalDurationRaw / Math.max(1, sentences.length)
+
+        const srtRawSentences: ScriptSentence[] = sentences.map((s, i) => ({
+            num: s.num,
+            text: s.text,
+            start: i * avgDurationPerSentence,
+            end: (i + 1) * avgDurationPerSentence,
+            quality: 'srt-raw' as any, // Timing ước lượng từ SRT thô
+            matchRate: '',
+            matchedWhisper: '(srt-raw estimate)',
+        }))
+        console.log(`[AutoMedia] 📋 SRT thô: ${srtRawSentences.length} câu, duration ${totalDurationRaw.toFixed(0)}s, avg ${avgDurationPerSentence.toFixed(1)}s/câu`)
+
+        // ======================== LÀN SÓNG 1: CHẠY SONG SONG VỚI AI MATCH ========================
+
+        // 🟢 TASK 2: SUBTITLE PIPELINE (Chạy Độc lập, không đợi Câu)
+        if (config.enableSubtitle && !!deps.scriptText.trim()) {
+            activeQueueTasks.push(runStepWithDebugPause('subtitle', async () => {
+                onStepUpdate('subtitle', 'running', '📝 Đang chạy Subtitle độc lập từ SRT Thô...');
+                timelineSubtitleData = await runSubtitlePipeline(deps, [], onStepUpdate, config);
+            }));
         } else {
-            // ========== NORMAL MODE: SONG SONG ==========
-            const parallelTasks: Promise<void>[] = []
-            for (const step of steps) {
-                if (step.enabled) {
-                    parallelTasks.push(step.run())
-                } else if (step.skipReason) {
-                    onStepUpdate(step.name as any, 'skipped', step.skipReason)
-                }
-            }
-            await Promise.allSettled(parallelTasks)
+            onStepUpdate('subtitle', 'skipped', 'Bỏ qua — thiếu script');
         }
 
+        // 🟢 TASK 3: SFX PIPELINE (★ Chạy song song — dùng SRT thô, KHÔNG chờ AI Match)
+        // SFX AI Planner chỉ cần script text → tìm trigger words
+        // Auto-assign dùng whisperWords riêng → timing chính xác word-level
+        if (config.enableSfx && deps.sfxItems.filter(i => i.aiMetadata).length >= MIN_SCANNED_FILES) {
+            activeQueueTasks.push(runStepWithDebugPause('sfx', async () => {
+                onStepUpdate('sfx', 'running', '🔊 SFX: chạy song song dùng SRT thô...');
+                timelineSfxClips = await runSfxPipeline(deps, srtRawSentences, onStepUpdate);
+            }));
+        } else {
+            onStepUpdate('sfx', 'skipped', 'Bỏ qua — thiếu folder SFX hoặc chưa scan đủ');
+        }
+
+        // 🟢 TASK 4: FOOTAGE PIPELINE (★ Chạy song song — dùng SRT thô, KHÔNG chờ AI Match)
+        // Footage AI chỉ cần script text + timing ước lượng → match footage
+        // Footage clip rộng (5-10s) → timing ước lượng đủ tốt
+        if (config.enableFootage && deps.footageItems.filter(i => i.aiDescription).length >= MIN_SCANNED_FILES) {
+            activeQueueTasks.push(runStepWithDebugPause('footage', async () => {
+                onStepUpdate('footage', 'running', '🎬 Footage: chạy song song dùng SRT thô...');
+                timelineFootageClips = await runFootagePipeline(deps, srtRawSentences, onStepUpdate);
+            }));
+        } else {
+            onStepUpdate('footage', 'skipped', 'Bỏ qua — thiếu folder footage');
+        }
+
+        // ======================== LÀN SÓNG 2: PHỤ THUỘC TIMING ========================
+
+        // 🟢 TASK 5: MUSIC PIPELINE (Chờ Early Match — cần context emotion chính xác)
+        if (config.enableMusic && deps.musicItems.filter(i => i.aiMetadata).length >= MIN_SCANNED_FILES) {
+            activeQueueTasks.push(runStepWithDebugPause('music', async () => {
+                onStepUpdate('music', 'running', '⏳ Đợi batch chính xong...');
+                const matched = await earlyMatchReady;
+                timelineBgm = await runMusicPipeline(deps, matched, onStepUpdate);
+            }));
+        } else {
+            onStepUpdate('music', 'skipped', 'Bỏ qua — thiếu folder nhạc nền');
+        }
+
+        // 🟢 TASK 6: IMAGE PIPELINE (Chờ AI Match hoàn tất — cần timing chính xác)
+        if (config.enableImage && !!deps.imageFolder && deps.imageFiles.length > 0) {
+            activeQueueTasks.push(runStepWithDebugPause('image', async () => {
+                onStepUpdate('image', 'running', '⏳ Đợi AI Match hoàn tất...');
+                const matched = await matchedSentencesReady;
+                timelineImageClips = await runImagePipeline(deps, matched, onStepUpdate, config);
+                timelineMatchedSentences = matched; // Lưu lại cho UniversalTimeline
+            }));
+        } else {
+            onStepUpdate('image', 'skipped', 'Bỏ qua — thiếu folder ảnh');
+        }
+
+        // ========== ĐƯA CHO QUẢN ĐỐC NODE.JS THI HÀNH (PROMISE.ALL) ==========
+        await Promise.allSettled(activeQueueTasks);
+
+        // ======================== ĐÓNG GÓI UNIVERSAL TIMELINE ========================
+        const universalTimeline: UniversalTimeline = {
+            imageClips: timelineImageClips,
+            subtitleLines: timelineSubtitleData.subtitleLines,
+            bgm: timelineBgm,
+            sfxClips: timelineSfxClips,
+            footageClips: timelineFootageClips,
+            matchedSentences: timelineMatchedSentences,
+            srtContent: timelineSubtitleData.srtContent,
+            srtFilePath: timelineSubtitleData.srtFilePath,
+            config,
+            trackLayout: TRACK_LAYOUT,
+            startedAt: Date.now(),
+        }
+
+        console.log('[AutoMedia] 📦 UniversalTimeline đóng gói xong:', {
+            images: universalTimeline.imageClips.length,
+            subtitles: universalTimeline.subtitleLines.length,
+            bgm: !!universalTimeline.bgm,
+            sfx: universalTimeline.sfxClips.length,
+            footage: universalTimeline.footageClips.length,
+        })
+
+        // ======================== GỌI ADAPTER THEO ENGINE ========================
+        const targetEngine = config.targetEngine || 'davinci'
+
+        if (targetEngine === 'davinci') {
+            // DaVinci Adapter: Gọi Lua API, import lên timeline
+            onStepUpdate('effects', 'running', '📤 DaVinci: đang đổ dữ liệu lên timeline...')
+            const { exportToDaVinci } = await import('@/adapters/davinci-adapter')
+            await exportToDaVinci(universalTimeline, onStepUpdate, config, {
+                subtitleTemplate: deps.subtitleTemplate || 'Subtitle Default',
+                subtitleFontSize: deps.subtitleFontSize || 0.04,
+            })
+        } else if (targetEngine === 'capcut') {
+            // CapCut Adapter: Tạo CapCut Draft JSON
+            onStepUpdate('effects', 'running', '📤 CapCut: đang tạo Draft project...')
+            const { exportToCapCut } = await import('@/adapters/capcut-adapter')
+            await exportToCapCut(universalTimeline, onStepUpdate, config, {
+                voFilePath: deps.voFilePath,
+                projectName: deps.projectName,
+                targetDraftPath: deps.capcutTargetDraftPath,
+                effectsSettings: deps.capCutEffectsSettings,
+            })
+        } else {
+            console.warn(`[AutoMedia] ⚠️ Engine "${targetEngine}" chưa có adapter — bỏ qua export`)
+            onStepUpdate('effects', 'done', `⚠️ Chưa có adapter cho "${targetEngine}" — dữ liệu đã sẵn sàng nhưng chưa xuất`)
+        }
+
+        universalTimeline.finishedAt = Date.now()
         console.log('[AutoMedia] ✅ Pipeline hoàn tất!')
 
     } catch (err) {
@@ -508,18 +669,94 @@ export async function runAutoMedia(
     }
 }
 
+// ======================== INCREMENTAL IMAGE CONVERT ========================
+
+/**
+ * Incremental Image Convert: Khi AI Match batch N xong, tìm ảnh nào
+ * match với kết quả batch đó → convert ảnh tĩnh → video ngay.
+ * 
+ * ★ Chạy SONG SONG với AI Match — không chờ toàn bộ Match xong mới bắt đầu convert.
+ * Kết quả: khi AI Match xong hết, phần lớn ảnh đã convert xong → tiết kiệm đáng kể thời gian.
+ * 
+ * Set để theo dõi ảnh đã convert (tránh convert trùng lặp giữa các batch overlap)
+ */
+const incrementalConvertedSet = new Set<string>()
+
+async function startIncrementalImageConvert(
+    partialResults: { num: number; start: number; end: number; whisper: string }[],
+    imageFiles: string[],
+    onStepUpdate: OnStepUpdate,
+    batchNum: number,
+    totalBatches: number
+): Promise<void> {
+    try {
+        const { getImageSceneNumber } = await import('@/utils/image-matcher')
+        const FPS = TRACK_LAYOUT.DEFAULT_FPS
+
+        // Tìm ảnh nào match với partial results
+        const matchedNums = new Set(partialResults.map(r => r.num))
+        const matchedImages = imageFiles.filter(filePath => {
+            const sceneNum = getImageSceneNumber(filePath)
+            return matchedNums.has(sceneNum)
+        })
+
+        // Lọc ảnh tĩnh chưa convert
+        const stillImages = matchedImages.filter(filePath => {
+            if (!isStillImage(filePath)) return false
+            if (incrementalConvertedSet.has(filePath)) return false // Đã convert ở batch trước
+            return true
+        })
+
+        if (stillImages.length === 0) return // Không có ảnh tĩnh cần convert
+
+        console.log(`[AutoMedia] 🎨 Incremental B${batchNum}/${totalBatches}: convert ${stillImages.length} ảnh tĩnh → video`)
+        onStepUpdate('image', 'running', `🎨 B${batchNum}/${totalBatches}: convert ${stillImages.length} ảnh tĩnh...`)
+
+        await ensureTempDir()
+
+        // Tạo convert jobs — dùng duration ước lượng từ partial results
+        const stillJobs: Array<{ inputPath: string; durationFrames: number; outputPath: string }> = []
+        for (const filePath of stillImages) {
+            const sceneNum = getImageSceneNumber(filePath)
+            const matchResult = partialResults.find(r => r.num === sceneNum)
+            const duration = matchResult ? Math.max(0.5, matchResult.end - matchResult.start) : 3 // Fallback 3s
+            const durationFrames = Math.max(1, Math.round(duration * FPS))
+
+            stillJobs.push({
+                inputPath: filePath,
+                durationFrames,
+                outputPath: await getVideoOutputPath(filePath),
+            })
+
+            // Đánh dấu đã convert để batch sau không trùng
+            incrementalConvertedSet.add(filePath)
+        }
+
+        // Convert tất cả ảnh trong batch này
+        await convertImagesToVideo(stillJobs, FPS, (progress) => {
+            onStepUpdate('image', 'running', `🎨 B${batchNum}: convert ảnh ${progress.current || '?'}/${progress.total || stillJobs.length}`)
+        })
+
+        console.log(`[AutoMedia] ✅ Incremental B${batchNum}: ${stillJobs.length} ảnh đã convert xong`)
+
+    } catch (err) {
+        console.warn(`[AutoMedia] ⚠️ Incremental B${batchNum} convert lỗi:`, err)
+        // Không throw — cho phép pipeline tiếp tục
+    }
+}
+
 // ======================== SUB-PIPELINES ========================
 
 /**
- * Image Pipeline: Convert ảnh → video → import lên Track V1
- * Sau đó nếu bật Effects → chạy Effects luôn
+ * Image Pipeline: Convert ảnh → video → trả về TimelineImageClip[]
+ * KHÔNG gọi DaVinci API — Adapter sẽ import dữ liệu lên đích
  */
 async function runImagePipeline(
     deps: AutoMediaDependencies,
     matchedSentences: ScriptSentence[],
     onStepUpdate: OnStepUpdate,
-    config: AutoMediaConfig
-): Promise<void> {
+    _config: AutoMediaConfig
+): Promise<TimelineImageClip[]> {
     onStepUpdate('image', 'running', '🖼️ Đang kết hợp ảnh + timing từ AI match...')
 
     try {
@@ -571,13 +808,10 @@ async function runImagePipeline(
 
         // Bước 2: Tạo clips để import
         // ★ ĐỒNG BỘ với Image Import Tab: dùng lastValidFilePath để lấp gaps
-        // (Tab dùng: result.filePath || lastValidFilePath — tránh khoảng trống timeline)
         const clips: Array<{ filePath: string; startTime: number; endTime: number }> = []
-        let lastValidFilePath = '' // Lưu ảnh trước đó để lấp gaps
+        let lastValidFilePath = ''
         for (const result of matchResults) {
-            // Import tất cả clips có timing hợp lệ
             if (result.endTime > result.startTime) {
-                // Nếu có filePath → dùng, nếu không → dùng ảnh trước đó (giống tab)
                 const filePath = result.filePath || lastValidFilePath
                 if (filePath) {
                     clips.push({
@@ -592,83 +826,192 @@ async function runImagePipeline(
 
         if (clips.length === 0) {
             onStepUpdate('image', 'error', 'Không có ảnh nào match được', 'Kiểm tra lại script ↔ file ảnh')
-            return
+            return []
         }
 
-        // Sort + fill gaps
-        clips.sort((a, b) => a.startTime - b.startTime)
-        for (let i = 0; i < clips.length - 1; i++) {
-            const gap = clips[i + 1].startTime - clips[i].endTime
-            if (gap > 0.05) clips[i].endTime = clips[i + 1].startTime
-        }
+        // ======================== SANITIZE TIMELINE ẢNH (KHÔNG CHO KHOẢNG TRẮNG) ========================
+        // Mục tiêu:
+        // 1) Không overlap giữa 2 clip ảnh.
+        // 2) Không gap trắng giữa các clip ảnh.
+        // 3) Nếu thiếu ảnh cuối timeline, kéo clip cuối tới hết VO (voiceEnd).
+        // 4) Nếu thiếu ảnh đầu timeline, dùng ảnh đầu để lấp từ 0s.
+        // 5) Nếu có clip trùng cùng khoảng thời gian, giữ 1 clip để tránh chồng hình.
 
-        onStepUpdate('image', 'running', `🎨 Sort + fill gaps xong — ${clips.length} clips là ảnh tĩnh cần convert…`)
+        clips.sort((a, b) => {
+            if (a.startTime !== b.startTime) return a.startTime - b.startTime
+            if (a.endTime !== b.endTime) return a.endTime - b.endTime
+            return a.filePath.localeCompare(b.filePath)
+        })
 
-        // Bước 3: Convert ảnh tĩnh → video (nếu cần)
-        const FPS = TRACK_LAYOUT.DEFAULT_FPS
-        const stillJobs: Array<{ inputPath: string; durationFrames: number; outputPath: string }> = []
+        // Tính voiceEnd từ matchedSentences (source-of-truth cho phần ảnh phủ timeline VO).
+        const voiceEndTime = Math.max(...matchedSentences.map(s => s.end), 0)
+        const MIN_CLIP_SEC = 1 / TRACK_LAYOUT.DEFAULT_FPS
+        const EPS = 0.000001
+
+        // Bước A: Dedupe clip có cùng time range tuyệt đối.
+        // Tránh trường hợp 2 ảnh trùng thời điểm gây chồng hình khi import.
+        const dedupedClips: Array<{ filePath: string; startTime: number; endTime: number }> = []
+        let duplicateTimeRangeDropped = 0
         for (const clip of clips) {
-            if (isStillImage(clip.filePath)) {
-                const durationFrames = Math.max(1, Math.round((clip.endTime - clip.startTime) * FPS))
-                stillJobs.push({
-                    inputPath: clip.filePath,
-                    durationFrames,
-                    outputPath: await getVideoOutputPath(clip.filePath),
-                })
+            const prev = dedupedClips[dedupedClips.length - 1]
+            if (
+                prev &&
+                Math.abs(prev.startTime - clip.startTime) < EPS &&
+                Math.abs(prev.endTime - clip.endTime) < EPS
+            ) {
+                duplicateTimeRangeDropped++
+                continue
+            }
+            dedupedClips.push({ ...clip })
+        }
+
+        // Bước B: Lấp đầu timeline (nếu clip đầu bắt đầu > 0s).
+        // Dùng chính ảnh đầu để phủ đoạn đầu tránh khung trắng.
+        if (dedupedClips.length > 0 && dedupedClips[0].startTime > EPS) {
+            dedupedClips.unshift({
+                filePath: dedupedClips[0].filePath,
+                startTime: 0,
+                endTime: dedupedClips[0].startTime,
+            })
+        } else if (dedupedClips.length > 0 && dedupedClips[0].startTime < 0) {
+            dedupedClips[0].startTime = 0
+        }
+
+        let gapsFilled = 0
+        let overlapsFixed = 0
+
+        // Bước C: Ép timeline liên tục 100% theo thứ tự clip.
+        for (let i = 0; i < dedupedClips.length - 1; i++) {
+            const curr = dedupedClips[i]
+            const next = dedupedClips[i + 1]
+
+            // Nếu overlap: đẩy clip sau bắt đầu tại end clip trước.
+            if (next.startTime + EPS < curr.endTime) {
+                overlapsFixed++
+                next.startTime = curr.endTime
+            }
+
+            // Nếu gap: kéo end clip trước chạm start clip sau.
+            if (curr.endTime + EPS < next.startTime) {
+                gapsFilled++
+                curr.endTime = next.startTime
+            }
+
+            // Safety: clip sau luôn phải có duration dương.
+            if (next.endTime <= next.startTime + EPS) {
+                next.endTime = next.startTime + MIN_CLIP_SEC
             }
         }
 
-        if (stillJobs.length > 0) {
-            await ensureTempDir()
-            await convertImagesToVideo(stillJobs, TRACK_LAYOUT.DEFAULT_FPS, (progress) => {
-                onStepUpdate('image', 'running', `🎨 Convert ảnh → video: ${progress.current || '?'}/${progress.total || stillJobs.length}`)
-            })
-            // Thay filePath bằng video đã convert
+        // Bước D: Lấp đuôi timeline tới hết VO nếu còn thiếu.
+        if (dedupedClips.length > 0 && voiceEndTime > 0) {
+            const last = dedupedClips[dedupedClips.length - 1]
+            if (last.endTime + EPS < voiceEndTime) {
+                gapsFilled++
+                last.endTime = voiceEndTime
+            } else if (last.endTime > voiceEndTime + EPS) {
+                // Không để ảnh vượt quá VO.
+                last.endTime = voiceEndTime
+            }
+            // Safety sau clamp tail.
+            if (last.endTime <= last.startTime + EPS) {
+                last.endTime = last.startTime + MIN_CLIP_SEC
+            }
+        }
+
+        // Ghi đè lại mảng clips để phần convert dùng dữ liệu đã sanitize.
+        clips.length = 0
+        clips.push(...dedupedClips)
+
+        onStepUpdate(
+            'image',
+            'running',
+            `🎨 Timeline ảnh đã sanitize — clips=${clips.length}, gapFilled=${gapsFilled}, overlapFixed=${overlapsFixed}, dropDup=${duplicateTimeRangeDropped}`
+        )
+
+        // Bước 3: Convert ảnh tĩnh → video (nếu cần)
+        // ★ CapCut KHÔNG cần convert ảnh → video: CapCut dùng ảnh gốc (type="photo"),
+        //   tự set duration qua source_timerange. Chỉ DaVinci mới cần video.
+        const isCapCutTarget = _config.targetEngine === 'capcut'
+        
+        if (isCapCutTarget) {
+            // CapCut: giữ nguyên ảnh gốc, KHÔNG convert
+            console.log(`[AutoMedia] 🖼️ CapCut mode: bỏ qua convert ảnh → video (${clips.length} clips dùng ảnh gốc)`)
+            onStepUpdate('image', 'running', `🖼️ CapCut: dùng ảnh gốc (không cần convert) — ${clips.length} clips`)
+        } else {
+            // DaVinci: convert ảnh tĩnh → video bằng ffmpeg
+            // ★ Skip ảnh đã convert bởi Incremental Unlock (Pha 2) → tránh convert 2 lần
+            const FPS = TRACK_LAYOUT.DEFAULT_FPS
+            const stillJobs: Array<{ inputPath: string; durationFrames: number; outputPath: string }> = []
+            let skippedByIncremental = 0
             for (const clip of clips) {
                 if (isStillImage(clip.filePath)) {
-                    clip.filePath = await getVideoOutputPath(clip.filePath)
+                    // Kiểm tra đã convert bởi Incremental chưa
+                    if (incrementalConvertedSet.has(clip.filePath)) {
+                        skippedByIncremental++
+                        // Ảnh đã convert → chỉ cần update filePath sang output path
+                        clip.filePath = await getVideoOutputPath(clip.filePath)
+                        continue
+                    }
+                    const durationFrames = Math.max(1, Math.round((clip.endTime - clip.startTime) * FPS))
+                    stillJobs.push({
+                        inputPath: clip.filePath,
+                        durationFrames,
+                        outputPath: await getVideoOutputPath(clip.filePath),
+                    })
+                }
+            }
+
+            if (skippedByIncremental > 0) {
+                console.log(`[AutoMedia] ⚡ Image Pipeline: ${skippedByIncremental} ảnh đã convert bởi Incremental, chỉ cần convert thêm ${stillJobs.length}`)
+            }
+
+            if (stillJobs.length > 0) {
+                await ensureTempDir()
+                await convertImagesToVideo(stillJobs, TRACK_LAYOUT.DEFAULT_FPS, (progress) => {
+                    onStepUpdate('image', 'running', `🎨 Convert ảnh → video: ${progress.current || '?'}/${progress.total || stillJobs.length} (${skippedByIncremental} đã sẵn sàng)`)
+                })
+                // Thay filePath bằng video đã convert (chỉ cho ảnh mới convert)
+                for (const clip of clips) {
+                    if (isStillImage(clip.filePath)) {
+                        clip.filePath = await getVideoOutputPath(clip.filePath)
+                    }
                 }
             }
         }
 
         checkAbort()
 
-        // Bước 4: Import lên DaVinci Track V1
-        onStepUpdate('image', 'running', `📥 Đang import ${clips.length} clips lên Track V${TRACK_LAYOUT.VIDEO_AI_TRACK}...`)
-        await addMediaToTimeline(clips, TRACK_LAYOUT.VIDEO_AI_TRACK)
+        // ★ CORE PIPELINE: Return dữ liệu cho Adapter (KHÔNG gọi DaVinci API)
+        const convertInfo = isCapCutTarget ? 'skip (CapCut dùng ảnh gốc)' : 'done'
+        const debugImg = `total files: ${deps.imageFiles.length} | matched: ${matchResults.filter(r => r.quality === 'matched').length} | clips: ${clips.length} | convert: ${convertInfo}\nvoiceEnd: ${voiceEndTime.toFixed(1)}s | gapFilled: ${gapsFilled} | overlapFixed: ${overlapsFixed} | dropDup: ${duplicateTimeRangeDropped}\nSample: ${clips.slice(0, 3).map(c => `"${c.filePath.split('/').pop()}" ${c.startTime.toFixed(1)}-${c.endTime.toFixed(1)}s`).join(' | ')}\nRange: ${clips[0]?.startTime.toFixed(1)}s → ${clips[clips.length-1]?.endTime.toFixed(1)}s`
+        onStepUpdate('image', 'done', `✅ Image: ${clips.length} clips sẵn sàng`, undefined, debugImg)
 
-        // Debug: chi tiết clips đã import
-        const debugImg = `total files: ${deps.imageFiles.length} | matched: ${matchResults.filter(r => r.quality === 'matched').length} | clips: ${clips.length} | still→video: ${stillJobs.length}\nSample: ${clips.slice(0, 3).map(c => `"${c.filePath.split('/').pop()}" ${c.startTime.toFixed(1)}-${c.endTime.toFixed(1)}s`).join(' | ')}\nRange: ${clips[0]?.startTime.toFixed(1)}s → ${clips[clips.length-1]?.endTime.toFixed(1)}s`
-        onStepUpdate('image', 'done', `✅ Import ${clips.length} ảnh lên Track V${TRACK_LAYOUT.VIDEO_AI_TRACK}`, undefined, debugImg)
-
-        // Bước 5: Effects (chạy ngay sau import ảnh, không chờ bước khác)
-        if (config.enableEffects) {
-            await runEffectsPipeline(onStepUpdate, config)
-        }
+        return clips as TimelineImageClip[]
 
     } catch (err) {
         if (String(err).includes('Pipeline đã bị dừng')) {
             onStepUpdate('image', 'skipped', 'Đã dừng')
         } else {
-            onStepUpdate('image', 'error', 'Import ảnh lỗi', String(err))
+            onStepUpdate('image', 'error', 'Image pipeline lỗi', String(err))
         }
+        return []
     }
 }
 
 /**
- * Subtitle Pipeline: AI match → import lên Track V3
+ * Subtitle Pipeline: AI match → trả về subtitle data + SRT
+ * KHÔNG gọi DaVinci API — Adapter sẽ import lên đích
  */
 async function runSubtitlePipeline(
     deps: AutoMediaDependencies,
     matchedSentences: MatchingSentence[],
     onStepUpdate: OnStepUpdate,
     config: AutoMediaConfig
-): Promise<void> {
+): Promise<{ subtitleLines: TimelineSubtitleLine[]; srtContent?: string; srtFilePath?: string }> {
     onStepUpdate('subtitle', 'running', '📝 Đang đọc transcript / sentence data...')
 
     try {
-        checkAbort()
-
         checkAbort()
 
         let subtitleLines: any[] = [];
@@ -691,12 +1034,12 @@ async function runSubtitlePipeline(
                 const { masterSrtToTranscript } = await import('@/utils/master-srt-utils')
                 transcriptData = masterSrtToTranscript(deps.masterSrt)
             } else {
-                transcriptData = await readTranscript(`${deps.timelineId}.json`)
+                transcriptData = await readTranscript(`${deps.transcriptId || deps.timelineId}.json`)
             }
 
             if (!transcriptData) {
-                onStepUpdate('subtitle', 'error', 'Không tìm thấy transcript', `${deps.timelineId}.json`)
-                return
+                onStepUpdate('subtitle', 'error', 'Không tìm thấy transcript', `${deps.transcriptId || deps.timelineId}.json`)
+                return { subtitleLines: [] }
             }
 
             onStepUpdate('subtitle', 'running', '🤖 AI đang so khớp phụ đề với whisper...')
@@ -719,90 +1062,48 @@ async function runSubtitlePipeline(
 
         checkAbort()
 
-        const trackToUse = TRACK_LAYOUT.TEXT_ONSCREEN_TRACK
+        // Tạo SRT content (dùng chung cho cả DaVinci SRT và CapCut)
+        let srtContent = ''
+        subtitleLines.forEach((line: any, index: number) => {
+            const formatTime = (secs: number) => {
+                const h = Math.floor(secs / 3600).toString().padStart(2, '0')
+                const m = Math.floor((secs % 3600) / 60).toString().padStart(2, '0')
+                const s = Math.floor(secs % 60).toString().padStart(2, '0')
+                const ms = Math.floor((secs % 1) * 1000).toString().padStart(3, '0')
+                return `${h}:${m}:${s},${ms}`
+            }
+            const startTc = formatTime(line.start)
+            const endTc = formatTime(line.end)
+            const text = (line.text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
+            if (text && line.end > line.start) {
+                srtContent += `${index + 1}\n`
+                srtContent += `${startTc} --> ${endTc}\n`
+                srtContent += `${text}\n\n`
+            }
+        })
 
-        if (config.subtitleMode === 'srt') {
-            // ======================== MẠNG SRT NATIVE (Siêu nhẹ) ========================
-            onStepUpdate('subtitle', 'running', `📝 Đang tạo file SRT cho ${subtitleLines.length} câu...`)
-            
-            // 1. Convert sang nội dung SRT
-            let srtContent = ''
-            subtitleLines.forEach((line, index) => {
-                const formatTime = (secs: number) => {
-                    const h = Math.floor(secs / 3600).toString().padStart(2, '0')
-                    const m = Math.floor((secs % 3600) / 60).toString().padStart(2, '0')
-                    const s = Math.floor(secs % 60).toString().padStart(2, '0')
-                    const ms = Math.floor((secs % 1) * 1000).toString().padStart(3, '0')
-                    return `${h}:${m}:${s},${ms}`
-                }
-                const startTc = formatTime(line.start)
-                const endTc = formatTime(line.end)
-                const text = (line.text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim()
-                if (text && line.end > line.start) {
-                    srtContent += `${index + 1}\n`
-                    srtContent += `${startTc} --> ${endTc}\n`
-                    srtContent += `${text}\n\n`
-                }
-            })
-
-            // 2. Lưu file SRT vào Desktop/Auto_media/
+        // Lưu file SRT (cả 2 engine đều cần file SRT)
+        let srtFilePath = ''
+        if (srtContent.trim()) {
             const { desktopDir } = await import('@tauri-apps/api/path')
             const pDesktop = await desktopDir()
             const autoMediaDir = await join(pDesktop, 'Auto_media')
             if (!(await exists(autoMediaDir))) {
                 await mkdir(autoMediaDir, { recursive: true })
             }
-            const srtPath = await join(autoMediaDir, `Autosubs_${deps.timelineId || 'phude'}.srt`)
-            await writeTextFile(srtPath, srtContent)
-            
-            onStepUpdate('subtitle', 'running', `📥 Đang import SRT vào Media Pool...`)
-
-            // 3. Gọi server import SRT vào Media Pool (bù lại việc chưa thả auto xuống timeline được)
-            const response = await tauriFetch('http://127.0.0.1:56003/', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    func: 'ImportSrtToMediaPool',
-                    filePath: srtPath
-                }),
-            })
-            
-            const result = await response.json() as any
-            if (result.error) {
-                throw new Error(result.message || 'Lỗi import SRT vào DaVinci')
-            }
-
-            const debugSub = `Saved to: ${srtPath}\nImported to Media Pool.\nPlease drag & drop to Subtitle Track natively.`
-            onStepUpdate('subtitle', 'done', `✅ Đã lưu ${subtitleLines.length} câu ra SRT & Import Media Pool. VUI LÒNG KÉO THẢ XUỐNG TIMELINE!`, undefined, debugSub)
-            
-        } else {
-            // ======================== CHẾ ĐỘ FUSION TEXT+ (Nặng/Đẹp) ========================
-            onStepUpdate('subtitle', 'running', `📥 Đang import ${subtitleLines.length} phụ đề Fusion lên Track V${trackToUse}...`)
-
-            const response = await tauriFetch('http://127.0.0.1:56003/', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    func: 'AddSimpleSubtitles',
-                    clips: subtitleLines.map(line => ({
-                        text: line.text,
-                        start: line.start,
-                        end: line.end,
-                    })),
-                    templateName: deps.subtitleTemplate || 'Subtitle Default',
-                    trackIndex: trackToUse,
-                    fontSize: deps.subtitleFontSize || 0.04,
-                }),
-            })
-
-            const result = await response.json() as any
-            if (result.error) {
-                throw new Error(result.message || 'Lỗi import phụ đề từ DaVinci')
-            }
-
-            const debugSub = `mode=fusion | subtitleLines=${subtitleLines.length} | template=${deps.subtitleTemplate} | fontSize=${deps.subtitleFontSize}`
-            onStepUpdate('subtitle', 'done', `✅ Import ${subtitleLines.length} phụ đề lên V${trackToUse}`, undefined, debugSub)
+            srtFilePath = await join(autoMediaDir, `Autosubs_${deps.transcriptId || deps.timelineId || 'phude'}.srt`)
+            await writeTextFile(srtFilePath, srtContent)
         }
+
+        // Chuyển sang TimelineSubtitleLine[]
+        const result: TimelineSubtitleLine[] = subtitleLines
+            .filter((l: any) => l.text && l.end > l.start)
+            .map((l: any) => ({ text: l.text, start: l.start, end: l.end }))
+
+        const debugSub = `subtitleLines: ${result.length} | srtFile: ${srtFilePath?.split('/').pop() || '(none)'} | mode: ${config.subtitleMode}`
+        onStepUpdate('subtitle', 'done', `✅ Subtitle: ${result.length} dòng sẵn sàng`, undefined, debugSub)
+
+        return { subtitleLines: result, srtContent, srtFilePath }
 
     } catch (err) {
         if (String(err).includes('Pipeline đã bị dừng')) {
@@ -810,6 +1111,7 @@ async function runSubtitlePipeline(
         } else {
             onStepUpdate('subtitle', 'error', 'Phụ đề lỗi', String(err))
         }
+        return { subtitleLines: [] }
     }
 }
 
@@ -820,7 +1122,7 @@ async function runMusicPipeline(
     deps: AutoMediaDependencies,
     matchedSentences: ScriptSentence[],
     onStepUpdate: OnStepUpdate
-): Promise<void> {
+): Promise<TimelineBgmResult | null> {
     onStepUpdate('music', 'running', '🎥 Chuẩn bị dữ liệu cho AI Đạo Diễn...')
 
     try {
@@ -878,29 +1180,18 @@ async function runMusicPipeline(
 
             checkAbort()
 
-            // Import vào DaVinci Audio Track
-            onStepUpdate('music', 'running', '📥 Đang thêm nhạc nền vào DaVinci timeline...')
-            try {
-                const { addAudioToTimeline } = await import('@/api/resolve-api')
-                const resolveResult = await addAudioToTimeline(
-                    resFFmpeg.outputPath,
-                    'BGM - AutoSubs'
-                )
-            // Debug: chi tiết scenes
+            // ★ CORE PIPELINE: Return dữ liệu cho Adapter (KHÔNG gọi DaVinci API)
             const debugMusicOk = `scenes: ${directorResult.scenes.length} | output: ${resFFmpeg.outputPath?.split('/').pop() || '?'}\n${directorResult.scenes.slice(0, 5).map((s: any) => `[Scene${s.sceneId}] ${s.startTime?.toFixed(0)}-${s.endTime?.toFixed(0)}s "${s.assignedMusicFileName || 'null'}" ${s.emotion || ''} (${s.transition || ''})`).join('\n')}${directorResult.scenes.length > 5 ? `\n... +${directorResult.scenes.length - 5} scenes nữa` : ''}`
+            onStepUpdate('music', 'done', `✅ Music: ${directorResult.scenes.length} scenes đã mix`, undefined, debugMusicOk)
 
-                if (resolveResult.error) {
-                    onStepUpdate('music', 'done', `✅ Render xong (${directorResult.scenes.length} scenes) — ⚠️ Import DaVinci lỗi: ${resolveResult.message}`, undefined, debugMusicOk)
-                } else {
-                    onStepUpdate('music', 'done', `✅ Nhạc nền: ${directorResult.scenes.length} scenes → Track A${resolveResult.audioTrack}`, undefined, debugMusicOk)
-                }
-            } catch (resolveErr) {
-                // DaVinci không kết nối — vẫn báo render thành công
-                const debugMusicNoResolve = `scenes: ${directorResult.scenes.length} | output: ${resFFmpeg.outputPath?.split('/').pop() || '?'}`
-                onStepUpdate('music', 'done', `✅ Render xong (${directorResult.scenes.length} scenes) — ⚠️ Không kết nối DaVinci`, undefined, debugMusicNoResolve)
-            }
+            return {
+                mixedAudioPath: resFFmpeg.outputPath,
+                sceneCount: directorResult.scenes.length,
+                directorResult,
+            } as TimelineBgmResult
         } else {
             onStepUpdate('music', 'done', '✅ Phân tích nhạc nền xong (không có scene nào)', undefined, `directorResult.scenes: ${directorResult?.scenes?.length || 0}`)
+            return null
         }
 
     } catch (err) {
@@ -909,22 +1200,22 @@ async function runMusicPipeline(
         } else {
             const errStr = String(err)
             console.error('[AutoMedia] Music pipeline error:', errStr)
-            // Hiện chi tiết lỗi + debug info trong UI
             const debugMusic = `matchingSentences=${matchedSentences.length} | musicItems=${deps.musicItems.length} | analyzed=${deps.musicItems.filter(i => i.aiMetadata).length} | scriptPreview="${deps.scriptText?.substring(0, 80) || '(empty)'}..."`
             onStepUpdate('music', 'error', 'Nhạc nền lỗi', `❌ ${errStr}`, debugMusic)
         }
+        return null
     }
 }
 
 /**
- * SFX Pipeline: AI plan → auto assign → normalize → import Track A1
- * 3 bước tự động liền
+ * SFX Pipeline: AI plan → auto assign → normalize → trả về TimelineSfxClip[]
+ * KHÔNG gọi DaVinci API — Adapter sẽ import lên đích
  */
 async function runSfxPipeline(
     deps: AutoMediaDependencies,
     matchedSentences: ScriptSentence[],
     onStepUpdate: OnStepUpdate
-): Promise<void> {
+): Promise<TimelineSfxClip[]> {
     onStepUpdate('sfx', 'running', '🔊 Chuẩn bị dữ liệu + Whisper words cho AI SFX...')
 
     try {
@@ -1059,7 +1350,7 @@ async function runSfxPipeline(
         // Bước C: Normalize + Import vào DaVinci Audio Track
         if (assignedCues.length === 0) {
             onStepUpdate('sfx', 'done', '✅ Không có SFX cue nào khớp whisper timing')
-            return
+            return []
         }
 
         onStepUpdate('sfx', 'running', `🎧 Normalize ${assignedCues.length} SFX clips (-30 LUFS)...`)
@@ -1127,22 +1418,15 @@ async function runSfxPipeline(
                 ? `✅ Tất cả ${skippedCount} SFX file đều lỗi (không tồn tại hoặc encoding lạ)`
                 : '✅ Không có SFX clip nào để import'
             onStepUpdate('sfx', 'done', skipMsg)
-            return
+            return []
         }
 
-        onStepUpdate('sfx', 'running', `📥 Đang import ${normalizedClips.length} SFX clips lên Track A${TRACK_LAYOUT.SFX_VIDEO_TRACK}...`)
-        const sfxResult2 = await addSfxClipsToTimeline(normalizedClips, 'SFX - AutoSubs')
-
-        // Tạo thông tin skipped để hiển thị
+        // ★ CORE PIPELINE: Return dữ liệu cho Adapter (KHÔNG gọi DaVinci API)
         const skipInfo = skippedCount > 0 ? ` (⚠️ ${skippedCount} file bị bỏ qua)` : ''
+        const debugSfxOk = `totalCues: ${sfxResult.cues.length} | assigned: ${assignedCues.length} | normalized: ${normalizedClips.length} | skipped: ${skippedCount}\n${assignedCues.slice(0, 5).map(c => `[Câu${c.sentenceNum}] "${c.triggerWord}" @${c.exactStartTime?.toFixed(1)}s → "${c.assignedSfxName}" (${c.sfxCategory})`).join('\n')}${assignedCues.length > 5 ? `\n... +${assignedCues.length - 5} cues nữa` : ''}`
+        onStepUpdate('sfx', 'done', `✅ SFX: ${normalizedClips.length} clips sẵn sàng${skipInfo}`, undefined, debugSfxOk)
 
-        if (sfxResult2.error) {
-            onStepUpdate('sfx', 'error', `Import SFX lỗi${skipInfo}`, sfxResult2.message || 'Không rõ')
-        } else {
-            // Debug: chi tiết SFX cues đã import + skipped
-            const debugSfxOk = `totalCues: ${sfxResult.cues.length} | assigned: ${assignedCues.length} | imported: ${sfxResult2.clipsAdded || normalizedClips.length} | skipped: ${skippedCount}\n${assignedCues.slice(0, 5).map(c => `[Câu${c.sentenceNum}] "${c.triggerWord}" @${c.exactStartTime?.toFixed(1)}s → "${c.assignedSfxName}" (${c.sfxCategory})`).join('\n')}${assignedCues.length > 5 ? `\n... +${assignedCues.length - 5} cues nữa` : ''}`
-            onStepUpdate('sfx', 'done', `✅ Import ${sfxResult2.clipsAdded || normalizedClips.length} SFX clips (${sfxTargetLufs} LUFS)${skipInfo}`, undefined, debugSfxOk)
-        }
+        return normalizedClips as TimelineSfxClip[]
 
     } catch (err) {
         if (String(err).includes('Pipeline đã bị dừng')) {
@@ -1154,23 +1438,23 @@ async function runSfxPipeline(
             const debugSfx = `sentences=${matchedSentences.length} | sfxItems=${deps.sfxItems.length} | analyzed=${deps.sfxItems.filter(i => i.aiMetadata).length} | whisperSegments=${deps.subtitles?.length || 0} | scriptLen=${deps.scriptText?.length || 0}`
             onStepUpdate('sfx', 'error', 'SFX lỗi', `❌ ${errStr}`, debugSfx)
         }
+        return []
     }
 }
 
 /**
- * Footage Pipeline: AI match → import lên Track V2
+ * Footage Pipeline: AI match → trả về TimelineFootageClip[]
+ * KHÔNG gọi DaVinci API — Adapter sẽ import lên đích
  */
 async function runFootagePipeline(
     deps: AutoMediaDependencies,
     matchedSentences: ScriptSentence[],
     onStepUpdate: OnStepUpdate
-): Promise<void> {
+): Promise<TimelineFootageClip[]> {
     onStepUpdate('footage', 'running', '🎬 Chuẩn bị dữ liệu footage + kiểm tra API key...')
 
     try {
         checkAbort()
-
-        // Không cần check apiKey cứng ở đây nữa vì đã dùng auto API ở trong matchFootageToScript
 
         // Format sentences
         const sentences = matchedSentences.map((s, i) => ({
@@ -1188,7 +1472,7 @@ async function runFootagePipeline(
         const suggestions = await matchFootageToScript(
             sentences,
             deps.footageItems,
-            "", // apiKey đã được deprecate, thay thế bằng AI Provider chung
+            "", // apiKey đã được deprecate
             totalDuration
         )
 
@@ -1196,15 +1480,11 @@ async function runFootagePipeline(
 
         if (suggestions.length === 0) {
             onStepUpdate('footage', 'done', '✅ AI không gợi ý footage nào')
-            return
+            return []
         }
 
-        // Import lên Track V2 (chỉ video, bỏ audio gốc)
-        // ⚡ Dùng CHUNG helper addMediaToTimeline (giống import ảnh V1)
-        // với videoOnly=true → Lua sẽ chỉ import phần hình, bỏ audio gốc
-        onStepUpdate('footage', 'running', `📥 Đang import ${suggestions.length} footage lên Track V${TRACK_LAYOUT.FOOTAGE_TRACK}...`)
-
-        const footageClips = suggestions.map(s => ({
+        // ★ CORE PIPELINE: Return dữ liệu cho Adapter (KHÔNG gọi DaVinci API)
+        const footageClips: TimelineFootageClip[] = suggestions.map(s => ({
             filePath: s.footagePath,
             startTime: s.startTime,
             endTime: s.endTime,
@@ -1212,18 +1492,10 @@ async function runFootagePipeline(
             trimEnd: s.trimEnd,
         }))
 
-        const importResult = await addMediaToTimeline(
-            footageClips,
-            TRACK_LAYOUT.FOOTAGE_TRACK,
-            true  // videoOnly — chỉ lấy hình, bỏ audio
-        )
+        const debugFootage = `footageItems: ${deps.footageItems.length} | suggestions: ${suggestions.length}\n${suggestions.slice(0, 5).map((s: any) => `"${s.footagePath?.split('/').pop()}" ${s.startTime?.toFixed(1)}-${s.endTime?.toFixed(1)}s trim=${s.trimStart?.toFixed(1)}-${s.trimEnd?.toFixed(1)}`).join('\n')}${suggestions.length > 5 ? `\n... +${suggestions.length - 5} nữa` : ''}`
+        onStepUpdate('footage', 'done', `✅ Footage: ${footageClips.length} clips sẵn sàng`, undefined, debugFootage)
 
-        // Log kết quả import chi tiết
-        console.log('[AutoMedia] Footage import result:', JSON.stringify(importResult))
-
-        // Debug: chi tiết footage đã import
-        const debugFootage = `footageItems: ${deps.footageItems.length} | suggestions: ${suggestions.length} | result: ${JSON.stringify(importResult).slice(0, 200)}\n${suggestions.slice(0, 5).map((s: any) => `"${s.footagePath?.split('/').pop()}" ${s.startTime?.toFixed(1)}-${s.endTime?.toFixed(1)}s trim=${s.trimStart?.toFixed(1)}-${s.trimEnd?.toFixed(1)}`).join('\n')}${suggestions.length > 5 ? `\n... +${suggestions.length - 5} nữa` : ''}`
-        onStepUpdate('footage', 'done', `✅ Import ${suggestions.length} footage lên V${TRACK_LAYOUT.FOOTAGE_TRACK}`, undefined, debugFootage)
+        return footageClips
 
     } catch (err) {
         if (String(err).includes('Pipeline đã bị dừng')) {
@@ -1231,51 +1503,11 @@ async function runFootagePipeline(
         } else {
             onStepUpdate('footage', 'error', 'Footage lỗi', String(err))
         }
+        return []
     }
 }
-
-/**
- * Effects Pipeline: Ken Burns / Shake cho ảnh tĩnh
- * Chạy ngay sau Image Import
- */
-async function runEffectsPipeline(
-    onStepUpdate: OnStepUpdate,
-    config: AutoMediaConfig
-): Promise<void> {
-    onStepUpdate('effects', 'running', '✨ Đang áp hiệu ứng chuyển động (Ken Burns / Shake)...')
-
-    try {
-        checkAbort()
-
-        const response = await tauriFetch('http://127.0.0.1:56003/', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                func: 'ApplyMotionEffects',
-                trackIndex: TRACK_LAYOUT.VIDEO_AI_TRACK,
-                effectType: config.effectType,
-                intensity: config.effectIntensity,
-                fadeDuration: 0.3, // Fade mặc định 0.3s
-            }),
-        })
-
-        const data = await response.json() as any
-
-        if (data.error) {
-            onStepUpdate('effects', 'error', 'Hiệu ứng lỗi', data.message || 'Không rõ')
-        } else {
-            const debugFx = `type: ${config.effectType} | intensity: ${config.effectIntensity} | applied: ${data.applied || 0}/${data.total || 0} | fade: 0.3s`
-            onStepUpdate('effects', 'done', `✅ Áp dụng ${data.applied || 0}/${data.total || 0} clips`, undefined, debugFx)
-        }
-
-    } catch (err) {
-        if (String(err).includes('Pipeline đã bị dừng')) {
-            onStepUpdate('effects', 'skipped', 'Đã dừng')
-        } else {
-            onStepUpdate('effects', 'error', 'Hiệu ứng lỗi', String(err))
-        }
-    }
-}
+// NOTE: runEffectsPipeline đã chuyển sang davinci-adapter.ts
+// Core Pipeline không gọi API engine nào trực tiếp
 
 // ======================== HELPER: SMART MATCH SFX FILE ========================
 // Copy logic từ sfx-library-tab.tsx — inline để không cần module riêng
