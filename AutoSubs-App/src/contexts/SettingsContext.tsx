@@ -56,11 +56,11 @@ export const DEFAULT_SETTINGS: Settings = {
   aiSubtitleBatches: 5,       // Phụ đề (Subtitle Match): 5 đợt
   aiFootageBatches: 1,        // Hình ảnh: 1 đợt
   aiMasterSrtBatches: 4,      // Master SRT: chia 4 batch Whisper → 4 request AI song song
-  aiMediaImportBatches: 4,    // Video Import: chia 4 batch transcript
-  aiImageImportBatches: 4,    // Image Import: chia 2 batch transcript
+  aiMediaImportBatches: 1,    // Video Import: 1 batch
+  aiImageImportBatches: 1,    // Image Import: 1 batch
   aiMaxConcurrency: 6,        // 6 luồng API song song — dùng chung cho tất cả tính năng
   aiBatchOverlapRatio: 0.15,  // Overlap 15% giữa các batch
-  aiTemperature: 0.7,         // 0.7 — cân bằng sáng tạo / chính xác
+  aiTemperature: 0.2,         // 0.2 — chặt chẽ, chính xác hơn
   bRollStartTime: 60,         // Cấm B-Roll trong 60 giây đầu (Documentary)
   aiMaxRetries: 3,            // Thử lại 3 lần khi API lỗi
   aiTotalSfxCues: 10,         // Tổng SFX tối đa cho toàn video

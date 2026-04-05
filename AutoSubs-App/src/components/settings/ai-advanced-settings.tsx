@@ -119,16 +119,16 @@ type SettingKey = keyof typeof PARAM_META;
 
 /** Giá trị mặc định để nút Reset */
 const DEFAULTS: Record<SettingKey, number> = {
-    aiTemperature: 0.7,
+    aiTemperature: 0.2,
     aiMaxConcurrency: 6,
     aiAudioBatches: 1,
-    aiMediaImportBatches: 4,   // 4 batch để match script với Whisper (Video Import tab)
+    aiMediaImportBatches: 1,   // Video Import: 1 batch
     aiBatchOverlapRatio: 0.15, // 15% overlap
     aiFootageBatches: 1,
     aiMasterSrtBatches: 4,   // 4 batch Whisper → 4 request AI song song
     bRollStartTime: 60,
     aiMaxRetries: 3,
-    aiImageImportBatches: 4,
+    aiImageImportBatches: 1,
     aiSfxBatches: 1,
     aiTextOnScreenBatches: 1,
     aiRefImageBatches: 1,
