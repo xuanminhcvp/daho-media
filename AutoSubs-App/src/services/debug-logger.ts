@@ -56,9 +56,14 @@ export function subscribeDebugLogs(listener: () => void): () => void {
 }
 
 // ======================== BẢO MẬT ========================
-// Khi build production: KHÔNG ghi log request/response
-// → user không thể xem được thông tin API
-const IS_DEV = import.meta.env.DEV;
+// Mặc định: chỉ log ở DEV.
+// Bổ sung: nếu đang chạy trong desktop Tauri thì vẫn cho phép log local
+// để Debug Panel hoạt động cả ở bản build/release trên máy người dùng.
+// Lưu ý: log chỉ nằm trong memory runtime (không tự đẩy ra ngoài).
+const IS_TAURI_RUNTIME =
+    typeof window !== "undefined" &&
+    ("__TAURI__" in window || "__TAURI_INTERNALS__" in window);
+const IS_DEV = import.meta.env.DEV || IS_TAURI_RUNTIME;
 
 /** Thêm 1 log entry — chỉ hoạt động khi dev */
 export function addDebugLog(entry: DebugLogEntry): void {

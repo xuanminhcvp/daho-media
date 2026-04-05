@@ -153,13 +153,59 @@ function buildCharacterIndex(whisperWords: WhisperWord[]): {
 // ======================== TÌM CÂU TRONG TEXT ========================
 
 /**
+ * Tìm vị trí CUỐI câu (tail anchor) bằng cách search vài từ cuối trong whisper.
+ * 
+ * Dùng khi match bằng seed (chỉ tìm được đầu câu) — cần xác định END chính xác
+ * thay vì dùng sentenceNorm.length cứng (dễ overshoot khi whisper thiếu/thừa từ).
+ * 
+ * Chiến lược: thử 4→3→2 từ cuối, tìm trong vùng [charStart, charStart + maxScan].
+ * Nếu tìm được → charEnd = vị trí cuối từ cuối cùng.
+ * Nếu KHÔNG tìm được → fallback sentenceNorm.length (giữ như cũ).
+ * 
+ * @param words - Mảng từ đã normalize của câu script
+ * @param fullText - Chuỗi Whisper liên tục
+ * @param charStart - Vị trí bắt đầu câu (đã xác định bằng seed)
+ * @param sentenceNormLen - Chiều dài sentenceNorm (fallback)
+ * @returns charEnd chính xác
+ */
+function findTailAnchor(
+  words: string[],
+  fullText: string,
+  charStart: number,
+  sentenceNormLen: number
+): number {
+  // Vùng scan: từ charStart, quét tối đa 1.5× chiều dài câu (cho phép whisper dài hơn script)
+  // Nhưng giới hạn tối đa 3000 chars để tránh match sang câu quá xa.
+  const maxScan = Math.min(Math.ceil(sentenceNormLen * 1.5) + 200, 3000);
+  const scanEnd = Math.min(charStart + maxScan, fullText.length);
+  const scanRegion = fullText.substring(charStart, scanEnd);
+
+  // Thử tail seed từ dài → ngắn: 4 từ cuối, 3 từ cuối, 2 từ cuối
+  for (let tailLen = Math.min(4, words.length - 1); tailLen >= 2; tailLen--) {
+    const tailSeed = words.slice(-tailLen).join(" ");
+    const tailIdx = scanRegion.indexOf(tailSeed);
+    if (tailIdx >= 0) {
+      // Tìm thấy tail → charEnd = vị trí cuối cùng của tail seed
+      const tailAbsoluteEnd = charStart + tailIdx + tailSeed.length - 1;
+      return tailAbsoluteEnd;
+    }
+  }
+
+  // Fallback: không tìm được tail → dùng sentenceNorm.length cứng (giữ tương thích cũ)
+  return charStart + sentenceNormLen - 1;
+}
+
+/**
  * Tìm vị trí của câu script trong chuỗi Whisper
  * 
  * Chiến lược (theo thứ tự ưu tiên):
- * 1. Exact match: tìm toàn bộ câu
- * 2. Long seed (4-5 words đầu): đủ dài để tránh false positive
- * 3. Short seed (3 words đầu): chỉ dùng khi gần vị trí mong đợi
- * 4. Mid seed: tìm 3+ words ở giữa câu
+ * 1. Exact match: tìm toàn bộ câu → charEnd chính xác 100%
+ * 2. Long seed (4-5 words đầu) + tail anchor → charEnd chính xác
+ * 3. Short seed (3 words đầu) + tail anchor → charEnd chính xác
+ * 4. Mid seed (3 words ở giữa) + tail anchor → charEnd chính xác
+ * 
+ * TAIL ANCHOR: Sau khi tìm được đầu câu bằng seed, tìm thêm vài từ cuối
+ * để xác định charEnd thật sự — tránh overshoot ăn nhầm từ của câu kế tiếp.
  * 
  * KHÔNG dùng seed 2 words — quá dễ false positive (ví dụ "san francisco")
  * 
@@ -172,7 +218,7 @@ function findSentenceInText(
   sentenceNorm: string,
   fullText: string,
   searchFrom: number,
-  maxLookAhead: number = 8000 // Tăng từ 5000 lên 8000 để tránh miss
+  maxLookAhead: number = 8000
 ): { charStart: number; charEnd: number; matchType: string } | null {
 
   const words = sentenceNorm.split(" ").filter(w => w.length > 0);
@@ -181,7 +227,8 @@ function findSentenceInText(
   const searchEnd = Math.min(searchFrom + maxLookAhead, fullText.length);
   const searchRegion = fullText.substring(searchFrom, searchEnd);
 
-  // === Chiến lược 1: Tìm TOÀN BỘ câu ===
+  // === Chiến lược 1: Tìm TOÀN BỘ câu (exact) ===
+  // Exact match → charEnd chính xác 100%, không cần tail anchor.
   const fullIdx = searchRegion.indexOf(sentenceNorm);
   if (fullIdx >= 0) {
     return {
@@ -191,38 +238,42 @@ function findSentenceInText(
     };
   }
 
-  // === Chiến lược 2: Tìm bằng SEED DÀI (4-5 words đầu) ===
-  // Seed dài = ít false positive
+  // === Chiến lược 2: Tìm bằng SEED DÀI (4-5 words đầu) + TAIL ANCHOR ===
+  // Seed dài = ít false positive. Tail anchor xác định end chính xác.
   for (let seedLen = Math.min(5, words.length); seedLen >= 4; seedLen--) {
     const seed = words.slice(0, seedLen).join(" ");
     const seedIdx = searchRegion.indexOf(seed);
     if (seedIdx >= 0) {
       const absoluteStart = searchFrom + seedIdx;
+      // ★ Dùng tail anchor thay vì sentenceNorm.length cứng
+      const charEnd = findTailAnchor(words, fullText, absoluteStart, sentenceNorm.length);
       return {
         charStart: absoluteStart,
-        charEnd: absoluteStart + sentenceNorm.length - 1,
+        charEnd,
         matchType: `seed-${seedLen}`,
       };
     }
   }
 
-  // === Chiến lược 3: Tìm bằng SEED 3 words đầu ===
+  // === Chiến lược 3: Tìm bằng SEED 3 words đầu + TAIL ANCHOR ===
   // Chấp nhận seed 3 words nhưng kiểm tra KHOẢNG CÁCH
   // Nếu match quá xa (> 2000 chars) so với lastCharPos → bỏ qua
   if (words.length >= 3) {
     const seed = words.slice(0, 3).join(" ");
     const seedIdx = searchRegion.indexOf(seed);
-    if (seedIdx >= 0 && seedIdx < 2000) { // Chỉ chấp nhận nếu gần
+    if (seedIdx >= 0 && seedIdx < 2000) {
       const absoluteStart = searchFrom + seedIdx;
+      // ★ Dùng tail anchor thay vì sentenceNorm.length cứng
+      const charEnd = findTailAnchor(words, fullText, absoluteStart, sentenceNorm.length);
       return {
         charStart: absoluteStart,
-        charEnd: absoluteStart + sentenceNorm.length - 1,
+        charEnd,
         matchType: "seed-3",
       };
     }
   }
 
-  // === Chiến lược 4: Tìm bằng SEED 3+ words ở GIỮA câu ===
+  // === Chiến lược 4: Tìm bằng SEED 3+ words ở GIỮA câu + TAIL ANCHOR ===
   // Khi words đầu bị Whisper nghe sai
   if (words.length >= 5) {
     for (let startWord = 1; startWord <= Math.min(3, words.length - 3); startWord++) {
@@ -230,11 +281,16 @@ function findSentenceInText(
       const seedIdx = searchRegion.indexOf(seed);
       if (seedIdx >= 0 && seedIdx < 2000) {
         // Tính lại start: lùi lại cho các words trước seed
-        const prefixLen = words.slice(0, startWord).join(" ").length + 1;
-        const absoluteStart = Math.max(searchFrom, searchFrom + seedIdx - prefixLen);
+        // ★ Giới hạn prefixLen: KHÔNG cho lùi quá seedIdx (tránh lùi vào vùng câu trước)
+        const rawPrefixLen = words.slice(0, startWord).join(" ").length + 1;
+        const maxAllowedPrefix = seedIdx; // Không lùi quá vị trí searchFrom
+        const safePrefixLen = Math.min(rawPrefixLen, maxAllowedPrefix);
+        const absoluteStart = searchFrom + seedIdx - safePrefixLen;
+        // ★ Dùng tail anchor thay vì sentenceNorm.length cứng
+        const charEnd = findTailAnchor(words, fullText, absoluteStart, sentenceNorm.length);
         return {
           charStart: absoluteStart,
-          charEnd: absoluteStart + sentenceNorm.length - 1,
+          charEnd,
           matchType: `mid-seed-${startWord}`,
         };
       }
@@ -269,8 +325,6 @@ export function matchScriptToTimeline(
 
   const results: ScriptSentence[] = [];
   let lastCharPos = 0;           // Vị trí ký tự hiện tại trong fullText
-  // @ts-expect-error kept for debugging
-  let _lastMatchedCharEnd = 0;    // Vị trí charEnd của match cuối cùng thành công
   let consecutiveMisses = 0;     // Đếm số câu miss liên tiếp
 
   for (let i = 0; i < scriptSentences.length; i++) {
@@ -308,9 +362,14 @@ export function matchScriptToTimeline(
       }
 
       // Ánh xạ vị trí ký tự → word index
-      const clampedStart = Math.min(match.charStart, charToWordIdx.length - 1);
+      // ★ Skip space: nếu charStart rơi vào ký tự space (thuộc word trước trong charToWordIdx),
+      // advance sang ký tự tiếp theo để lấy đúng word đầu tiên của câu hiện tại.
+      let adjustedStart = Math.min(match.charStart, charToWordIdx.length - 1);
+      while (adjustedStart < charToWordIdx.length - 1 && fullText[adjustedStart] === ' ') {
+        adjustedStart++;
+      }
       const clampedEnd = Math.min(match.charEnd, charToWordIdx.length - 1);
-      const startWordIdx = charToWordIdx[clampedStart];
+      const startWordIdx = charToWordIdx[adjustedStart];
       const endWordIdx = charToWordIdx[clampedEnd];
 
       // Lấy timing từ word index
@@ -339,9 +398,9 @@ export function matchScriptToTimeline(
       });
 
       // Di chuyển search position tới SAU match hiện tại
-      // Chỉ advance bằng đúng chiều dài câu đã match (không dùng charEnd - có thể overshoot)
-      lastCharPos = match.charStart + sentNorm.length;
-      _lastMatchedCharEnd = match.charEnd;
+      // ★ Dùng charEnd+1 vì charEnd giờ đã chính xác nhờ tail anchor
+      // Câu sau sẽ KHÔNG bao giờ search lại vùng đã thuộc câu trước
+      lastCharPos = match.charEnd + 1;
       consecutiveMisses = 0;
 
     } else {

@@ -2,6 +2,8 @@
 
 // Module xác thực license key nội bộ (HMAC-SHA256)
 mod license;
+// Module tạo CapCut Draft project tự động
+mod capcut;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -23,6 +25,8 @@ pub fn run() {
             license::validate_license_key,
             // Command lấy device fingerprint (placeholder, frontend tự tính)
             license::get_device_fingerprint,
+            // Command tạo CapCut Draft project từ template
+            capcut::create_capcut_draft,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

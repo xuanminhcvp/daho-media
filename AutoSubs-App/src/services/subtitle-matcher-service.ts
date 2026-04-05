@@ -845,6 +845,8 @@ export async function aiSubtitleMatchFromSentences(
         message: `Đang gửi ${cleanBatches} batch (tối đa ${maxConcurrent} đồng thời)...`,
     });
 
+    const debugLogs: any[] = [];
+
     const batchTasks = sentenceBatches.map((batchSentences, i) => async () => {
         const batchNum = i + 1;
         try {
@@ -891,8 +893,17 @@ export async function aiSubtitleMatchFromSentences(
                 `Batch ${batchNum}/${cleanBatches} (${batchSentences.length} câu)`
             );
 
-            const lines = parseSubtitleResponse(response);
-            console.log(`[Subtitle] Batch ${batchNum}: ${lines.length} dòng phụ đề ✅`);
+            let lines: SubtitleLine[] = [];
+            let errorMsg: string | null = null;
+            try {
+                lines = parseSubtitleResponse(response);
+                console.log(`[Subtitle] Batch ${batchNum}: ${lines.length} dòng phụ đề ✅`);
+            } catch (err) {
+                errorMsg = String(err);
+                console.error(`[Subtitle] Batch ${batchNum} Parse LỖI:`, err);
+            }
+
+            debugLogs.push({ phase: "MainBatch", batchNum, prompt, response, parsedLines: lines.length, error: errorMsg });
 
             onProgress?.({
                 current: batchNum,
@@ -909,21 +920,223 @@ export async function aiSubtitleMatchFromSentences(
 
     const batchResults = await runWithConcurrency(batchTasks, maxConcurrent);
 
-    // Merge kết quả
+    // ======================== MERGE + DEDUP ========================
+    // Gộp tất cả dòng phụ đề từ N batch → loại trùng từ overlap batch
     const allLines: SubtitleLine[] = [];
+    let rawTotal = 0;
+
     for (const { lines } of batchResults.sort((a, b) => a.batchNum - b.batchNum)) {
         for (const line of lines) {
-            allLines.push(line);
+            rawTotal++;
+            // Dedup: text giống nhau + timing gần (±2s) → chỉ giữ 1
+            const isDuplicate = allLines.some(
+                existing =>
+                    existing.text === line.text &&
+                    Math.abs(existing.start - line.start) < 2.0
+            );
+            if (!isDuplicate) {
+                allLines.push(line);
+            }
         }
     }
 
+    // Sort theo start time
     allLines.sort((a, b) => a.start - b.start);
 
-    console.log(`[Subtitle] Sau merge MatchingSentences: ${allLines.length} dòng phụ đề`);
+    const dedupRemoved = rawTotal - allLines.length;
+    console.log(`[Subtitle] Sau merge + dedup: ${allLines.length} dòng (loại ${dedupRemoved} trùng từ overlap batch)`);
+
+    // ======================== RETRY — CÂU SCRIPT THIẾU ========================
+    // Kiểm tra từng câu matching sentence → tìm câu chưa có phụ đề → retry
+    const MAX_RETRY_ROUNDS = 2;
+
+    /** Fuzzy match: kiểm tra ≥60% từ script xuất hiện trong subtitle output */
+    function isLineMatched(scriptText: string, subtitleLines: SubtitleLine[]): boolean {
+        const normalize = (s: string) => s.toLowerCase().replace(/[.,!?;:"'()[\]{}""'']/g, "").trim();
+        const scriptWords = normalize(scriptText).split(/\s+/).filter(w => w.length > 1);
+        if (scriptWords.length === 0) return true;
+
+        const allSubText = normalize(subtitleLines.map(l => l.text).join(" "));
+        let matchCount = 0;
+        for (const word of scriptWords) {
+            if (allSubText.includes(word)) matchCount++;
+        }
+        return matchCount / scriptWords.length >= 0.6;
+    }
+
+    for (let round = 1; round <= MAX_RETRY_ROUNDS; round++) {
+        // Tìm câu matching sentence thiếu phụ đề
+        const missingSentences = matchingSentences.filter(
+            s => s.text && s.text.trim() && !isLineMatched(s.text, allLines)
+        );
+
+        if (missingSentences.length === 0) {
+            console.log(`[Subtitle] ✅ Round ${round}: không còn câu thiếu phụ đề!`);
+            break;
+        }
+
+        console.log(`[Subtitle] ⚠️ Round ${round}/${MAX_RETRY_ROUNDS}: ${missingSentences.length} câu thiếu phụ đề`);
+        onProgress?.({
+            current: cleanBatches,
+            total: cleanBatches + missingSentences.length,
+            message: `Retry round ${round}: ${missingSentences.length} câu thiếu phụ đề...`,
+        });
+
+        // Gom câu thiếu thành cụm liên tiếp (theo index trong matchingSentences)
+        const missingIndices = missingSentences.map(ms =>
+            matchingSentences.findIndex(s => s.num === ms.num)
+        ).filter(idx => idx >= 0).sort((a, b) => a - b);
+
+        const clusters: number[][] = [];
+        if (missingIndices.length > 0) {
+            let currentCluster = [missingIndices[0]];
+            for (let i = 1; i < missingIndices.length; i++) {
+                if (missingIndices[i] - missingIndices[i - 1] <= 2) {
+                    currentCluster.push(missingIndices[i]);
+                } else {
+                    clusters.push(currentCluster);
+                    currentCluster = [missingIndices[i]];
+                }
+            }
+            clusters.push(currentCluster);
+        }
+
+        // Retry từng cụm
+        const retryTasks = clusters.map((cluster, ci) => async () => {
+            try {
+                const clusterSentences = cluster.map(idx => matchingSentences[idx]).filter(Boolean);
+                if (clusterSentences.length === 0) return [];
+
+                const timeStart = Math.min(...clusterSentences.map(s => Number(s.start)));
+                const timeEnd = Math.max(...clusterSentences.map(s => Number(s.end)));
+                const timeRange = `${timeStart.toFixed(0)}s → ${timeEnd.toFixed(0)}s`;
+
+                // Build prompt retry — format sentences + whisper nếu có
+                const sentencesJson = JSON.stringify(
+                    clusterSentences.map(s => ({ text: s.text, start: s.start, end: s.end })), null, 2
+                );
+
+                let whisperSlice = "";
+                if (masterSrtWords && masterSrtWords.length > 0) {
+                    const batchWords = masterSrtWords.filter(
+                        w => Number(w.start) >= timeStart - 2.0 && Number(w.end) <= timeEnd + 2.0
+                    );
+                    whisperSlice = batchWords.map(w => `[${Number(w.start).toFixed(2)}] ${w.word}`).join(" ");
+                }
+
+                const { getActiveProfileId } = await import('@/config/activeProfile');
+                const { buildSubtitleMatchFromSentencesPrompt } = getSubtitleMatchPromptModule(getActiveProfileId());
+
+                let prompt = buildSubtitleMatchFromSentencesPrompt(
+                    sentencesJson, whisperSlice, ci + 1, clusters.length, 45
+                );
+
+                // Force mode ở round 2+
+                if (round >= 2) {
+                    const missingTexts = clusterSentences.map(s => s.text?.trim()).filter(Boolean);
+                    prompt += `\n\n=== MANDATORY MODE — DO NOT SKIP ANY LINE ===
+⚠️ The following lines MUST have subtitles:
+${missingTexts.map((t: string, idx: number) => `${idx + 1}. "${t}"`).join("\n")}
+⚠️ NEVER TRANSLATE. Use EXACT text from input.
+OUTPUT: Return JSON array for ALL ${missingTexts.length} lines.`;
+                }
+
+                console.log(`[Subtitle] Retry round ${round} cụm ${ci + 1}: ${clusterSentences.length} câu (${timeRange})`);
+
+                const response = await callAI(
+                    prompt,
+                    `Retry ${round} cụm ${ci + 1} (${timeRange})`,
+                    round >= 2 ? 60000 : 45000
+                );
+
+                let lines: SubtitleLine[] = [];
+                let errorMsg: string | null = null;
+                try {
+                    lines = parseSubtitleResponse(response);
+                } catch (err) {
+                    errorMsg = String(err);
+                }
+
+                debugLogs.push({ phase: `RetryRound${round}`, batchNum: ci + 1, prompt, response, parsedLines: lines.length, error: errorMsg });
+
+                return lines;
+            } catch (error) {
+                console.error(`[Subtitle] Retry round ${round} cụm ${ci + 1} LỖI:`, error);
+                return [];
+            }
+        });
+
+        const retryResults = await runWithConcurrency(retryTasks, maxConcurrent);
+
+        // Merge retry — chỉ thêm dòng chưa trùng
+        let retryAdded = 0;
+        for (const lines of retryResults) {
+            for (const line of lines) {
+                const isDuplicate = allLines.some(
+                    existing => existing.text === line.text && Math.abs(existing.start - line.start) < 2.0
+                );
+                if (!isDuplicate) {
+                    allLines.push(line);
+                    retryAdded++;
+                }
+            }
+        }
+
+        allLines.sort((a, b) => a.start - b.start);
+
+        const stillMissing = matchingSentences.filter(
+            s => s.text && s.text.trim() && !isLineMatched(s.text, allLines)
+        ).length;
+        console.log(`[Subtitle] 🔄 Retry round ${round}: +${retryAdded} dòng, còn thiếu: ${stillMissing}`);
+        if (stillMissing === 0) break;
+    }
+
+    // ======================== NORMALIZE TIMING ========================
+    // Đảm bảo timing tăng dần + fill kín — giống hàm aiSubtitleMatch()
+
+    let fixedCount = 0;
+    for (let i = 1; i < allLines.length; i++) {
+        // start phải >= end trước
+        if (allLines[i].start < allLines[i - 1].end) {
+            allLines[i].start = allLines[i - 1].end;
+            fixedCount++;
+        }
+        // end phải > start (tối thiểu 0.1s)
+        if (allLines[i].end <= allLines[i].start) {
+            allLines[i].end = allLines[i].start + 0.5;
+            fixedCount++;
+        }
+    }
+
+    // Fill kín: end(i) = start(i+1) — phụ đề liên tục (chỉ fill gap nhỏ < 1s)
+    for (let i = 0; i < allLines.length - 1; i++) {
+        const gap = allLines[i + 1].start - allLines[i].end;
+        if (gap > 0 && gap < 1.0) {
+            allLines[i].end = allLines[i + 1].start;
+        }
+    }
+
+    if (fixedCount > 0) {
+        console.log(`[Subtitle] 🔧 Đã sửa ${fixedCount} timing sai thứ tự/overlap`);
+    }
+
+    console.log(`[Subtitle] ✅ Hoàn tất MatchingSentences: ${allLines.length} dòng, timing ${allLines[0]?.start.toFixed(1)}s → ${allLines[allLines.length - 1]?.end.toFixed(1)}s`);
 
     // Lưu cache nếu có
     if (saveFolder) {
         await saveSubtitleLines(saveFolder, allLines);
+    }
+
+    // LƯU DEBUG FILE RA DESKTOP ĐỂ PHÂN TÍCH
+    try {
+        const { join, desktopDir } = await import("@tauri-apps/api/path");
+        const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+        const dDir = await desktopDir();
+        const debugPath = await join(dDir, `subtitle_ai_debug_auto_media.json`);
+        await writeTextFile(debugPath, JSON.stringify(debugLogs, null, 2));
+        console.log(`[Subtitle] 🐞 Đã lưu file DEBUG AI Subtitle tại: ${debugPath}`);
+    } catch (e) {
+        console.error("[Subtitle] Lỗi khi lưu file debug:", e);
     }
 
     return allLines;

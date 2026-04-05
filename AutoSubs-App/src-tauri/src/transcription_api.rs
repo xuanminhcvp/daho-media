@@ -335,6 +335,7 @@ pub async fn transcribe_audio<R: Runtime>(
             processing_time_sec: 0, // Will be set below
             segments,
             speakers,
+            phase_timings_ms: None,
         })
     }
     .await;

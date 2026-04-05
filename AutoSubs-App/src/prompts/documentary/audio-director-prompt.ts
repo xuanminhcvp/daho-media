@@ -128,7 +128,7 @@ ${catalogText}
    - "crossfade" = fade chéo mượt (chuyển cảm xúc dần)
    - "fade-out" = nhạc cũ tắt dần trước khi nhạc mới vào
 
-6. LUÔN tạo 3-4 từ khoá Search Keywords chuyên môn (genre, mood, tempo...) phù hợp nhất cho cảnh này.
+6. sentenceNums: danh sách số câu thuộc scene này.
 
 7. 🎵 COHERENCE NHẠC (RẤT QUAN TRỌNG):
    Toàn bộ video phải có SỰ THỐNG NHẤT ÂM NHẠC — giống soundtrack phim chuyên nghiệp:
@@ -146,13 +146,10 @@ Trả về JSON (KHÔNG markdown, KHÔNG giải thích ngoài JSON):
       "startTime": 0.0,
       "endTime": 90.0,
       "emotion": "Căng thẳng, rình rập",
-      "emotionPhase": "suspense",
-      "emotionReason": "Mô tả ngắn: vì sao đoạn này mang cảm xúc đó",
+      "emotionReason": "Mô tả ngắn vì sao cảm xúc đó",
       "assignedMusicFileName": "dark_tension.mp3",
       "assignedMusicStartTime": 25.5,
-      "assignedMusicReason": "Lấy nhạc từ phase build-up (25s) vì khớp với mạch dồn dập",
       "transition": "crossfade",
-      "searchKeywords": ["dark ambient", "suspense", "slow build", "tension"],
       "sentenceNums": [1,2,3,4,5]
     }
   ]
@@ -238,8 +235,6 @@ ${catalogText}
 
 5. transition: "cut" | "crossfade" | "fade-out"
 
-6. searchKeywords: 3-4 từ khoá chuyên môn.
-
 Trả về JSON (KHÔNG markdown, KHÔNG giải thích):
 {
   "scenes": [
@@ -251,9 +246,7 @@ Trả về JSON (KHÔNG markdown, KHÔNG giải thích):
       "emotionReason": "...",
       "assignedMusicFileName": "file.mp3",
       "assignedMusicStartTime": 0.0,
-      "assignedMusicReason": "...",
       "transition": "crossfade",
-      "searchKeywords": ["...", "..."],
       "sentenceNums": [...]
     }
   ]

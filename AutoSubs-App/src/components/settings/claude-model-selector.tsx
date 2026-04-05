@@ -69,8 +69,14 @@ export function ClaudeModelSelector() {
     // Label hiển thị trên nút — cho biết provider đang active
     const displayLabel = () => {
         if (currentProvider === "claude") {
-            // "S4-6" hoặc "S4-5"
-            return currentClaude.replace("claude-sonnet-", "S").replace("claude-", "")
+            // Claude short label: "O4.6" | "S4-6" | "S4-5"
+            if (currentClaude.startsWith("claude-opus-")) {
+                return currentClaude.replace("claude-opus-", "O")
+            }
+            if (currentClaude.startsWith("claude-sonnet-")) {
+                return currentClaude.replace("claude-sonnet-", "S")
+            }
+            return currentClaude.replace("claude-", "")
         }
         if (currentProvider === "gemini") {
             // "2.5P" | "2.5F" | "2.0F"

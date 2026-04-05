@@ -4,7 +4,7 @@
 // Tích hợp Session Manager: auto-save mỗi 5 phút, Ctrl+S lưu session, khôi phục session
 
 import * as React from "react"
-import { FileVideo, Subtitles, Mic, Music, Image as ImageIcon, Save, Bot, PenLine } from "lucide-react"
+import { FileVideo, Subtitles, Mic, Music, Image as ImageIcon, Save, Bot, PenLine, Network, Rocket } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
@@ -25,9 +25,11 @@ import { MediaImportPanel } from "@/components/media/media-import-panel"
 import { ImageImportPanel } from "@/components/media/image-import-panel"
 import { VoicePacingPanel } from "@/components/voice/voice-pacing-panel"
 import { PostProductionPanel } from "@/components/postprod/post-production-panel"
+import { AutoMediaPanel } from "@/components/postprod/auto-media-panel"
 import { MasterSrtTab } from "@/components/postprod/master-srt-tab"
 import { GeminiScanPanel } from "@/components/gemini-scan/GeminiScanPanel"
 import GeminiManualScanPanel from "@/components/gemini-scan/GeminiManualScanPanel"
+import { CapcutJsonAnalyzer } from "@/components/debug/capcut-tree-viewer"
 // DebugPanel cũ đã được thay bằng BugReporterPanel floating (góc dưới phải)
 // import { DebugPanel } from "@/components/debug/debug-panel"
 import { useSessionManager } from "@/hooks/useSessionManager"
@@ -36,7 +38,14 @@ import { useProject } from "@/contexts/ProjectContext"
 import { useTranscript } from "@/contexts/TranscriptContext"
 
 // Các tab có sẵn trong panel bên phải
-type RightPanelTab = "subtitles" | "master-srt" | "media-import" | "image-import" | "voice-pacing" | "post-production" | "gemini-scan" | "manual-scan"
+type RightPanelTab = "auto-media" | "subtitles" | "master-srt" | "media-import" | "image-import" | "voice-pacing" | "post-production" | "gemini-scan" | "manual-scan" | "capcut-analyzer"
+
+/**
+ * Cờ bật/tắt tab Nội soi CapCut.
+ * false: ẩn tab khỏi UI (giữ nguyên code để có thể bật lại sau).
+ * true: hiện lại tab bình thường.
+ */
+const SHOW_CAPCUT_ANALYZER_TAB = false
 
 // ======================== LIVE DATA SUMMARY ========================
 // Hiển thị tổng quan dữ liệu hiện đang có trong app (lấy từ context live)
@@ -211,24 +220,20 @@ function LiveDataSummary({ sessionName, updatedAt }: LiveDataSummaryProps) {
                 {dataLines.map((line, idx) => (
                     <div
                         key={idx}
-                        className={`flex items-center gap-2 px-2.5 py-1.5 text-[11px] ${
-                            line.hasData ? 'bg-card' : 'bg-card/50'
-                        }`}
+                        className={`flex items-center gap-2 px-2.5 py-1.5 text-[11px] ${line.hasData ? 'bg-card' : 'bg-card/50'
+                            }`}
                     >
                         {/* Chấm xanh/xám */}
-                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                            line.hasData ? 'bg-green-500' : 'bg-muted-foreground/30'
-                        }`} />
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${line.hasData ? 'bg-green-500' : 'bg-muted-foreground/30'
+                            }`} />
                         {/* Icon + Label */}
-                        <span className={`w-[110px] shrink-0 ${
-                            line.hasData ? 'text-foreground' : 'text-muted-foreground'
-                        }`}>
+                        <span className={`w-[110px] shrink-0 ${line.hasData ? 'text-foreground' : 'text-muted-foreground'
+                            }`}>
                             {line.icon} {line.label}
                         </span>
                         {/* Detail */}
-                        <span className={`flex-1 text-right truncate ${
-                            line.hasData ? 'text-foreground font-medium' : 'text-muted-foreground/60 italic'
-                        }`}>
+                        <span className={`flex-1 text-right truncate ${line.hasData ? 'text-foreground font-medium' : 'text-muted-foreground/60 italic'
+                            }`}>
                             {line.detail}
                         </span>
                     </div>
@@ -239,7 +244,8 @@ function LiveDataSummary({ sessionName, updatedAt }: LiveDataSummaryProps) {
 }
 
 export function RightPanelTabs() {
-    const [activeTab, setActiveTab] = React.useState<RightPanelTab>("subtitles")
+    // Mặc định mở app vào Auto Media để user thao tác ngay, không cần popup overlay.
+    const [activeTab, setActiveTab] = React.useState<RightPanelTab>("auto-media")
 
     // === Session Manager: auto-save, Ctrl+S, restore ===
     const [sessionDialogOpen, setSessionDialogOpen] = React.useState(false)
@@ -270,6 +276,24 @@ export function RightPanelTabs() {
         }
     }, [sessionManager.needsNameInput])
 
+    /**
+     * Fallback an toàn:
+     * Nếu session cũ từng lưu activeTab = "capcut-analyzer" nhưng hiện đang ẩn tab này,
+     * tự chuyển về "subtitles" để tránh UI rơi vào trạng thái không có content.
+     */
+    React.useEffect(() => {
+        if (!SHOW_CAPCUT_ANALYZER_TAB && activeTab === "capcut-analyzer") {
+            setActiveTab("subtitles")
+        }
+    }, [activeTab])
+
+    // Cho phép Titlebar bắn event để chuyển nhanh về tab Auto Media.
+    React.useEffect(() => {
+        const handleOpenAutoMedia = () => setActiveTab("auto-media")
+        window.addEventListener("autosubs:open-auto-media", handleOpenAutoMedia)
+        return () => window.removeEventListener("autosubs:open-auto-media", handleOpenAutoMedia)
+    }, [])
+
     // Xử lý submit tên session
     const handleCreateSession = async () => {
         if (sessionNameInput.trim()) {
@@ -281,6 +305,22 @@ export function RightPanelTabs() {
         <div className="flex flex-col h-full min-w-0">
             {/* Tab bar - thanh chuyển tab ở trên cùng */}
             <div className="shrink-0 flex items-center gap-1 px-3 pt-2 pb-1 border-b bg-card/50">
+                {/* Tab Auto Media */}
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <Button
+                            variant={activeTab === "auto-media" ? "default" : "ghost"}
+                            size="sm"
+                            className="h-8 px-3 gap-1.5 text-xs"
+                            onClick={() => setActiveTab("auto-media")}
+                        >
+                            <Rocket className="h-3.5 w-3.5" />
+                            Auto Media
+                        </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">Màn hình chính: chạy pipeline Auto Media</TooltipContent>
+                </Tooltip>
+
                 {/* Tab Subtitles */}
                 <Tooltip>
                     <TooltipTrigger asChild>
@@ -411,6 +451,24 @@ export function RightPanelTabs() {
                     <TooltipContent side="bottom">Tự upload lên Gemini → paste JSON về → lưu metadata</TooltipContent>
                 </Tooltip>
 
+                {/* Tab JSON Analyzer — soi CapCut (đang ẩn theo cờ cấu hình) */}
+                {SHOW_CAPCUT_ANALYZER_TAB && (
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                variant={activeTab === "capcut-analyzer" ? "secondary" : "ghost"}
+                                size="sm"
+                                className="h-8 px-3 gap-1.5 text-xs text-blue-500 font-bold"
+                                onClick={() => setActiveTab("capcut-analyzer")}
+                            >
+                                <Network className="h-3.5 w-3.5" />
+                                Nội Soi CapCut Tree
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom">Công cụ debug trực quan Database của CapCut Draft (JSON)</TooltipContent>
+                    </Tooltip>
+                )}
+
                 {/* Spacer đẩy indicator session sang phải */}
                 <div className="flex-1" />
 
@@ -425,10 +483,9 @@ export function RightPanelTabs() {
                                     onClick={() => setSessionDialogOpen(true)}
                                 >
                                     {/* Dot xanh — pulse ngắn khi vừa save (trong 3 giây gần nhất) */}
-                                    <span className={`w-1.5 h-1.5 rounded-full bg-green-500 shrink-0 transition-all ${
-                                        sessionManager.lastSavedAt && (Date.now() - sessionManager.lastSavedAt < 3000)
+                                    <span className={`w-1.5 h-1.5 rounded-full bg-green-500 shrink-0 transition-all ${sessionManager.lastSavedAt && (Date.now() - sessionManager.lastSavedAt < 3000)
                                             ? 'ring-2 ring-green-400/50 animate-pulse' : ''
-                                    }`} />
+                                        }`} />
 
                                     {/* Tên session (truncate nếu dài) */}
                                     <span className="truncate text-foreground/80 font-medium">
@@ -495,6 +552,9 @@ export function RightPanelTabs() {
 
             {/* Tab content */}
             <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
+                {activeTab === "auto-media" && (
+                    <AutoMediaPanel mode="embedded" />
+                )}
                 {activeTab === "subtitles" && <TranscriptionWorkspace />}
                 {activeTab === "master-srt" && <MasterSrtTab />}
                 {activeTab === "media-import" && <MediaImportPanel />}
@@ -512,6 +572,8 @@ export function RightPanelTabs() {
                         <GeminiManualScanPanel />
                     </div>
                 )}
+                {/* Tab CapCut Analyzer (đang ẩn theo cờ cấu hình) */}
+                {SHOW_CAPCUT_ANALYZER_TAB && activeTab === "capcut-analyzer" && <CapcutJsonAnalyzer />}
             </div>
             {/* Debug Panel cũ đã được tích hợp vào BugReporterPanel floating (App.tsx) */}
             {/* Bao gồm: tab Bugs, tab API (request/response), Insights, Timeline, Annotation Mode */}

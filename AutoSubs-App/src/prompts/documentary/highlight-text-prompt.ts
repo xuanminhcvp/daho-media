@@ -32,20 +32,17 @@ ${scriptText}
 === NHIỆM VỤ CHI TIẾT ===
 1. Tìm những cụm từ đắt giá. Lưu ý BẮT BUỘC cụm từ đó PHẢI XUẤT HIỆN chính xác trong nội dung câu đó.
 2. Chọn ra tối đa 15 điểm cần Highlight Text cho toàn bộ video, tập trung ở các điểm đắt giá.
-3. Giải thích ngắn gọn lý do vì sao cụm từ đó cần làm nổi bật.
 
 Trả về ĐÚNG chuẩn JSON sau, KHÔNG giải thích gì thêm, KHÔNG dùng markdown:
 {
   "cues": [
     {
       "sentenceNum": 16,
-      "textToHighlight": "hơn 50 tỷ đô la",
-      "reason": "Nhấn mạnh con số tiền khổng lồ gây sốc"
+      "textToHighlight": "hơn 50 tỷ đô la"
     },
     {
       "sentenceNum": 21,
-      "textToHighlight": "Đế chế sụp đổ",
-      "reason": "Nhấn mạnh kết cục"
+      "textToHighlight": "Đế chế sụp đổ"
     }
   ]
 }`;

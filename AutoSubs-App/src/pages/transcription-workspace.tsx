@@ -9,6 +9,10 @@ import { invoke } from "@tauri-apps/api/core"
 import { TranscriptionOptions } from "@/types/interfaces"
 import { generateTranscriptFilename, readTranscript } from "@/utils/file-utils"
 import { exportWhisperWordsFile } from "@/utils/whisper-words-export"
+import {
+    logTranscribePhaseTimingToDebug,
+    startTranscribePhaseDebugLog
+} from "@/services/transcribe-phase-debug-service"
 import { ActionBar } from "@/components/layout/action-bar"
 import { WorkspaceHeader } from "@/components/workspace/workspace-header"
 import { WorkspaceBody } from "@/components/workspace/workspace-body"
@@ -17,32 +21,32 @@ export const TranscriptionWorkspace = () => {
     const { subtitles, speakers } = useTranscript()
     const { settings, updateSetting } = useSettings()
     const { modelsState, checkDownloadedModels } = useModels()
-    const { 
-        timelineInfo, 
-        pushToTimeline, 
-        cancelExport, 
-        isExporting, 
+    const {
+        timelineInfo,
+        pushToTimeline,
+        cancelExport,
+        isExporting,
         exportProgress,
-        setIsExporting, 
-        setExportProgress, 
-        cancelRequestedRef, 
-        getSourceAudio 
+        setIsExporting,
+        setExportProgress,
+        cancelRequestedRef,
+        getSourceAudio
     } = useResolve()
     const {
         processTranscriptionResults,
         exportSubtitlesAs,
         loadSubtitles,
     } = useTranscript()
-    const { 
-        processingSteps, 
-        livePreviewSegments, 
-        clearProgressSteps, 
-        completeAllProgressSteps, 
-        cancelAllProgressSteps, 
+    const {
+        processingSteps,
+        livePreviewSegments,
+        clearProgressSteps,
+        completeAllProgressSteps,
+        cancelAllProgressSteps,
         updateProgressStep,
-        setupEventListeners 
+        setupEventListeners
     } = useProgress()
-    
+
     // Local state that was previously in GlobalContext
     const [isProcessing, setIsProcessing] = React.useState(false)
     const [, setTranscriptionProgress] = React.useState(0)
@@ -220,16 +224,32 @@ export const TranscriptionWorkspace = () => {
                 density: settings.textDensity,
             }
             console.log("Invoking transcribe_audio with options:", options)
+            // Tạo log pending ngay khi bắt đầu transcribe để tab API hiển thị tức thì.
+            const transcribeDebugLogId = startTranscribePhaseDebugLog({
+                label: "Transcription Workspace",
+                options,
+            })
 
             // Perform transcription
             const transcript = await invoke("transcribe_audio", { options })
             console.log("Transcription successful")
+            // Ghi timing chi tiết từng pha vào Debug Panel để soi bottleneck.
+            logTranscribePhaseTimingToDebug({
+                logId: transcribeDebugLogId,
+                label: "Transcription Workspace",
+                options,
+                transcript,
+            })
+
+            // Fix Whisper hallucination đầu file (text sai ở 2-5 giây đầu)
+            const { removeHallucinatedSegments } = await import('@/utils/whisper-hallucination-fix')
+            const cleanTranscript = removeHallucinatedSegments(transcript as any, settings.language || 'en')
 
             completeAllProgressSteps()
 
             // Process results and get filename
             await processTranscriptionResults(
-                transcript as any,
+                cleanTranscript as any,
                 settings,
                 fileInput,
                 timelineInfo.timelineId
@@ -318,29 +338,29 @@ export const TranscriptionWorkspace = () => {
                     maskImage: 'linear-gradient(to bottom, black 90%, transparent 100%)',
                     WebkitMaskImage: 'linear-gradient(to bottom, black 90%, transparent 100%)'
                 }}>
-                <WorkspaceBody
-                    processingSteps={processingSteps}
-                    progressContainerRef={progressContainerRef}
-                    onExportToFile={handleExportToFile}
-                    onExportWhisperWords={handleExportWhisperWords}
-                    onAddToTimeline={handleAddToTimeline}
-                    livePreviewSegments={livePreviewSegments}
-                    settings={settings}
-                    timelineInfo={timelineInfo}
-                />
+                    <WorkspaceBody
+                        processingSteps={processingSteps}
+                        progressContainerRef={progressContainerRef}
+                        onExportToFile={handleExportToFile}
+                        onExportWhisperWords={handleExportWhisperWords}
+                        onAddToTimeline={handleAddToTimeline}
+                        livePreviewSegments={livePreviewSegments}
+                        settings={settings}
+                        timelineInfo={timelineInfo}
+                    />
                 </div>
 
 
 
                 {/* Footer: ActionBar */}
                 <div className="flex-shrink-0">
-                <ActionBar
-                    selectedFile={fileInput}
-                    onSelectedFileChange={handleSelectedFileChange}
-                    onStart={handleStartTranscription}
-                    onCancel={handleCancelTranscription}
-                    isProcessing={isProcessing}
-                />
+                    <ActionBar
+                        selectedFile={fileInput}
+                        onSelectedFileChange={handleSelectedFileChange}
+                        onStart={handleStartTranscription}
+                        onCancel={handleCancelTranscription}
+                        isProcessing={isProcessing}
+                    />
                 </div>
             </div>
         </>

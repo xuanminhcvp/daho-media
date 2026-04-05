@@ -121,3 +121,61 @@ pub async fn normalize<R: Runtime>(
         .await
         .map_err(|e| e.to_string())
 }
+
+// ======================== GET AUDIO DURATION (ffprobe) ========================
+/// Lấy duration (giây, float) của file audio bằng ffprobe
+/// Dùng cho CapCut pipeline: xác định chính xác VO dài bao lâu
+/// → clamp tất cả media track về duration này
+#[tauri::command]
+pub async fn get_audio_duration<R: Runtime>(
+    app: AppHandle<R>,
+    file_path: String,
+) -> std::result::Result<f64, String> {
+    // Chuẩn bị args cho ffprobe: chỉ lấy format duration, output raw number
+    let args = vec![
+        "-v".to_string(),
+        "error".to_string(),
+        "-show_entries".to_string(),
+        "format=duration".to_string(),
+        "-of".to_string(),
+        "default=noprint_wrappers=1:nokey=1".to_string(),
+        file_path.clone(),
+    ];
+
+    // Thử sidecar ffprobe trước, fallback về system ffprobe
+    let sidecar_command = app.shell().sidecar("ffprobe");
+    let (success, stdout, stderr) = match sidecar_command {
+        Ok(cmd) => {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), cmd.args(args.clone()).output()).await {
+                Ok(Ok(o)) => (o.status.success(), o.stdout, o.stderr),
+                Ok(Err(_)) | Err(_) => {
+                    tracing::warn!("[get_audio_duration] ffprobe sidecar timeout/error, fallback to system");
+                    match tokio::time::timeout(std::time::Duration::from_secs(10), TokioCommand::new("ffprobe").args(args.clone()).output()).await {
+                        Ok(Ok(sys)) => (sys.status.success(), sys.stdout, sys.stderr),
+                        _ => return Err("ffprobe timed out or failed to run".to_string()),
+                    }
+                }
+            }
+        },
+        Err(_) => {
+            tracing::warn!("[get_audio_duration] ffprobe sidecar not found, fallback to system");
+            match tokio::time::timeout(std::time::Duration::from_secs(10), TokioCommand::new("ffprobe").args(args.clone()).output()).await {
+                Ok(Ok(sys)) => (sys.status.success(), sys.stdout, sys.stderr),
+                _ => return Err("ffprobe timed out or failed to run system fallback".to_string()),
+            }
+        }
+    };
+
+    if !success {
+        let err_text = String::from_utf8_lossy(&stderr);
+        return Err(format!("ffprobe failed: {}", err_text));
+    }
+
+    // Parse duration (float seconds) từ stdout
+    let text = String::from_utf8_lossy(&stdout).trim().to_string();
+    let duration = text.parse::<f64>()
+        .map_err(|e| format!("Invalid ffprobe duration '{}': {}", text, e))?;
+
+    tracing::info!("[get_audio_duration] {} → {:.3}s", file_path, duration);
+    Ok(duration)
+}

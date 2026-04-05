@@ -19,6 +19,7 @@ const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6";
 
 /** Danh sách models Claude khả dụng — hiển thị trên UI cho user chọn */
 export const AVAILABLE_CLAUDE_MODELS = [
+    { id: "claude-opus-4.6", label: "Opus 4.6" },
     { id: "claude-sonnet-4-6", label: "Sonnet 4.6 (mới nhất)" },
     { id: "claude-sonnet-4-5", label: "Sonnet 4.5" },
 ] as const;
@@ -321,7 +322,7 @@ async function callGemini(
  * @param timeoutMs - Timeout (ms), mặc định 15 phút
  * @returns AI response text
  */
-export async function callAIMultiProvider(
+async function callAIMultiProviderInternal(
     prompt: string,
     label: string,
     preferredProvider: AIProvider = "auto",
@@ -557,3 +558,63 @@ export async function initModelsFromSettings(): Promise<void> {
 
 // Backward compatibility
 export const initClaudeModelFromSettings = initModelsFromSettings;
+
+
+// ==============================================================================
+// GLOBAL AI REQUEST QUEUE (Đảm bảo Max Concurrency Tổng của Toàn Hệ Thống)
+// ==============================================================================
+let activeGlobalAiTasks = 0;
+const globalAiQueue: (() => void)[] = [];
+let MAX_GLOBAL_CONCURRENCY = 6; // Mặc định 6, tự update thành tự nhiên từ Settings
+
+// Cập nhật Max Concurrency từ Store
+const updateGlobalConcurrency = async () => {
+    try {
+        const { load } = await import('@tauri-apps/plugin-store');
+        const store = await load('autosubs-store.json');
+        const storedSettings = await store.get<any>('settings');
+        if (storedSettings?.aiMaxConcurrency) {
+            MAX_GLOBAL_CONCURRENCY = storedSettings.aiMaxConcurrency;
+        }
+    } catch (e) { }
+};
+// Gọi 1 lần khi load app
+updateGlobalConcurrency();
+
+/**
+ * Hàm xuất chính của AI Provider, Wrap bằng Global Event Loop Queue Limiter
+ * Tất cả các pipeline (Subtitle, Image, SFX) khi chạy song song 
+ * sẽ dồn về chung 1 cổ chai an toàn ở đây.
+ */
+export async function callAIMultiProvider(
+    prompt: string,
+    label: string,
+    preferredProvider: AIProvider = "auto",
+    timeoutMs?: number,
+    temperature?: number
+): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+        const execute = async () => {
+            activeGlobalAiTasks++;
+            try {
+                const result = await callAIMultiProviderInternal(prompt, label, preferredProvider, timeoutMs, temperature);
+                resolve(result);
+            } catch (err) {
+                reject(err);
+            } finally {
+                activeGlobalAiTasks--;
+                if (globalAiQueue.length > 0) {
+                    const nextTask = globalAiQueue.shift();
+                    if (nextTask) nextTask();
+                }
+            }
+        };
+
+        if (activeGlobalAiTasks < MAX_GLOBAL_CONCURRENCY) {
+            execute();
+        } else {
+            console.log(`[Global AI Queue] ⏳ Đang xếp hàng (Đã đầy ${activeGlobalAiTasks}/${MAX_GLOBAL_CONCURRENCY}): ${label}`);
+            globalAiQueue.push(execute);
+        }
+    });
+}

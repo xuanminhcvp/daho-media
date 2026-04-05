@@ -10,7 +10,7 @@
  * Hoạt động ở mọi nơi trong app vì mounted tại App level.
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react';
 import { useBugReporter } from '@/hooks/useBugReporter';
 import type { BugEntry, UXInsight, BehaviorEvent } from '@/services/bugReportService';
 import AnnotationLayer from './AnnotationLayer';
@@ -351,6 +351,12 @@ export default function BugReporterPanel() {
   const [apiLogs,     setApiLogs]     = useState<DebugLogEntry[]>(() => getDebugLogs());
   const [selectedLog, setSelectedLog] = useState<DebugLogEntry | null>(null);
   const [modalTab,    setModalTab]    = useState<'request' | 'response'>('response');
+  const [modalSearch, setModalSearch] = useState("");
+
+  const modalContent = selectedLog
+    ? formatApiContent(modalTab === 'request' ? selectedLog.requestBody : selectedLog.responseBody)
+    : '';
+  const modalSearchHits = countOccurrences(modalContent, modalSearch);
 
   const totalCount = errorCount + warnCount;
 
@@ -543,7 +549,7 @@ export default function BugReporterPanel() {
                     {apiLogs.map(log => (
                       <div
                         key={log.id}
-                        onClick={() => { setSelectedLog(log); setModalTab('response'); }}
+                        onClick={() => { setSelectedLog(log); setModalTab('response'); setModalSearch(''); }}
                         style={{
                           background: log.error
                             ? 'rgba(239,68,68,0.08)'
@@ -817,6 +823,11 @@ export default function BugReporterPanel() {
               {selectedLog.url}
             </div>
 
+            {/* Provider / Model meta */}
+            <div style={{ padding: '6px 16px', borderBottom: '1px solid rgba(51,65,85,0.5)', fontSize: 10, fontFamily: 'monospace', color: '#cbd5e1', background: 'rgba(15,23,42,0.55)', flexShrink: 0 }}>
+              {formatApiMetaLine(selectedLog)}
+            </div>
+
             {/* Tabs request / response + Copy */}
             <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid rgba(51,65,85,0.8)', flexShrink: 0, padding: '0 4px' }}>
               <button style={{ ...STYLES.tab(modalTab === 'request'), padding: '8px 14px' }} onClick={() => setModalTab('request')}>
@@ -825,9 +836,32 @@ export default function BugReporterPanel() {
               <button style={{ ...STYLES.tab(modalTab === 'response'), padding: '8px 14px' }} onClick={() => setModalTab('response')}>
                 📥 Response ({formatApiSize(selectedLog.responseBody)})
               </button>
-              {/* Nút Copy */}
+              {/* Nút Copy riêng từng phần */}
               <button
-                style={{ ...STYLES.btn('secondary'), fontSize: 10, marginLeft: 'auto', marginRight: 8 }}
+                style={{ ...STYLES.btn('secondary'), fontSize: 10, marginLeft: 'auto', marginRight: 6 }}
+                onClick={async () => {
+                  let formatted = selectedLog.requestBody;
+                  try { formatted = JSON.stringify(JSON.parse(selectedLog.requestBody), null, 2); } catch { /* giữ nguyên */ }
+                  await navigator.clipboard.writeText(formatted);
+                }}
+                title="Copy toàn bộ request"
+              >
+                <IconCopy /> Copy request
+              </button>
+              <button
+                style={{ ...STYLES.btn('secondary'), fontSize: 10, marginRight: 6 }}
+                onClick={async () => {
+                  let formatted = selectedLog.responseBody;
+                  try { formatted = JSON.stringify(JSON.parse(selectedLog.responseBody), null, 2); } catch { /* giữ nguyên */ }
+                  await navigator.clipboard.writeText(formatted);
+                }}
+                title="Copy toàn bộ response"
+              >
+                <IconCopy /> Copy response
+              </button>
+              {/* Nút Copy tab hiện tại */}
+              <button
+                style={{ ...STYLES.btn('secondary'), fontSize: 10, marginRight: 8 }}
                 onClick={async () => {
                   const content = modalTab === 'request' ? selectedLog.requestBody : selectedLog.responseBody;
                   let formatted = content;
@@ -840,6 +874,30 @@ export default function BugReporterPanel() {
               </button>
             </div>
 
+            {/* Search trong request/response */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid rgba(51,65,85,0.6)', background: 'rgba(15,23,42,0.35)', flexShrink: 0 }}>
+              <input
+                type="text"
+                value={modalSearch}
+                onChange={(e) => setModalSearch(e.target.value)}
+                placeholder={`Tìm trong ${modalTab}...`}
+                style={{
+                  flex: 1,
+                  background: 'rgba(30,41,59,0.85)',
+                  border: '1px solid rgba(71,85,105,0.7)',
+                  borderRadius: 6,
+                  padding: '6px 8px',
+                  color: '#e2e8f0',
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                  outline: 'none',
+                }}
+              />
+              <span style={{ ...STYLES.timeLabel, minWidth: 76, textAlign: 'right' }}>
+                {modalSearch.trim() ? `${modalSearchHits} match` : '0 match'}
+              </span>
+            </div>
+
             {/* Nội dung request hoặc response */}
             <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
               {selectedLog.error && (
@@ -848,7 +906,7 @@ export default function BugReporterPanel() {
                 </div>
               )}
               <pre style={{ ...STYLES.monoSmall, whiteSpace: 'pre-wrap', wordBreak: 'break-all', lineHeight: 1.6 }}>
-                {formatApiContent(modalTab === 'request' ? selectedLog.requestBody : selectedLog.responseBody)}
+                {renderHighlightedText(modalContent, modalSearch)}
               </pre>
             </div>
           </div>
@@ -875,10 +933,104 @@ function formatApiSize(text: string): string {
  */
 function formatApiContent(text: string): string {
   if (!text || text === '(đang chờ...)') return '(trống)';
+
+  // Một số logger lưu text bị escape "\\n" thành một dòng dài.
+  // Nếu không phải JSON, thử bung newline để đọc như văn bản bình thường.
+  if (!text.trim().startsWith('{') && !text.trim().startsWith('[') && text.includes('\\n')) {
+    return text.replace(/\\n/g, '\n');
+  }
+
   try {
     const parsed = JSON.parse(text);
+
+    // Ưu tiên hiển thị nội dung prompt/response dạng văn bản thường nếu có.
+    // Mục tiêu: dễ đọc request/response AI mà không bị dồn 1 cục.
+    const messagePrompt = parsed?.messages?.[0]?.content;
+    if (typeof messagePrompt === 'string' && messagePrompt.trim().length > 0) {
+      return messagePrompt;
+    }
+
+    const geminiPrompt = parsed?.contents?.[0]?.parts?.[0]?.text;
+    if (typeof geminiPrompt === 'string' && geminiPrompt.trim().length > 0) {
+      return geminiPrompt;
+    }
+
+    const claudeResponse = parsed?.choices?.[0]?.message?.content;
+    if (typeof claudeResponse === 'string' && claudeResponse.trim().length > 0) {
+      return claudeResponse;
+    }
+
+    const geminiResponse = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (typeof geminiResponse === 'string' && geminiResponse.trim().length > 0) {
+      return geminiResponse;
+    }
+
     return JSON.stringify(parsed, null, 2);
   } catch {
     return text; // không phải JSON → raw
   }
+}
+
+/** Parse nhanh provider/model để hiển thị ở debug header */
+function formatApiMetaLine(log: DebugLogEntry): string {
+  const providerFromLabel = /\[(Claude|Gemini)(?:\s+Stream)?\]/i.exec(log.label || "")?.[1];
+  const provider = providerFromLabel
+    ? (providerFromLabel.toLowerCase() === "claude" ? "Claude" : "Gemini")
+    : (log.url.includes("generativelanguage.googleapis.com") ? "Gemini" : log.url.includes("ezaiapi.com") ? "Claude" : "Unknown");
+
+  let model = "-";
+  try {
+    const parsed = JSON.parse(log.requestBody || "{}");
+    const claudeModel = typeof parsed?.model === "string" ? parsed.model : "";
+    const geminiModelFromBody = typeof parsed?.generationConfig?.model === "string"
+      ? parsed.generationConfig.model
+      : "";
+    const geminiModelFromUrl = /models\/([^:]+):/i.exec(log.url || "")?.[1] || "";
+    model = claudeModel || geminiModelFromBody || geminiModelFromUrl || "-";
+  } catch {
+    const geminiModelFromUrl = /models\/([^:]+):/i.exec(log.url || "")?.[1] || "";
+    model = geminiModelFromUrl || "-";
+  }
+
+  return `Provider: ${provider}  |  Model: ${model}`;
+}
+
+function countOccurrences(text: string, query: string): number {
+  const q = query.trim();
+  if (!q) return 0;
+  const escaped = escapeRegExp(q);
+  const matches = text.match(new RegExp(escaped, 'gi'));
+  return matches ? matches.length : 0;
+}
+
+function renderHighlightedText(text: string, query: string): ReactNode {
+  const q = query.trim();
+  if (!q) return text;
+
+  const escaped = escapeRegExp(q);
+  const regex = new RegExp(`(${escaped})`, 'gi');
+  const parts = text.split(regex);
+
+  return parts.map((part, idx) => {
+    if (part.toLowerCase() === q.toLowerCase()) {
+      return (
+        <mark
+          key={`hit-${idx}`}
+          style={{
+            background: 'rgba(250,204,21,0.35)',
+            color: '#fef9c3',
+            borderRadius: 2,
+            padding: '0 1px',
+          }}
+        >
+          {part}
+        </mark>
+      );
+    }
+    return <span key={`txt-${idx}`}>{part}</span>;
+  });
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

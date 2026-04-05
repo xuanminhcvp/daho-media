@@ -65,6 +65,9 @@ export interface AutoMediaConfig {
 
     /** Chế độ tạo phụ đề: fusion (hiệu ứng, nặng) hoặc srt (cơ bản, nhẹ) */
     subtitleMode: 'fusion' | 'srt'
+
+    /** Nền tảng đích để import kết quả (mặc định DaVinci) */
+    targetEngine?: 'davinci' | 'capcut'
 }
 
 /** Config mặc định — bật hết trừ subtitle (nặng RAM), debug mode tắt */
@@ -80,6 +83,7 @@ export const DEFAULT_AUTO_MEDIA_CONFIG: AutoMediaConfig = {
     effectIntensity: 'subtle',
     debugMode: false, // ★ Mặc định TẮT — chạy tự động song song
     subtitleMode: 'srt', // Mặc định SRT cho nhẹ nhàng
+    targetEngine: 'davinci', // Nền tảng đích mặc định
 }
 
 // ======================== TRẠNG THÁI TỔNG THỂ ========================
@@ -217,3 +221,116 @@ export type OnStepUpdate = (
     /** Debug details — hiện chữ nhỏ bên dưới message */
     debugDetails?: string
 ) => void
+
+// ======================== UNIVERSAL TIMELINE ========================
+// Cấu trúc dữ liệu TRUNG GIAN — Core Pipeline sản xuất ra, Adapter nhận đi đổ ra đích
+// Không phụ thuộc vào bất kỳ engine nào (DaVinci, CapCut, Premiere...)
+
+/** 1 clip ảnh/video đã sẵn sàng import (đã convert tĩnh→video nếu cần) */
+export interface TimelineImageClip {
+    /** Đường dẫn file (có thể là .mp4 đã convert từ ảnh tĩnh) */
+    filePath: string
+    /** Thời điểm bắt đầu trên timeline (giây) */
+    startTime: number
+    /** Thời điểm kết thúc trên timeline (giây) */
+    endTime: number
+}
+
+/** 1 dòng phụ đề */
+export interface TimelineSubtitleLine {
+    /** Nội dung phụ đề */
+    text: string
+    /** Thời điểm bắt đầu (giây) */
+    start: number
+    /** Thời điểm kết thúc (giây) */
+    end: number
+}
+
+/** 1 clip SFX đã normalize */
+export interface TimelineSfxClip {
+    /** Đường dẫn file SFX đã normalize (-30 LUFS) */
+    filePath: string
+    /** Thời điểm bắt đầu trên timeline (giây) */
+    startTime: number
+    /** Trim từ đầu file SFX (giây, tuỳ chọn) */
+    trimStartSec?: number
+    /** Trim cuối file SFX (giây, tuỳ chọn) */
+    trimEndSec?: number
+}
+
+/** 1 clip footage */
+export interface TimelineFootageClip {
+    /** Đường dẫn file footage gốc */
+    filePath: string
+    /** Thời điểm bắt đầu trên timeline (giây) */
+    startTime: number
+    /** Thời điểm kết thúc trên timeline (giây) */
+    endTime: number
+    /** Trim từ đầu file footage (giây) */
+    trimStart?: number
+    /** Trim cuối file footage (giây) */
+    trimEnd?: number
+}
+
+/** Kết quả nhạc nền (BGM) — file đã mix xong */
+export interface TimelineBgmResult {
+    /** Đường dẫn file nhạc đã mix (crossfade + ducking) */
+    mixedAudioPath: string
+    /** Số lượng scenes AI phân tích */
+    sceneCount: number
+    /** Raw director result (để debug/UI) */
+    directorResult?: any
+}
+
+/**
+ * UniversalTimeline — Kết quả CHUNG của Core Pipeline
+ * 
+ * Adapter nhận object này và đổ ra đích tương ứng:
+ * - DaVinci Adapter → gọi Lua API, import từng track
+ * - CapCut Adapter → tạo draft_content.json
+ * - Premiere Adapter → ExtendScript (tương lai)
+ */
+export interface UniversalTimeline {
+    // ===== Dữ liệu chính =====
+    
+    /** Clips ảnh/video đã sẵn sàng (đã convert, sorted, fill gaps) */
+    imageClips: TimelineImageClip[]
+    
+    /** Dòng phụ đề đã match timing */
+    subtitleLines: TimelineSubtitleLine[]
+    
+    /** File nhạc nền đã mix xong (crossfade + ducking) */
+    bgm: TimelineBgmResult | null
+    
+    /** Clips SFX đã normalize + gắn timing chính xác */
+    sfxClips: TimelineSfxClip[]
+    
+    /** Clips footage đã match + trim */
+    footageClips: TimelineFootageClip[]
+    
+    /** Toàn bộ câu script đã match timing (dùng cho debug/UI) */
+    matchedSentences: any[]
+    
+    // ===== File SRT (nếu có) =====
+    
+    /** Nội dung file SRT (dùng cho subtitle mode 'srt') */
+    srtContent?: string
+    /** Đường dẫn file SRT đã lưu */
+    srtFilePath?: string
+    
+    // ===== Cấu hình =====
+    
+    /** Config đã dùng (để adapter biết subtitle mode, effects, ...) */
+    config: AutoMediaConfig
+    
+    /** Track layout cố định */
+    trackLayout: typeof TRACK_LAYOUT
+    
+    // ===== Metadata =====
+    
+    /** Thời điểm Core Pipeline bắt đầu (ms) */
+    startedAt: number
+    /** Thời điểm Core Pipeline kết thúc (ms) */
+    finishedAt?: number
+}
+

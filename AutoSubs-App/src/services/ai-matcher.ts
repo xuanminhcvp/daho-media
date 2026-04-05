@@ -6,7 +6,13 @@
 import {
     ScriptSentence,
     extractWhisperWords,
+    matchScriptToTimeline,
 } from "@/utils/media-matcher";
+import {
+    addDebugLog,
+    generateLogId,
+    updateDebugLog,
+} from "@/services/debug-logger";
 import { writeTextFile, readTextFile, exists } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 
@@ -20,6 +26,16 @@ const AI_CONFIG = {
     maxTokens: 16000,    // Đủ cho output JSON
     batchRetryCount: 3,  // Retry tối đa 3 lần khi batch lỗi (429, 500, 524, timeout)
     batchRetryBaseMs: 3000, // Delay cơ sở: 3s → 6s → 12s (exponential backoff)
+};
+
+// ======================== CẤU HÌNH LOGIC-FIRST ========================
+// Ý tưởng:
+// 1) Chạy thuật toán deterministic trước (nhanh, ổn định)
+// 2) Chỉ đẩy những câu "chưa chắc" sang AI để xử lý nốt
+const LOGIC_FIRST_CONFIG = {
+    // Chấp nhận kết quả logic ở mức high + medium.
+    // low/none sẽ đưa sang AI để tránh boundary sai.
+    acceptedQualities: new Set<ScriptSentence["quality"]>(["high", "medium"]),
 };
 
 // Tên file lưu kết quả matching (KHÔNG dùng dấu . ở đầu — hidden file bị Tauri chặn trên macOS)
@@ -87,6 +103,40 @@ export interface AIMatchProgress {
     message: string;
 }
 
+/** Dữ liệu tóm tắt logic-first để đẩy vào DEBUG Panel cho dễ kiểm tra */
+interface LogicFirstDebugSummary {
+    totalSentences: number;
+    totalWhisperWords: number;
+    accepted: number;
+    pending: number;
+    coveragePercent: number;
+    acceptedByQuality: {
+        high: number;
+        medium: number;
+    };
+    acceptedNums: number[];
+    pendingNums: number[];
+    batchPending: Array<{
+        batchNum: number;
+        sentenceRange: string;
+        pendingCount: number;
+        pendingNums: number[];
+    }>;
+}
+
+/** Dòng timing debug gọn: num:start-end | text */
+interface TimingAuditRow {
+    num: number;
+    start: number;
+    end: number;
+    range: string;
+    resolver: "logic" | "ai" | "missing";
+    matchRate: string;
+    quality: ScriptSentence["quality"];
+    script: string;
+    whisper: string;
+}
+
 // ======================== FORMAT WHISPER ========================
 
 /** Cấu trúc 1 word đã format */
@@ -94,6 +144,16 @@ interface FormattedWord {
     timestamp: number;
     text: string;
     formatted: string; // "[0.16] February"
+}
+
+/** Thông tin tối ưu prompt theo batch để debug/đánh giá chất lượng gửi AI */
+interface FocusedPromptMeta {
+    mode: "full" | "focused" | "fallback-center";
+    fullWordCount: number;
+    selectedWordCount: number;
+    reductionPercent: number;
+    startTime: number;
+    endTime: number;
 }
 
 /**
@@ -243,6 +303,135 @@ function splitTranscriptAtSentenceBoundaries(
     return parts;
 }
 
+/**
+ * Chỉ lấy word timing "đủ dùng" cho batch hiện tại thay vì gửi toàn bộ transcript part.
+ * Mục tiêu:
+ * - Giảm payload/token gửi AI.
+ * - Vẫn giữ ngữ cảnh quanh các câu pending của batch.
+ * - Có fallback an toàn nếu không focus được.
+ */
+function buildFocusedTranscriptSliceForBatch(params: {
+    allWords: FormattedWord[];
+    batchScript: { num: number; text: string }[];
+    scriptSentences: { num: number; text: string }[];
+    sentenceIndexByNum: Map<number, number>;
+    totalDuration: number;
+    partStartTime: number;
+    partEndTime: number;
+    maxWords?: number;
+}): { text: string; meta: FocusedPromptMeta } {
+    const {
+        allWords,
+        batchScript,
+        scriptSentences,
+        sentenceIndexByNum,
+        totalDuration,
+        partStartTime,
+        partEndTime,
+        maxWords = 1400,
+    } = params;
+
+    const partWords = allWords.filter(
+        (w) => w.timestamp >= partStartTime - 0.01 && w.timestamp <= partEndTime + 0.01
+    );
+    const fullWordCount = partWords.length;
+
+    // Part quá nhỏ: giữ nguyên cho an toàn.
+    if (fullWordCount <= maxWords) {
+        return {
+            text: partWords.map((w) => w.formatted).join(" "),
+            meta: {
+                mode: "full",
+                fullWordCount,
+                selectedWordCount: fullWordCount,
+                reductionPercent: 0,
+                startTime: partWords[0]?.timestamp ?? partStartTime,
+                endTime: partWords[partWords.length - 1]?.timestamp ?? partEndTime,
+            },
+        };
+    }
+
+    const partDuration = Math.max(1, partEndTime - partStartTime);
+    const denom = Math.max(1, scriptSentences.length - 1);
+    const halfWindowSec = Math.max(
+        6,
+        Math.min(45, (partDuration / Math.max(batchScript.length, 1)) * 1.2)
+    );
+
+    // 1) Tạo các window quanh expected-time của các câu pending trong batch.
+    const rawWindows: Array<{ s: number; e: number }> = [];
+    for (const sent of batchScript) {
+        const idx = sentenceIndexByNum.get(sent.num) ?? 0;
+        const expectedTime = (idx / denom) * totalDuration;
+        const center = Math.min(partEndTime, Math.max(partStartTime, expectedTime));
+        rawWindows.push({
+            s: Math.max(partStartTime, center - halfWindowSec),
+            e: Math.min(partEndTime, center + halfWindowSec),
+        });
+    }
+
+    // 2) Merge windows để lấy vùng liên tục.
+    rawWindows.sort((a, b) => a.s - b.s);
+    const mergedWindows: Array<{ s: number; e: number }> = [];
+    for (const w of rawWindows) {
+        if (mergedWindows.length === 0) {
+            mergedWindows.push({ ...w });
+            continue;
+        }
+        const last = mergedWindows[mergedWindows.length - 1];
+        if (w.s <= last.e + 1.5) {
+            last.e = Math.max(last.e, w.e);
+        } else {
+            mergedWindows.push({ ...w });
+        }
+    }
+
+    let selectedWords = partWords.filter((w) =>
+        mergedWindows.some((mw) => w.timestamp >= mw.s && w.timestamp <= mw.e)
+    );
+
+    // Nếu vùng focus quá ít (ví dụ expected-time lệch), fallback sang chunk giữa part.
+    if (selectedWords.length < Math.min(120, Math.floor(fullWordCount * 0.15))) {
+        const take = Math.min(maxWords, fullWordCount);
+        const centerIdx = Math.floor(fullWordCount / 2);
+        const startIdx = Math.max(0, centerIdx - Math.floor(take / 2));
+        selectedWords = partWords.slice(startIdx, startIdx + take);
+        return {
+            text: selectedWords.map((w) => w.formatted).join(" "),
+            meta: {
+                mode: "fallback-center",
+                fullWordCount,
+                selectedWordCount: selectedWords.length,
+                reductionPercent: Number(
+                    ((1 - selectedWords.length / Math.max(1, fullWordCount)) * 100).toFixed(2)
+                ),
+                startTime: selectedWords[0]?.timestamp ?? partStartTime,
+                endTime: selectedWords[selectedWords.length - 1]?.timestamp ?? partEndTime,
+            },
+        };
+    }
+
+    // Cắt cứng nếu vẫn vượt maxWords.
+    if (selectedWords.length > maxWords) {
+        const step = Math.ceil(selectedWords.length / maxWords);
+        selectedWords = selectedWords.filter((_, i) => i % step === 0).slice(0, maxWords);
+    }
+
+    return {
+        text: selectedWords.map((w) => w.formatted).join(" "),
+        meta: {
+            mode: "focused",
+            fullWordCount,
+            selectedWordCount: selectedWords.length,
+            reductionPercent: Number(
+                ((1 - selectedWords.length / Math.max(1, fullWordCount)) * 100).toFixed(2)
+            ),
+            startTime: selectedWords[0]?.timestamp ?? partStartTime,
+            endTime: selectedWords[selectedWords.length - 1]?.timestamp ?? partEndTime,
+        },
+    };
+}
+
 // ======================== GỌI AI API (MULTI-PROVIDER) ========================
 // ⚡ Round-robin Claude/Gemini — 5 batch song song, chia tải 2 provider
 async function callAI(prompt: string, label: string = "AI Call", timeoutMs?: number): Promise<string> {
@@ -253,21 +442,64 @@ async function callAI(prompt: string, label: string = "AI Call", timeoutMs?: num
 // ======================== PARSE AI RESPONSE ========================
 // AI trả về: [{"num": X, "start": 0.00, "end": 0.00, "whisper": "matched text"}]
 // ⭐ Xử lý cả trường hợp JSON bị truncated (AI output bị cắt cụt)
+/**
+ * Parse AI response — hỗ trợ 2 format:
+ * 1. ★ Format siêu gọn (ưu tiên): mỗi dòng "num:start-end"
+ *    VD: "1:0.15-22.34\n2:22.34-37.57"
+ * 2. JSON fallback: [{"num":1,"start":0.15,"end":22.34}, ...]
+ *
+ * matchedWhisper sẽ được post-process từ word timestamps bên ngoài
+ */
 function parseAIResponse(aiResponse: string): { num: number; start: number; end: number; whisper: string }[] {
     // Bỏ thinking tags
     let cleaned = aiResponse.replace(/<thinking>[\s\S]*?<\/thinking>/g, "");
 
-    // Bỏ markdown code block
-    const codeBlock = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
+    // Bỏ markdown code block (nếu AI vẫn wrap)
+    const codeBlock = cleaned.match(/```(?:json|text)?\s*([\s\S]*?)```/);
     if (codeBlock) cleaned = codeBlock[1];
 
+    // ==========================================
+    // THỬ FORMAT SIÊU GỌN TRƯỚC (num:start-end)
+    // Regex: "số : số.số - số.số" (linh hoạt khoảng trắng)
+    // ==========================================
+    const compactLineRegex = /^(\d+)\s*:\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*$/;
+    const lines = cleaned.split("\n").map(l => l.trim()).filter(l => l.length > 0);
+
+    // Đếm bao nhiêu dòng match format gọn
+    const compactMatches = lines.filter(l => compactLineRegex.test(l));
+
+    if (compactMatches.length >= 2) {
+        // ★ Format siêu gọn — parse trực tiếp
+        const results: { num: number; start: number; end: number; whisper: string }[] = [];
+        for (const line of compactMatches) {
+            const m = line.match(compactLineRegex);
+            if (m) {
+                const num = parseInt(m[1], 10);
+                const start = parseFloat(m[2]);
+                const end = parseFloat(m[3]);
+                if (!isNaN(num) && !isNaN(start) && !isNaN(end)) {
+                    results.push({
+                        num,
+                        start: Math.max(0, start),
+                        end: Math.max(start, end),
+                        whisper: "", // Post-process sẽ fill từ word timestamps
+                    });
+                }
+            }
+        }
+        console.log(`[AI] ★ Parsed ${results.length} entries (format siêu gọn)`);
+        return results;
+    }
+
+    // ==========================================
+    // FALLBACK: JSON ARRAY (format cũ)
+    // ==========================================
+    console.log("[AI] ⚠️ Format gọn không nhận, thử JSON fallback...");
     let parsed: any[] = [];
     let useFallback = false;
 
     try {
-        // Tìm JSON array hoàn chỉnh
         let jsonMatch = cleaned.match(/\[[\s\S]*\]/);
-
         if (!jsonMatch) {
             useFallback = true;
         } else {
@@ -289,7 +521,6 @@ function parseAIResponse(aiResponse: string): { num: number; start: number; end:
         let match;
         while ((match = objectRegex.exec(cleaned)) !== null) {
             try {
-                // Thêm } phòng trường hợp object rớt chữ cuối cùng
                 let str = match[0];
                 parsed.push(JSON.parse(str));
             } catch (e) {
@@ -312,13 +543,71 @@ function parseAIResponse(aiResponse: string): { num: number; start: number; end:
             whisper: typeof r.whisper === "string" ? r.whisper : "",
         }));
 
-    console.log(`[AI] Parsed ${results.length} entries thành công`);
+    console.log(`[AI] Parsed ${results.length} entries (JSON fallback)`);
     return results;
+}
+
+/**
+ * Chạy lớp logic-first để lấy các câu có độ tin cậy cao trước khi gọi AI.
+ * - Nhanh vì không gọi network.
+ * - Ổn định vì tuân theo thuật toán deterministic.
+ * - Giảm token AI vì chỉ còn vài câu khó cần fallback.
+ */
+function buildLogicFirstSeed(
+    scriptSentences: { num: number; text: string }[],
+    whisperWords: ReturnType<typeof extractWhisperWords>
+): {
+    acceptedMap: Map<number, { start: number; end: number; whisper: string; quality: ScriptSentence["quality"]; matchRate: string }>;
+    pendingNums: number[];
+    coverage: number;
+} {
+    const logicResults = matchScriptToTimeline(scriptSentences, whisperWords);
+    const acceptedMap = new Map<number, { start: number; end: number; whisper: string; quality: ScriptSentence["quality"]; matchRate: string }>();
+
+    for (const row of logicResults) {
+        // Chỉ nhận kết quả có thời gian hợp lệ + chất lượng đủ cao.
+        const isValidTime =
+            Number.isFinite(row.start) &&
+            Number.isFinite(row.end) &&
+            row.end > row.start;
+        const isAcceptedQuality = LOGIC_FIRST_CONFIG.acceptedQualities.has(row.quality);
+
+        if (isValidTime && isAcceptedQuality) {
+            acceptedMap.set(row.num, {
+                start: row.start,
+                end: row.end,
+                whisper: row.matchedWhisper || "",
+                quality: row.quality,
+                matchRate: `logic-${row.matchRate}`,
+            });
+        }
+    }
+
+    const pendingNums = scriptSentences
+        .map((s) => s.num)
+        .filter((num) => !acceptedMap.has(num));
+    const coverage = scriptSentences.length > 0
+        ? acceptedMap.size / scriptSentences.length
+        : 0;
+
+    return { acceptedMap, pendingNums, coverage };
 }
 
 
 
 // ======================== HÀM CHÍNH ========================
+/** Event khi 1 batch AI Match hoàn tất — dùng cho Incremental Unlock */
+export interface BatchCompleteEvent {
+    /** Batch thứ mấy (1-indexed) */
+    batchNum: number
+    /** Tổng số batch */
+    totalBatches: number
+    /** Partial AI results của batch này */
+    partialResults: { num: number; start: number; end: number; whisper: string }[]
+    /** TimeRange của batch transcript */
+    timeRange: string
+}
+
 /**
  * AI matching: chia CẢ transcript lẫn script theo tỷ lệ + overlap
  *
@@ -331,7 +620,12 @@ export async function aiMatchScriptToTimeline(
     transcript: any,
     onProgress?: (progress: AIMatchProgress) => void,
     mediaFolder?: string,
-    importType: 'video' | 'image' = 'video'
+    importType: 'video' | 'image' = 'video',
+    /** Callback khi mỗi batch hoàn tất — cho phép Incremental Unlock từng batch */
+    onBatchComplete?: (event: BatchCompleteEvent) => void,
+    /** Callback SAU khi tất cả batch chính xong, TRƯỚC retry loop
+     * → Cho phép Music/SFX/Footage bắt đầu sớm (không cần chờ retry) */
+    onMainBatchesDone?: (earlyResults: ScriptSentence[]) => void
 ): Promise<ScriptSentence[]> {
     const segments = transcript.originalSegments || transcript.segments || [];
     const whisperWords = extractWhisperWords(transcript);
@@ -378,6 +672,67 @@ export async function aiMatchScriptToTimeline(
     console.log(
         `[AI Matcher] ${scriptSentences.length} câu, ${allFormattedWords.length} words, ${totalDuration.toFixed(0)}s`
     );
+
+    // ======================== LOGIC-FIRST PASS ========================
+    // Chạy deterministic matcher trước để "ăn" các câu dễ/ổn định.
+    // AI chỉ xử lý phần còn lại (pending) để giảm lỗi và giảm thời gian.
+    const logicSeed = buildLogicFirstSeed(scriptSentences, whisperWords);
+    const pendingNumSet = new Set(logicSeed.pendingNums);
+    console.log(
+        `[AI Matcher] Logic-first: ${logicSeed.acceptedMap.size}/${scriptSentences.length} câu (${(logicSeed.coverage * 100).toFixed(1)}%), pending AI: ${logicSeed.pendingNums.length}`
+    );
+
+    // DEBUG Panel: tạo log riêng để user thấy rõ logic-first đã xử lý phần nào.
+    const logicDebugStartedAt = Date.now();
+    const logicDebugLogId = generateLogId();
+    // Input audit cho Debug Panel:
+    // - word timing (để kiểm chứng transcript đang dùng có đúng không)
+    // - script chia câu đánh số (để đối chiếu num)
+    const debugWordTimingLines = allFormattedWords.map((w) => w.formatted);
+    const debugScriptNumbered = scriptSentences.map((s) => `${s.num}. ${s.text}`);
+    const transcriptSource = (transcript?.source || "whisper").toString();
+    const transcriptSourceFile = (transcript?.sourceFile || "").toString();
+    const transcriptSentenceCount = Number(
+        transcript?.sentenceCount ?? transcript?.stats?.sentenceCount ?? segments.length ?? 0
+    );
+    const transcriptWordCount = Number(
+        transcript?.wordCount ?? transcript?.stats?.wordCount ?? allFormattedWords.length ?? 0
+    );
+    addDebugLog({
+        id: logicDebugLogId,
+        timestamp: new Date(),
+        method: "LOGIC",
+        url: "local://ai-matcher/logic-first",
+        requestHeaders: { "Content-Type": "application/json" },
+        requestBody: JSON.stringify({
+            importType,
+            transcriptAudit: {
+                source: transcriptSource,
+                sourceFile: transcriptSourceFile || "(không có)",
+                sentenceCount: transcriptSentenceCount,
+                wordCount: transcriptWordCount,
+                totalWhisperWords: allFormattedWords.length,
+                // Hiển thị full word timing để user kiểm tra trực tiếp từ Debug Panel.
+                // Nếu transcript đến từ CapCut subtitle_cache_info thì đây là timing "reuse từ draft".
+                wordTimingLines: debugWordTimingLines,
+            },
+            scriptAudit: {
+                totalSentences: scriptSentences.length,
+                numberedScriptLines: debugScriptNumbered,
+            },
+            config: {
+                acceptedQualities: Array.from(LOGIC_FIRST_CONFIG.acceptedQualities),
+                maxBatches: MAX_BATCHES,
+                overlapRatio: OVERLAP_RATIO,
+            },
+        }, null, 2),
+        status: null,
+        responseHeaders: {},
+        responseBody: "(đang tổng hợp logic-first...)",
+        duration: 0,
+        error: null,
+        label: "Logic-first Matching",
+    });
 
     // ⭐ Cắt transcript thành N phần tại ranh giới câu (N = MAX_BATCHES đọc từ cài đặt)
     const rawTranscriptParts = splitTranscriptAtSentenceBoundaries(
@@ -437,8 +792,13 @@ export async function aiMatchScriptToTimeline(
     const totalSentences = scriptSentences.length;
     const N = transcriptParts.length;
     const sentencesPerPart = totalSentences / N;
+    const sentenceIndexByNum = new Map<number, number>(
+        scriptSentences.map((s, idx) => [s.num, idx])
+    );
 
     const scriptBatches: { num: number; text: string }[][] = [];
+    const batchPendingSummary: LogicFirstDebugSummary["batchPending"] = [];
+    let aiBatchCount = 0;
     for (let i = 0; i < N; i++) {
         // Tính vùng câu cho batch này (có overlap)
         const rawStart = Math.floor(sentencesPerPart * i);
@@ -449,18 +809,82 @@ export async function aiMatchScriptToTimeline(
         const batchStart = Math.max(0, rawStart - overlapSize);
         const batchEnd = Math.min(totalSentences, rawEnd + overlapSize);
 
-        scriptBatches.push(scriptSentences.slice(batchStart, batchEnd));
-        console.log(`[AI Matcher] Script batch ${i + 1}: câu ${scriptSentences[batchStart]?.num} → ${scriptSentences[batchEnd - 1]?.num} (${batchEnd - batchStart} câu, overlap ±${overlapSize})`);
+        // Chỉ giữ các câu pending (logic chưa xử lý chắc chắn).
+        const batchPending = scriptSentences
+            .slice(batchStart, batchEnd)
+            .filter((s) => pendingNumSet.has(s.num));
+        scriptBatches.push(batchPending);
+        if (batchPending.length > 0) aiBatchCount++;
+        batchPendingSummary.push({
+            batchNum: i + 1,
+            sentenceRange: `${scriptSentences[batchStart]?.num ?? "?"} → ${scriptSentences[batchEnd - 1]?.num ?? "?"}`,
+            pendingCount: batchPending.length,
+            pendingNums: batchPending.map((s) => s.num),
+        });
+
+        console.log(
+            `[AI Matcher] Script batch ${i + 1}: vùng ${scriptSentences[batchStart]?.num} → ${scriptSentences[batchEnd - 1]?.num}, pending=${batchPending.length}`
+        );
     }
+
+    // Tổng hợp chi tiết logic-first để hiển thị trong DEBUG Panel.
+    const acceptedNums = Array.from(logicSeed.acceptedMap.keys()).sort((a, b) => a - b);
+    const acceptedByQuality = {
+        high: 0,
+        medium: 0,
+    };
+    for (const row of logicSeed.acceptedMap.values()) {
+        if (row.quality === "high") acceptedByQuality.high++;
+        if (row.quality === "medium") acceptedByQuality.medium++;
+    }
+    const logicSummary: LogicFirstDebugSummary = {
+        totalSentences: scriptSentences.length,
+        totalWhisperWords: allFormattedWords.length,
+        accepted: logicSeed.acceptedMap.size,
+        pending: logicSeed.pendingNums.length,
+        coveragePercent: Number((logicSeed.coverage * 100).toFixed(2)),
+        acceptedByQuality,
+        acceptedNums,
+        pendingNums: [...logicSeed.pendingNums],
+        batchPending: batchPendingSummary,
+    };
+    updateDebugLog(logicDebugLogId, {
+        status: 200,
+        duration: Date.now() - logicDebugStartedAt,
+        responseBody: JSON.stringify({
+            summary: logicSummary,
+            note: "acceptedNums = câu logic xử lý trước AI, pendingNums = câu chuyển AI fallback",
+        }, null, 2),
+    });
 
     onProgress?.({
         current: 0,
-        total: N,
-        message: `Đang xử lý ${N} batch (concurrency tối đa ${MAX_CONCURRENCY})...`,
+        total: Math.max(aiBatchCount, 1),
+        message: aiBatchCount > 0
+            ? `Logic-first xong. Đang xử lý AI fallback ${aiBatchCount} batch (concurrency tối đa ${MAX_CONCURRENCY})...`
+            : `Logic-first đã xử lý toàn bộ, không cần gọi AI.`,
     });
 
     // Thu thập tất cả kết quả từ các batch
-    const matchedMap = new Map<number, { start: number; end: number; whisper: string }>();
+    const matchedMap = new Map<number, {
+        start: number;
+        end: number;
+        whisper: string;
+        source: "logic" | "ai";
+        quality: ScriptSentence["quality"];
+        matchRate: string;
+    }>();
+    // Seed trước các câu logic chắc chắn để AI chỉ cần xử lý phần còn thiếu.
+    for (const [num, row] of logicSeed.acceptedMap.entries()) {
+        matchedMap.set(num, {
+            start: row.start,
+            end: row.end,
+            whisper: row.whisper,
+            source: "logic",
+            quality: row.quality,
+            matchRate: row.matchRate,
+        });
+    }
 
     // ⭐ Danh sách HTTP status/error có thể retry (lỗi tạm thời)
     const RETRYABLE_PATTERNS = ["429", "500", "502", "503", "524", "529", "rate limit", "timeout", "timed out", "ETIMEDOUT", "abort"];
@@ -475,15 +899,30 @@ export async function aiMatchScriptToTimeline(
     // Giống pattern của footage-matcher-service: tránh 429 rate limit
     type BatchResult = { batchNum: number; aiResults: { num: number; start: number; end: number; whisper: string }[] };
     const batchResults: BatchResult[] = [];
+    const batchPromptStats: Array<{
+        batchNum: number;
+        scriptCount: number;
+        fullWordCount: number;
+        selectedWordCount: number;
+        reductionPercent: number;
+        mode: FocusedPromptMeta["mode"];
+        focusedTimeRange: string;
+    }> = [];
     let batchIdx = 0;
     let activeTasks = 0;
 
-    console.log(`[AI Matcher] ⚡ Bắt đầu ${N} batch (concurrency tối đa ${MAX_CONCURRENCY} luồng song song)`);
+    console.log(`[AI Matcher] ⚡ Bắt đầu AI fallback ${aiBatchCount} batch (concurrency tối đa ${MAX_CONCURRENCY} luồng song song)`);
 
     await new Promise<void>((resolve, reject) => {
         const runNext = () => {
             // Nạp thêm luồng mới khi còn slot trống
             while (activeTasks < MAX_CONCURRENCY && batchIdx < N) {
+                // Batch rỗng nghĩa là phần này logic đã xử lý xong -> bỏ qua AI.
+                while (batchIdx < N && scriptBatches[batchIdx].length === 0) {
+                    batchIdx++;
+                }
+                if (batchIdx >= N) break;
+
                 const i       = batchIdx;
                 const part    = transcriptParts[i];
                 const batchNum = i + 1;
@@ -492,10 +931,31 @@ export async function aiMatchScriptToTimeline(
                 batchIdx++;
                 activeTasks++;
 
+                // Focus transcript cho batch này để giảm token gửi AI.
+                const focusedSlice = buildFocusedTranscriptSliceForBatch({
+                    allWords: allFormattedWords,
+                    batchScript,
+                    scriptSentences,
+                    sentenceIndexByNum,
+                    totalDuration,
+                    partStartTime: part.startTime,
+                    partEndTime: part.endTime,
+                });
+                const focusedTimeRange = `${focusedSlice.meta.startTime.toFixed(0)}s → ${focusedSlice.meta.endTime.toFixed(0)}s`;
+                batchPromptStats.push({
+                    batchNum,
+                    scriptCount: batchScript.length,
+                    fullWordCount: focusedSlice.meta.fullWordCount,
+                    selectedWordCount: focusedSlice.meta.selectedWordCount,
+                    reductionPercent: focusedSlice.meta.reductionPercent,
+                    mode: focusedSlice.meta.mode,
+                    focusedTimeRange,
+                });
+
                 onProgress?.({
                     current: i,
-                    total: N,
-                    message: `Batch ${batchNum}/${N}: ${timeRange} (${activeTasks} luồng đang chạy)...`,
+                    total: Math.max(aiBatchCount, 1),
+                    message: `Batch ${batchNum}/${N}: ${timeRange} | focus=${focusedSlice.meta.selectedWordCount}/${focusedSlice.meta.fullWordCount} words (${activeTasks} luồng)...`,
                 });
 
                 // Hàm xử lý 1 batch (có retry bên trong)
@@ -511,12 +971,22 @@ export async function aiMatchScriptToTimeline(
                                 });
                             }
 
-                            const prompt = buildMatchPrompt(batchScript, part.text, batchNum, N, timeRange);
-                            console.log(`[AI Matcher] Batch ${batchNum}: ${timeRange}, ${batchScript.length} câu, prompt ~${(prompt.length / 1000).toFixed(0)}KB`);
+                            const prompt = buildMatchPrompt(
+                                batchScript,
+                                focusedSlice.text,
+                                batchNum,
+                                N,
+                                focusedTimeRange
+                            );
+                            console.log(
+                                `[AI Matcher] Batch ${batchNum}: ${timeRange} → focus ${focusedTimeRange}, ` +
+                                `${batchScript.length} câu, words ${focusedSlice.meta.selectedWordCount}/${focusedSlice.meta.fullWordCount} ` +
+                                `(-${focusedSlice.meta.reductionPercent}%), prompt ~${(prompt.length / 1000).toFixed(0)}KB`
+                            );
 
                             const response = await callAI(
                                 prompt,
-                                `Batch ${batchNum}/${N} (${timeRange}) ${batchScript.length} câu`
+                                `Batch ${batchNum}/${N} (${focusedTimeRange}) ${batchScript.length} câu`
                             );
 
                             const aiResults = parseAIResponse(response);
@@ -538,6 +1008,19 @@ export async function aiMatchScriptToTimeline(
                 })()
                     .then(result => {
                         batchResults.push(result);
+
+                        // ★ INCREMENTAL UNLOCK: Emit partial results ngay khi batch xong
+                        // Orchestrator nhận event này để mở khoá sub-pipelines sớm
+                        if (onBatchComplete && result.aiResults.length > 0) {
+                            const part = transcriptParts[result.batchNum - 1];
+                            onBatchComplete({
+                                batchNum: result.batchNum,
+                                totalBatches: N,
+                                partialResults: result.aiResults,
+                                timeRange: `${part?.startTime?.toFixed(0) || '?'}s → ${part?.endTime?.toFixed(0) || '?'}s`,
+                            });
+                        }
+
                         activeTasks--;
                         if (batchIdx < N) {
                             runNext(); // Nhả slot → chạy batch tiếp
@@ -550,6 +1033,12 @@ export async function aiMatchScriptToTimeline(
                         reject(err);
                     });
             }
+
+            // Trường hợp tất cả batch còn lại đều rỗng (không cần AI),
+            // hoặc đã xử lý xong toàn bộ batch.
+            if (batchIdx >= N && activeTasks === 0) {
+                resolve();
+            }
         };
         runNext();
         if (N === 0) resolve();
@@ -560,12 +1049,19 @@ export async function aiMatchScriptToTimeline(
         // ⭐ Lưu kết quả: ưu tiên timing nằm TRONG time range hợp lý của batch
         for (const r of aiResults) {
             if (!matchedMap.has(r.num)) {
-                matchedMap.set(r.num, { start: r.start, end: r.end, whisper: r.whisper });
+                matchedMap.set(r.num, {
+                    start: r.start,
+                    end: r.end,
+                    whisper: r.whisper,
+                    source: "ai",
+                    quality: "high",
+                    matchRate: "ai-matched",
+                });
             } else {
                 const existing = matchedMap.get(r.num)!;
                 // Ưu tiên match nằm gần expected position hơn (dựa trên scene index)
                 // Scene num nhỏ → timing sớm, scene num lớn → timing muộn
-                const sentIdx = scriptSentences.findIndex(s => s.num === r.num);
+                const sentIdx = sentenceIndexByNum.get(r.num) ?? 0;
                 const expectedRatio = sentIdx / scriptSentences.length;
                 const expectedTime = expectedRatio * totalDuration;
                 const existingDist = Math.abs((existing.start + existing.end) / 2 - expectedTime);
@@ -573,12 +1069,62 @@ export async function aiMatchScriptToTimeline(
 
                 if (newDist < existingDist) {
                     console.log(`[AI Matcher] Batch ${batchNum}: Thay num=${r.num} (timing gần expected hơn: ${newDist.toFixed(0)} < ${existingDist.toFixed(0)})`);
-                    matchedMap.set(r.num, { start: r.start, end: r.end, whisper: r.whisper });
+                    matchedMap.set(r.num, {
+                        start: r.start,
+                        end: r.end,
+                        whisper: r.whisper,
+                        source: "ai",
+                        quality: "high",
+                        matchRate: "ai-matched",
+                    });
                 } else {
                     console.log(`[AI Matcher] Batch ${batchNum}: Giữ num=${r.num} cũ (timing cũ gần expected hơn)`);
                 }
             }
         }
+    }
+
+    // ★ EARLY UNLOCK: Gọi callback TRƯỚC retry loop
+    // Music/SFX/Footage chờ gate này → bắt đầu sớm hơn ~5-15s
+    if (onMainBatchesDone) {
+        // Tạo early results từ matchedMap hiện tại (CHƯA retry)
+        const earlyResults: ScriptSentence[] = scriptSentences.map(sent => {
+            const aiMatch = matchedMap.get(sent.num);
+            if (aiMatch) {
+                // Auto-extract whisper text từ word timestamps
+                let earlyWhisper = aiMatch.whisper;
+                if (!earlyWhisper) {
+                    const wordsInRange = allFormattedWords.filter(
+                        w => w.timestamp >= aiMatch.start - 0.05 && w.timestamp <= aiMatch.end + 0.05
+                    );
+                    earlyWhisper = wordsInRange.map(w => w.text).join(" ") || "(early auto-extracted)";
+                }
+                return {
+                    num: sent.num,
+                    text: sent.text,
+                    start: aiMatch.start,
+                    end: aiMatch.end,
+                    matchRate: aiMatch.matchRate,
+                    matchedWhisper: earlyWhisper,
+                    quality: aiMatch.quality,
+                };
+            } else {
+                // Ước lượng cho scenes thiếu
+                const prevEnd = matchedMap.size > 0 ? Math.max(...Array.from(matchedMap.values()).map(v => v.end)) : 0;
+                return {
+                    num: sent.num,
+                    text: sent.text,
+                    start: prevEnd,
+                    end: prevEnd + sent.text.split(' ').length * 0.4,
+                    matchRate: 'ai-missing',
+                    matchedWhisper: '(early estimate)',
+                    quality: 'none' as const,
+                };
+            }
+        });
+        const matched = earlyResults.filter(r => r.quality !== 'none').length;
+        console.log(`[AI Matcher] ★ EARLY UNLOCK: ${matched}/${scriptSentences.length} scenes → mở khoá Music/SFX/Footage`);
+        onMainBatchesDone(earlyResults);
     }
 
     // ======================== RETRY LOOP — SCENES THIẾU ========================
@@ -709,8 +1255,9 @@ CÁCH LÀM ĐƠN GIẢN:
 4. Nếu thấy text tương đồng trong transcript → dùng timing chính xác đó
 5. Nếu KHÔNG tìm thấy → chia đều thời gian
 
-OUTPUT: Trả về JSON array cho TẤT CẢ ${cluster.length} câu. KHÔNG ĐƯỢC thiếu câu nào.
-[{"num": X, "start": 0.00, "end": 0.00, "whisper": "estimated"}, ...]`;
+OUTPUT: Trả về TẤT CẢ ${cluster.length} câu, mỗi dòng: num:start-end
+KHÔNG ĐƯỢC thiếu câu nào. VD:
+${cluster.map((n, i) => `${n}:${(rangeStart + i * ((rangeEnd - rangeStart) / cluster.length)).toFixed(1)}-${(rangeStart + (i + 1) * ((rangeEnd - rangeStart) / cluster.length)).toFixed(1)}`).join("\n")}`;
                 }
 
                 const response = await callAI(
@@ -736,7 +1283,14 @@ OUTPUT: Trả về JSON array cho TẤT CẢ ${cluster.length} câu. KHÔNG ĐƯ
         for (const results of retryResults) {
             for (const r of results) {
                 if (!matchedMap.has(r.num)) {
-                    matchedMap.set(r.num, { start: r.start, end: r.end, whisper: r.whisper });
+                    matchedMap.set(r.num, {
+                        start: r.start,
+                        end: r.end,
+                        whisper: r.whisper,
+                        source: "ai",
+                        quality: "high",
+                        matchRate: "ai-retry",
+                    });
                     retryFilled++;
                 }
             }
@@ -756,17 +1310,25 @@ OUTPUT: Trả về JSON array cho TẤT CẢ ${cluster.length} câu. KHÔNG ĐƯ
         const aiMatch = matchedMap.get(sent.num);
 
         if (aiMatch) {
-            // Dùng trực tiếp whisper text từ AI (chính xác hơn cách tính tolerance ±0.1)
-            const matchedWhisper = aiMatch.whisper || "(AI matched)";
+            // ★ Post-process: tự extract whisper text từ word timestamps
+            // Thay vì dùng AI viết lại → lấy trực tiếp từ Whisper data gốc (chính xác hơn)
+            let matchedWhisper = aiMatch.whisper; // Fallback nếu AI vẫn trả whisper (JSON format cũ)
+            if (!matchedWhisper) {
+                // Extract words nằm trong range [start, end] từ Whisper transcript
+                const wordsInRange = allFormattedWords.filter(
+                    w => w.timestamp >= aiMatch.start - 0.05 && w.timestamp <= aiMatch.end + 0.05
+                );
+                matchedWhisper = wordsInRange.map(w => w.text).join(" ") || "(auto-extracted)";
+            }
 
             allResults.push({
                 num: sent.num,
                 text: sent.text,
                 start: aiMatch.start,
                 end: aiMatch.end,
-                matchRate: "ai-matched",
+                matchRate: aiMatch.matchRate,
                 matchedWhisper,
-                quality: "high",
+                quality: aiMatch.quality,
             });
         } else {
             // AI không trả về → ước lượng từ câu trước/sau
@@ -857,7 +1419,166 @@ OUTPUT: Trả về JSON array cho TẤT CẢ ${cluster.length} câu. KHÔNG ĐƯ
         high: allResults.filter((r) => r.quality === "high").length,
         none: allResults.filter((r) => r.quality === "none").length,
     };
+    const finalLogicHandled = allResults.filter((r) => r.matchRate.startsWith("logic-")).length;
+    const finalAiHandled = allResults.filter((r) => r.quality !== "none" && r.matchRate.startsWith("ai-")).length;
     console.log(`[AI Matcher] Hoàn tất: ✅${stats.high} ❌${stats.none} | Gaps filled: ${gapsFilled}`);
+
+    // ======================== BÁO CÁO CHẤT LƯỢNG CUỐI (DEBUG PANEL) ========================
+    const durations = allResults.map((r) => Number((r.end - r.start).toFixed(6))).filter((d) => Number.isFinite(d));
+    const minDurationSec = durations.length > 0 ? Math.min(...durations) : 0;
+    const maxDurationSec = durations.length > 0 ? Math.max(...durations) : 0;
+    const avgDurationSec = durations.length > 0
+        ? Number((durations.reduce((a, b) => a + b, 0) / durations.length).toFixed(3))
+        : 0;
+    const suspiciousTooShortCount = durations.filter((d) => d < 0.2).length;
+    const suspiciousTooLongCount = durations.filter((d) => d > 30).length;
+    const orderViolations = allResults.reduce((acc, row, idx) => {
+        if (idx === 0) return acc;
+        return row.start < allResults[idx - 1].start ? acc + 1 : acc;
+    }, 0);
+    const overlapViolations = allResults.reduce((acc, row, idx) => {
+        if (idx === 0) return acc;
+        return row.start < allResults[idx - 1].end ? acc + 1 : acc;
+    }, 0);
+
+    const promptCompression = (() => {
+        if (batchPromptStats.length === 0) {
+            return {
+                totalBatchesUsedAI: 0,
+                totalFullWords: 0,
+                totalSelectedWords: 0,
+                averageReductionPercent: 0,
+                note: "Không có batch AI (logic-first đã xử lý toàn bộ).",
+            };
+        }
+        const totalFullWords = batchPromptStats.reduce((a, b) => a + b.fullWordCount, 0);
+        const totalSelectedWords = batchPromptStats.reduce((a, b) => a + b.selectedWordCount, 0);
+        const averageReductionPercent = totalFullWords > 0
+            ? Number(((1 - totalSelectedWords / totalFullWords) * 100).toFixed(2))
+            : 0;
+        return {
+            totalBatchesUsedAI: batchPromptStats.length,
+            totalFullWords,
+            totalSelectedWords,
+            averageReductionPercent,
+            byBatch: batchPromptStats
+                .sort((a, b) => a.batchNum - b.batchNum)
+                .map((s) => ({
+                    batchNum: s.batchNum,
+                    mode: s.mode,
+                    scriptCount: s.scriptCount,
+                    focusedTimeRange: s.focusedTimeRange,
+                    words: `${s.selectedWordCount}/${s.fullWordCount}`,
+                    reductionPercent: s.reductionPercent,
+                })),
+        };
+    })();
+
+    const finalResultsPreview = allResults.slice(0, 60).map((r) => ({
+        num: r.num,
+        start: Number(r.start.toFixed(3)),
+        end: Number(r.end.toFixed(3)),
+        durationSec: Number((r.end - r.start).toFixed(3)),
+        source: r.matchRate.startsWith("logic-") ? "logic" : r.matchRate.startsWith("ai-") ? "ai" : "unknown",
+        matchRate: r.matchRate,
+        quality: r.quality,
+        whisperPreview: (r.matchedWhisper || "").slice(0, 120),
+    }));
+
+    // Tạo audit theo từng câu để user soi được "Logic làm gì" vs "AI làm gì".
+    const buildTimingAuditRows = (rows: ScriptSentence[]): TimingAuditRow[] =>
+        rows.map((r) => {
+            const resolver: "logic" | "ai" | "missing" =
+                r.matchRate.startsWith("logic-")
+                    ? "logic"
+                    : r.matchRate.startsWith("ai-")
+                        ? "ai"
+                        : "missing";
+            return {
+                num: r.num,
+                start: Number(r.start.toFixed(3)),
+                end: Number(r.end.toFixed(3)),
+                range: `${r.start.toFixed(3)}-${r.end.toFixed(3)}`,
+                resolver,
+                matchRate: r.matchRate,
+                quality: r.quality,
+                script: r.text,
+                whisper: r.matchedWhisper || "",
+            };
+        });
+
+    const timingAuditRows = buildTimingAuditRows(allResults);
+    const logicTimingRows = timingAuditRows.filter((r) => r.resolver === "logic");
+    const aiTimingRows = timingAuditRows.filter((r) => r.resolver === "ai");
+    const missingTimingRows = timingAuditRows.filter((r) => r.resolver === "missing");
+
+    // Update lại log logic-first để user nhìn thấy kết quả cuối sau khi AI fallback hoàn tất.
+    updateDebugLog(logicDebugLogId, {
+        status: stats.none > 0 ? 206 : 200,
+        duration: Date.now() - logicDebugStartedAt,
+        responseBody: JSON.stringify({
+            summary: {
+                totalSentences: allResults.length,
+                logicHandled: finalLogicHandled,
+                aiHandled: finalAiHandled,
+                missing: stats.none,
+                logicPercent: allResults.length > 0
+                    ? Number(((finalLogicHandled / allResults.length) * 100).toFixed(2))
+                    : 0,
+                aiPercent: allResults.length > 0
+                    ? Number(((finalAiHandled / allResults.length) * 100).toFixed(2))
+                    : 0,
+                missingPercent: allResults.length > 0
+                    ? Number(((stats.none / allResults.length) * 100).toFixed(2))
+                    : 0,
+                gapsFilled,
+            },
+            matchRateBreakdown: allResults.reduce<Record<string, number>>((acc, row) => {
+                acc[row.matchRate] = (acc[row.matchRate] || 0) + 1;
+                return acc;
+            }, {}),
+            promptCompression,
+            qualityChecks: {
+                orderViolations,
+                overlapViolations,
+                minDurationSec: Number(minDurationSec.toFixed(3)),
+                maxDurationSec: Number(maxDurationSec.toFixed(3)),
+                avgDurationSec,
+                suspiciousTooShortCount,
+                suspiciousTooLongCount,
+                totalDurationSec: Number(totalDuration.toFixed(3)),
+            },
+            transcriptInputAudit: {
+                source: transcriptSource,
+                sourceFile: transcriptSourceFile || "(không có)",
+                sentenceCount: transcriptSentenceCount,
+                wordCount: transcriptWordCount,
+                totalWhisperWords: allFormattedWords.length,
+                wordTimingLinesPreview: {
+                    totalLines: debugWordTimingLines.length,
+                    first80: debugWordTimingLines.slice(0, 80),
+                    last20: debugWordTimingLines.slice(-20),
+                },
+            },
+            scriptInputAudit: {
+                totalSentences: debugScriptNumbered.length,
+                numberedScriptLines: debugScriptNumbered,
+            },
+            sentenceTimingAudit: {
+                // Dạng compact để bạn dán/chấm nhanh.
+                logicCompact: logicTimingRows.map((r) => `${r.num}:${r.range}`),
+                aiCompact: aiTimingRows.map((r) => `${r.num}:${r.range}`),
+                missingCompact: missingTimingRows.map((r) => `${r.num}:${r.range}`),
+                // Dạng đầy đủ để soi chất lượng chi tiết từng câu.
+                logicDetailed: logicTimingRows,
+                aiDetailed: aiTimingRows,
+                missingDetailed: missingTimingRows,
+                finalOrderedTimeline: timingAuditRows,
+            },
+            finalResultsPreview,
+            note: "sentenceTimingAudit tách riêng logic/ai theo num:start-end để bạn đối chiếu câu nào match chuẩn.",
+        }, null, 2),
+    });
 
     // Lưu kết quả
     if (mediaFolder) {

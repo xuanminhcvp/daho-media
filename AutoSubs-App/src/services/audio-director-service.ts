@@ -51,17 +51,17 @@ async function callClaude(
     onProgress?: (msg: string) => void
 ): Promise<string> {
     const { callAIMultiProvider } = await import("@/utils/ai-provider");
-    
+
     // Retry config cho rate limit — tối đa 5 lần
     const MAX_RETRIES = 5;
     const RETRY_DELAYS = [10000, 20000, 40000, 80000, 120000];
-    
+
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
-            onProgress?.(attempt > 0 
-                ? `🔄 Retry ${attempt}/${MAX_RETRIES}...` 
+            onProgress?.(attempt > 0
+                ? `🔄 Retry ${attempt}/${MAX_RETRIES}...`
                 : "AI đang phân tích...");
-            
+
             // Round-robin Claude/Gemini tự động
             const result = await callAIMultiProvider(
                 prompt,
@@ -72,7 +72,7 @@ async function callClaude(
             return result;
         } catch (err) {
             const errMsg = String(err);
-            
+
             // Rate limit → retry sau delay
             if ((errMsg.includes("429") || errMsg.includes("529") || errMsg.includes("rate limit")) && attempt < MAX_RETRIES) {
                 const delay = RETRY_DELAYS[attempt] || 60000;
@@ -81,12 +81,12 @@ async function callClaude(
                 await new Promise(r => setTimeout(r, delay));
                 continue;
             }
-            
+
             // Lỗi khác → throw
             throw err;
         }
     }
-    
+
     throw new Error("Hết retry attempts");
 }
 
@@ -378,35 +378,51 @@ export async function analyzeScriptForMusic(
         return batchScenes;
     };
 
-    // ========== THỰC THI TOÀN BỘ BATCH SONG SONG ==========
-    onProgress?.(`⏳ Đang chạy ${MUSIC_BATCH_COUNT} batch AI song song...`);
-    
-    const batchPromises: Promise<{ batchIdx: number; scenes: AudioScene[] }>[] = [];
-
-    for (let batchIdx = 0; batchIdx < MUSIC_BATCH_COUNT; batchIdx++) {
-        // Capture batchIdx
-        const idx = batchIdx;
-        batchPromises.push(
-            runSingleBatch(idx, []).then(scenes => ({
-                batchIdx: idx,
-                scenes,
-            }))
-        );
+    // ========== THỰC THI BATCH VỚI GIỚI HẠN CONCURRENCY ==========
+    // Đọc aiMaxConcurrency từ store (global setting) — tránh vượt rate limit API
+    let musicMaxConcurrent = 3; // Mặc định nếu không đọc được
+    try {
+        const { load } = await import('@tauri-apps/plugin-store');
+        const store = await load('autosubs-store.json');
+        const storedSettings = await store.get<any>('settings');
+        musicMaxConcurrent = storedSettings?.aiMaxConcurrency ?? 3;
+    } catch {
+        // Fallback mặc định
     }
 
-    // Chờ tất cả xong
-    const batchResults = await Promise.allSettled(batchPromises);
+    onProgress?.(`⏳ Đang chạy ${MUSIC_BATCH_COUNT} batch AI (tối đa ${musicMaxConcurrent} đồng thời)...`);
 
-    // Ghép kết quả
-    const successResults: { batchIdx: number; scenes: AudioScene[] }[] = [];
-    for (const result of batchResults) {
-        if (result.status === 'fulfilled') {
-            successResults.push(result.value);
-        } else {
-            console.error(`[AudioDirector] ❌ Batch lỗi:`, result.reason);
+    // Tạo task functions (lazy) thay vì chạy tất cả cùng lúc
+    const batchTasks = Array.from({ length: MUSIC_BATCH_COUNT }, (_, batchIdx) => {
+        return async () => {
+            const scenes = await runSingleBatch(batchIdx, []);
+            return { batchIdx, scenes };
+        };
+    });
+
+    // Worker pool: chạy tối đa musicMaxConcurrent batch đồng thời
+    const batchResultsRaw: { batchIdx: number; scenes: AudioScene[] }[] = new Array(batchTasks.length);
+    let nextTaskIdx = 0;
+    const workers = Array.from(
+        { length: Math.min(musicMaxConcurrent, batchTasks.length) },
+        async () => {
+            while (nextTaskIdx < batchTasks.length) {
+                const currentIdx = nextTaskIdx++;
+                try {
+                    batchResultsRaw[currentIdx] = await batchTasks[currentIdx]();
+                } catch (err) {
+                    console.error(`[AudioDirector] ❌ Batch ${currentIdx + 1} lỗi:`, err);
+                    batchResultsRaw[currentIdx] = { batchIdx: currentIdx, scenes: [] };
+                }
+            }
         }
-    }
-    // Sort theo batch để scenes đúng thứ tự
+    );
+    await Promise.all(workers);
+
+    console.log(`[AudioDirector] 🎵 ${MUSIC_BATCH_COUNT} batch hoàn tất (max concurrent: ${musicMaxConcurrent})`);
+
+    // Ghép kết quả — sort theo batchIdx để scenes đúng thứ tự
+    const successResults = batchResultsRaw.filter(r => r && r.scenes.length > 0);
     successResults.sort((a, b) => a.batchIdx - b.batchIdx);
     for (const r of successResults) {
         allScenes.push(...r.scenes);
@@ -886,8 +902,8 @@ export async function analyzeScriptForSFX(
         );
     }
 
-    // ========== GỌI 5 BATCH SONG SONG ==========
-    const batchPromises = batches.map(async (batch) => {
+    // Tạo lazy task functions — KHÔNG chạy ngay, chờ worker pool dispatch
+    const batchTaskFns = batches.map((batch) => async (): Promise<SfxCue[]> => {
         // Bỏ qua batch không có câu nào
         if (batch.sentences.length === 0) {
             console.log(`[SFX Planner]   Batch ${batch.batchNum}: Không có câu → bỏ qua`);
@@ -971,15 +987,45 @@ export async function analyzeScriptForSFX(
         }
     });
 
-    // ========== CHỜ TẤT CẢ 5 BATCH HOÀN TẤT ==========
-    onProgress?.(`⏳ Đang chờ ${SFX_BATCH_COUNT} batch hoàn tất...`);
-    const batchResults = await Promise.all(batchPromises);
+    // ========== CHỜ BATCH VỚI GIỚI HẠN CONCURRENCY ==========
+    // Đọc aiMaxConcurrency từ store (tránh vượt rate limit API)
+    let sfxMaxConcurrent = 3;
+    try {
+        const { load } = await import('@tauri-apps/plugin-store');
+        const store = await load('autosubs-store.json');
+        const storedSettings = await store.get<any>('settings');
+        sfxMaxConcurrent = storedSettings?.aiMaxConcurrency ?? 3;
+    } catch { /* fallback */ }
+
+    onProgress?.(`⏳ Đang chạy ${SFX_BATCH_COUNT} batch SFX (tối đa ${sfxMaxConcurrent} đồng thời)...`);
+
+    // Worker pool: chạy tối đa sfxMaxConcurrent batch đồng thời
+    const sfxBatchResults: SfxCue[][] = new Array(batchTaskFns.length);
+    let sfxNextIdx = 0;
+    const sfxWorkers = Array.from(
+        { length: Math.min(sfxMaxConcurrent, batchTaskFns.length) },
+        async () => {
+            while (sfxNextIdx < batchTaskFns.length) {
+                const currentIdx = sfxNextIdx++;
+                try {
+                    sfxBatchResults[currentIdx] = await batchTaskFns[currentIdx]();
+                } catch (err) {
+                    console.error(`[SFX Planner] ❌ Batch ${currentIdx + 1} lỗi:`, err);
+                    sfxBatchResults[currentIdx] = [];
+                }
+            }
+        }
+    );
+    await Promise.all(sfxWorkers);
+
+    console.log(`[SFX Planner] 🔊 ${SFX_BATCH_COUNT} batch hoàn tất (max concurrent: ${sfxMaxConcurrent})`);
 
     // ========== MERGE KẾT QUẢ ==========
     const allCues: SfxCue[] = [];
-    for (let i = 0; i < batchResults.length; i++) {
-        console.log(`[SFX Planner] Batch ${i + 1} → ${batchResults[i].length} cues`);
-        allCues.push(...batchResults[i]);
+    for (let i = 0; i < sfxBatchResults.length; i++) {
+        const cues = sfxBatchResults[i] || [];
+        console.log(`[SFX Planner] Batch ${i + 1} → ${cues.length} cues`);
+        allCues.push(...cues);
     }
 
     // Sort theo thời gian (exactStartTime hoặc sentence start)

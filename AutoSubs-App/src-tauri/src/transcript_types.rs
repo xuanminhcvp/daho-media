@@ -57,6 +57,20 @@ pub struct Transcript {
     pub processing_time_sec: u64,
     pub segments: Vec<Segment>,
     pub speakers: Vec<Speaker>,
+    /// Timing chi tiết từng pha để frontend debug bottleneck dễ hơn.
+    /// Đơn vị: milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase_timings_ms: Option<TranscribePhaseTimingsMs>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TranscribePhaseTimingsMs {
+    pub cache_check: u64,
+    pub normalize: u64,
+    pub transcribe: u64,
+    pub postprocess: u64,
+    pub total: u64,
+    pub cache_hit: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

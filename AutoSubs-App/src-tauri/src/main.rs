@@ -29,6 +29,7 @@ mod logging;
 mod license;
 mod resolve_bridge;  // Tauri Command proxy HTTP → Lua server (bypass plugin-http mismatch)
 mod ai_stream;       // Tauri Command gọi Claude API với stream:true qua Rust reqwest
+mod capcut;          // Tạo CapCut Draft project tự động (standalone, không cần DaVinci)
 
 // Include integration-like tests that need crate visibility
 #[cfg(test)]
@@ -267,7 +268,10 @@ fn main() {
             license::validate_license_key,
             license::get_device_fingerprint,
             resolve_bridge::call_lua_server,  // ← Command gọi Lua HTTP server qua Rust reqwest
-            ai_stream::call_claude_stream     // ← Command gọi Claude API streaming qua Rust reqwest
+            ai_stream::call_claude_stream,    // ← Command gọi Claude API streaming qua Rust reqwest
+            capcut::create_capcut_draft,      // ← Command tạo CapCut Draft project
+            capcut::scan_capcut_cache_rust,   // ← Command quét CapCut effects cache
+            audio_preprocess::get_audio_duration, // ← Command lấy duration file audio (ffprobe)
         ])
         .build(tauri::generate_context!())
         .expect("error while building Tauri application")

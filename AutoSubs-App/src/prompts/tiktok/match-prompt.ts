@@ -66,10 +66,10 @@ ${sentenceList}
    → Vẫn phải gộp cả "A. B" vào CÙNG 1 câu script.
 
 === OUTPUT ===
-CHỈ JSON array, KHÔNG markdown, KHÔNG giải thích.
-Trường "whisper" = các từ Whisper đã match (chính xác, KHÔNG thêm từ câu khác):
-[
-  {"num": X, "start": 0.00, "end": 0.00, "whisper": "các từ whisper đã match"},
-  ...
-]`;
+CHỈ plain text, mỗi dòng 1 câu, format: num:start-end
+KHÔNG JSON, KHÔNG markdown, KHÔNG giải thích, KHÔNG whisper text.
+Ví dụ:
+1:0.15-22.34
+2:22.34-37.57
+3:37.57-53.89`;
 }

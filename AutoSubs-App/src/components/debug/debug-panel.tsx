@@ -419,7 +419,7 @@ function renderReadableContent(text: string): React.ReactNode {
             if (typeof node === "object") {
                 const keys = Object.keys(node);
                 if (keys.length === 0) return <span className="text-gray-500">{"{}"}</span>;
-                
+
                 return (
                     <div className={isRoot ? "" : "pl-4 border-l-2 border-muted/50 ml-1 mt-1"}>
                         <span className="text-gray-400 select-none">{"{"}</span>

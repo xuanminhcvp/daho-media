@@ -7,7 +7,7 @@ import {
     Rocket, Square, Loader2,
     Image, Subtitles, Music, Zap, Film, Sparkles,
     Mic, Brain, CheckCircle2, XCircle, AlertTriangle,
-    SkipForward, Clock, FolderOpen, Info, Play, FileAudio, RefreshCw, Copy
+    SkipForward, Clock, FolderOpen, Info, Play, FileAudio, RefreshCw, ChevronDown
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
@@ -16,7 +16,6 @@ import {
     Dialog,
     DialogContent,
     DialogDescription,
-    DialogFooter,
     DialogHeader,
     DialogTitle,
 } from "@/components/ui/dialog"
@@ -51,7 +50,7 @@ import {
 } from "@/services/transcribe-phase-debug-service"
 import {
     buildTranscriptFromCapCutDraftSubtitle,
-    listCapCutDraftsFast,
+    discoverCapCutDraftsFast,
     type CapCutDraftSubtitleOption,
 } from "@/services/capcut-subtitle-source-service"
 import { addDebugLog, generateLogId } from "@/services/debug-logger"
@@ -76,6 +75,40 @@ interface CapCutChannelProfile {
     y: number
     /** Scale logo (1.0 = 100%). */
     scale: number
+}
+
+/**
+ * UI state cần lưu bền vững cho Auto Media.
+ * Mục tiêu: user mở lại app vẫn thấy đúng lựa chọn lần trước.
+ */
+interface AutoMediaPersistedUiState {
+    scriptText?: string
+    imageFolder?: string
+    imageFiles?: string[]
+    footageFolder?: string
+    musicFolder?: string
+    sfxFolder?: string
+    capcutDraftPath?: string
+    capcutDraftsRootOverride?: string
+    isAutoStepsExpanded?: boolean
+    isCapcutBrandingExpanded?: boolean
+    isCapcutPositionAdjustExpanded?: boolean
+}
+
+function getAutoMediaUiStateStorageKey(profileId: string): string {
+    return `auto-media-ui-state-${profileId}`
+}
+
+function readAutoMediaUiState(profileId: string): AutoMediaPersistedUiState {
+    try {
+        const raw = localStorage.getItem(getAutoMediaUiStateStorageKey(profileId))
+        if (!raw) return {}
+        const parsed = JSON.parse(raw) as AutoMediaPersistedUiState
+        return parsed && typeof parsed === 'object' ? parsed : {}
+    } catch (err) {
+        console.warn('[AutoMedia] Không đọc được persisted UI state:', err)
+        return {}
+    }
 }
 
 function getDefaultLogoTransform(position: ChannelLogoPosition): { x: number; y: number } {
@@ -208,11 +241,20 @@ function getStatusColor(status: StepStatus) {
 // ======================== COMPONENT CHÍNH ========================
 
 interface AutoMediaPanelProps {
-    open: boolean
-    onOpenChange: (open: boolean) => void
+    mode?: 'dialog' | 'embedded'
+    open?: boolean
+    onOpenChange?: (open: boolean) => void
 }
 
-export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelProps) {
+export function AutoMediaPanel({
+    mode: renderMode = 'dialog',
+    open: isDialogOpen = false,
+    onOpenChange,
+}: AutoMediaPanelProps) {
+    // Embedded mode: panel luôn "mở" vì đang render trực tiếp trong màn hình chính.
+    const isOpen = renderMode === 'embedded' ? true : isDialogOpen
+    const handleOpenChange = onOpenChange ?? (() => { })
+
     // ======================== CONTEXTS ========================
     const {
         project,
@@ -227,13 +269,17 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
     const { timelineInfo, getSourceAudio } = useResolve()
     const { subtitles, processTranscriptionResults } = useTranscript()
     const { settings } = useSettings()
+    const autoMediaUiFromStorage = React.useMemo(
+        () => readAutoMediaUiState(getActiveProfileId()),
+        []
+    )
 
     // ======================== LOCAL STATE ========================
 
     // Config bật/tắt từng bước
     const [config, setConfig] = React.useState<AutoMediaConfig>(() => {
         const profileId = getActiveProfileId();
-        
+
         // Đọc full cấu hình Auto Media đã lưu của profile hiện tại
         const savedConfigStr = localStorage.getItem(`auto-media-config-${profileId}`);
         if (savedConfigStr) {
@@ -244,7 +290,7 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                 console.warn("Lỗi parse config Auto Media:", err);
             }
         }
-        
+
         // Migrate Master SRT toggle cũ (nếu có)
         const oldMasterSrt = localStorage.getItem(`auto-media-master-srt-${profileId}`);
         let baseConfig = { ...DEFAULT_AUTO_MEDIA_CONFIG };
@@ -261,30 +307,46 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
     }, [config]);
 
     // Script text (user paste vào popup)
-    const [scriptText, setScriptText] = React.useState(
-        project.imageImport.scriptText || ''
-    )
+    const [scriptText, setScriptText] = React.useState(() => {
+        if (typeof autoMediaUiFromStorage.scriptText === 'string') {
+            return autoMediaUiFromStorage.scriptText
+        }
+        return project.imageImport.scriptText || ''
+    })
 
     // Folder ảnh
-    const [imageFolder, setImageFolder] = React.useState(
-        project.imageImport.imageFolder || ''
-    )
-    const [imageFiles, setImageFiles] = React.useState<string[]>(
-        project.imageImport.imageFiles || []
-    )
+    const [imageFolder, setImageFolder] = React.useState(() => {
+        if (typeof autoMediaUiFromStorage.imageFolder === 'string') {
+            return autoMediaUiFromStorage.imageFolder
+        }
+        return project.imageImport.imageFolder || ''
+    })
+    const [imageFiles, setImageFiles] = React.useState<string[]>(() => {
+        if (Array.isArray(autoMediaUiFromStorage.imageFiles)) {
+            return autoMediaUiFromStorage.imageFiles.filter((v): v is string => typeof v === 'string')
+        }
+        return project.imageImport.imageFiles || []
+    })
 
     // Folders — load từ settings.json khi popup mở
-    const [footageFolder, setFootageFolder] = React.useState('')
+    const [footageFolder, setFootageFolder] = React.useState(
+        () => autoMediaUiFromStorage.footageFolder || ''
+    )
     const [footageItems, setFootageItems] = React.useState<any[]>([])
-    const [musicFolder, setMusicFolder] = React.useState(project.musicLibrary.musicFolder || '')
+    const [musicFolder, setMusicFolder] = React.useState(
+        () => autoMediaUiFromStorage.musicFolder || project.musicLibrary.musicFolder || ''
+    )
     const [musicItems, setMusicItems] = React.useState<any[]>(project.musicLibrary.musicItems || [])
-    const [sfxFolder, setSfxFolder] = React.useState(project.sfxLibrary.sfxFolder || '')
+    const [sfxFolder, setSfxFolder] = React.useState(
+        () => autoMediaUiFromStorage.sfxFolder || project.sfxLibrary.sfxFolder || ''
+    )
     const [sfxItems, setSfxItems] = React.useState<any[]>(project.sfxLibrary.sfxItems || [])
 
-    // File VO (Voice Over) — chỉ dùng cho CapCut mode (không có DaVinci export)
-    const [voFile, setVoFile] = React.useState('')
+    // CapCut mode hiện dùng trực tiếp word timing từ draft, không còn chọn VO thủ công.
     // Settings effect CapCut hiện tại (nhận từ CapCutEffectsSettingsPanel)
     const [capCutEffectsSettings, setCapCutEffectsSettings] = React.useState<any>({})
+    // Chặn vòng lặp notify settings giữa child -> parent khi payload không đổi.
+    const lastCapCutEffectsSignatureRef = React.useRef('')
     // Danh sách kênh CapCut (mỗi kênh: tên + logo + vị trí).
     const [capcutChannelProfiles, setCapcutChannelProfiles] = React.useState<CapCutChannelProfile[]>([])
     // Kênh đang chọn cho lần export hiện tại.
@@ -293,12 +355,32 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
     const [isCapcutChannelHydrated, setIsCapcutChannelHydrated] = React.useState(false)
     // UI tạo kênh mới (thay cho window.prompt để chạy ổn định trong Tauri WebView).
     const [isCreatingCapcutChannel, setIsCreatingCapcutChannel] = React.useState(false)
+    // Theo yêu cầu user: phần "Bước tự động" mặc định đóng, chỉ mở khi user muốn custom.
+    const [isAutoStepsExpanded, setIsAutoStepsExpanded] = React.useState(
+        () => autoMediaUiFromStorage.isAutoStepsExpanded ?? false
+    )
+    // Theo yêu cầu mới: tab Branding mặc định mở, user có thể tự thu gọn.
+    const [isCapcutBrandingExpanded, setIsCapcutBrandingExpanded] = React.useState(
+        () => autoMediaUiFromStorage.isCapcutBrandingExpanded ?? true
+    )
+    // Theo yêu cầu user: phần "Tinh chỉnh vị trí" mặc định đóng, user tự bấm mở để custom.
+    const [isCapcutPositionAdjustExpanded, setIsCapcutPositionAdjustExpanded] = React.useState(
+        () => autoMediaUiFromStorage.isCapcutPositionAdjustExpanded ?? false
+    )
     const [newCapcutChannelName, setNewCapcutChannelName] = React.useState('')
     // Đường dẫn draft CapCut mà user muốn tận dụng subtitle có sẵn (word timing).
-    const [capcutDraftPath, setCapcutDraftPath] = React.useState('')
-    // Toggle: bật thì ưu tiên lấy timing từ subtitle CapCut, tắt thì luôn chạy Whisper như cũ.
-    const [useCapcutSubtitleTiming, setUseCapcutSubtitleTiming] = React.useState(true)
-    // Danh sách draft CapCut để user chọn nhanh trực tiếp trên UI.
+    const [capcutDraftPath, setCapcutDraftPath] = React.useState(
+        () => autoMediaUiFromStorage.capcutDraftPath || ''
+    )
+    // Root draft custom (chỉ dùng khi path mặc định không còn đúng trên máy user).
+    const [capcutDraftsRootOverride, setCapcutDraftsRootOverride] = React.useState(
+        () => autoMediaUiFromStorage.capcutDraftsRootOverride || ''
+    )
+    // Root Projects gợi ý để mở file picker nhanh.
+    const [capcutProjectsRootHint, setCapcutProjectsRootHint] = React.useState('')
+    // Chỉ bật UI "chọn root thủ công" khi không thấy root mặc định.
+    const [isCapcutDefaultDraftRootMissing, setIsCapcutDefaultDraftRootMissing] = React.useState(false)
+    // Danh sách draft CapCut để user chọn lại khi cần.
     const [capcutDraftOptions, setCapcutDraftOptions] = React.useState<CapCutDraftSubtitleOption[]>([])
     const [isLoadingCapcutDrafts, setIsLoadingCapcutDrafts] = React.useState(false)
     const [capcutDraftLoadError, setCapcutDraftLoadError] = React.useState('')
@@ -307,20 +389,6 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
     const [capcutWordTimingStats, setCapcutWordTimingStats] = React.useState<{ sentences: number; words: number } | null>(null)
     const [isLoadingWordTimingPreview, setIsLoadingWordTimingPreview] = React.useState(false)
     const [wordTimingPreviewError, setWordTimingPreviewError] = React.useState('')
-
-    // Chọn file VO
-    const handleSelectVoFile = async () => {
-        const selected = await open({
-            multiple: false,
-            filters: [{
-                name: 'Audio',
-                extensions: ['wav', 'mp3', 'aac', 'flac', 'ogg', 'm4a'],
-            }],
-        })
-        if (!selected) return
-        setVoFile(selected as string)
-        console.log('[AutoMedia] VO file:', selected)
-    }
 
     // ======================== CHANNEL PROFILE (CAPCUT) ========================
     React.useEffect(() => {
@@ -410,6 +478,41 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
         localStorage.setItem(`capcut-selected-channel-${profileId}`, selectedCapcutChannelId)
     }, [selectedCapcutChannelId, isCapcutChannelHydrated])
 
+    /**
+     * Persist toàn bộ UI state quan trọng của Auto Media.
+     * Không có HTTP/API ra ngoài: chỉ ghi localStorage trong máy user.
+     * Lần mở app sau sẽ đọc lại để giữ nguyên các lựa chọn gần nhất.
+     */
+    React.useEffect(() => {
+        const profileId = getActiveProfileId()
+        const payload: AutoMediaPersistedUiState = {
+            scriptText,
+            imageFolder,
+            imageFiles,
+            footageFolder,
+            musicFolder,
+            sfxFolder,
+            capcutDraftPath,
+            capcutDraftsRootOverride,
+            isAutoStepsExpanded,
+            isCapcutBrandingExpanded,
+            isCapcutPositionAdjustExpanded,
+        }
+        localStorage.setItem(getAutoMediaUiStateStorageKey(profileId), JSON.stringify(payload))
+    }, [
+        scriptText,
+        imageFolder,
+        imageFiles,
+        footageFolder,
+        musicFolder,
+        sfxFolder,
+        capcutDraftPath,
+        capcutDraftsRootOverride,
+        isAutoStepsExpanded,
+        isCapcutBrandingExpanded,
+        isCapcutPositionAdjustExpanded,
+    ])
+
     const handleCreateCapCutChannel = async () => {
         const channelName = newCapcutChannelName.trim()
         if (!channelName) return
@@ -498,39 +601,48 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
         }
     }, [capcutChannelProfiles, selectedCapcutChannelId])
 
-    // Chọn thư mục draft CapCut (thường là: ~/Movies/CapCut/User Data/Projects/com.lveditor.draft/<ProjectName>)
-    const handleSelectCapCutDraftFolder = async () => {
-        const selected = await open({ directory: true, multiple: false })
-        if (!selected) return
-        setCapcutDraftPath(selected as string)
-        console.log('[AutoMedia] CapCut draft folder:', selected)
-    }
-
     /**
-     * Quét NHANH danh sách draft CapCut để đổ vào dropdown.
+     * Quét NHANH danh sách draft CapCut.
      * Request gửi đi: không có HTTP, chỉ đọc local file system.
      * Response nhận về: mảng {name, path}.
      */
-    const loadCapCutDraftOptions = React.useCallback(async () => {
+    const loadCapCutDraftOptions = React.useCallback(async (overrideRoot?: string) => {
         setIsLoadingCapcutDrafts(true)
         setCapcutDraftLoadError('')
         try {
-            const drafts = await listCapCutDraftsFast()
+            const discovery = await discoverCapCutDraftsFast(
+                typeof overrideRoot === 'string' ? overrideRoot : capcutDraftsRootOverride
+            )
+            const drafts = discovery.drafts
             setCapcutDraftOptions(drafts)
+            setCapcutProjectsRootHint(discovery.projectsRoot)
+            setIsCapcutDefaultDraftRootMissing(discovery.isDefaultDraftsRootMissing)
 
-            // Nếu chưa có draft nào được chọn, tự chọn draft mới nhất.
-            if (!capcutDraftPath) {
-                if (drafts.length > 0) {
-                    setCapcutDraftPath(drafts[0].path)
-                }
-            }
+            // Theo yêu cầu user: mỗi lần quét luôn tự chọn draft mới nhất (item đầu tiên sau sort giảm dần).
+            setCapcutDraftPath(drafts.length > 0 ? drafts[0].path : '')
         } catch (err) {
             setCapcutDraftLoadError(String(err))
             setCapcutDraftOptions([])
         } finally {
             setIsLoadingCapcutDrafts(false)
         }
-    }, [capcutDraftPath])
+    }, [capcutDraftPath, capcutDraftsRootOverride])
+
+    /**
+     * Chọn root draft CapCut thủ công khi app không tìm thấy root mặc định.
+     * Dialog sẽ mở thẳng vào ~/Movies/CapCut/User Data/Projects để user thao tác nhanh.
+     */
+    const handleSelectCapcutDraftRoot = React.useCallback(async () => {
+        const selected = await open({
+            directory: true,
+            multiple: false,
+            defaultPath: capcutProjectsRootHint || undefined,
+        })
+        if (!selected) return
+        const selectedPath = selected as string
+        setCapcutDraftsRootOverride(selectedPath)
+        await loadCapCutDraftOptions(selectedPath)
+    }, [capcutProjectsRootHint, loadCapCutDraftOptions])
 
     // Khi mở panel ở chế độ CapCut thì tự load danh sách draft.
     React.useEffect(() => {
@@ -585,31 +697,23 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
         }
     }, [capcutDraftPath])
 
-    /** Copy preview word timing để user mang đi đối chiếu nhanh */
-    const handleCopyWordTimingPreview = React.useCallback(async () => {
-        if (!capcutWordTimingPreview) return
-        try {
-            await navigator.clipboard.writeText(capcutWordTimingPreview)
-        } catch (err) {
-            console.error('[AutoMedia] Copy word timing preview lỗi:', err)
-        }
-    }, [capcutWordTimingPreview])
-
     // Auto-load tất cả folders đã lưu từ settings.json khi popup mở
     React.useEffect(() => {
         if (isOpen) {
             import('@/services/saved-folders-service').then(async ({ getSavedFolder }) => {
                 const { getFootageFolderPath, getMusicFolderPath, getSfxFolderPath } = await import('@/services/auto-media-storage');
-                
+
                 // Load footage folder + metadata
                 let savedFootage = await getSavedFolder('footageFolder')
                 if (!savedFootage) savedFootage = await getFootageFolderPath()
-                
-                if (savedFootage) {
-                    setFootageFolder(savedFootage)
+                const persistedUiState = readAutoMediaUiState(getActiveProfileId())
+                const preferredFootageFolder = footageFolder || persistedUiState.footageFolder || savedFootage || ''
+
+                if (preferredFootageFolder) {
+                    setFootageFolder(preferredFootageFolder)
                     try {
                         const { loadFootageMetadata } = await import('@/services/footage-library-service')
-                        const items = await loadFootageMetadata(savedFootage)
+                        const items = await loadFootageMetadata(preferredFootageFolder)
                         setFootageItems(items)
                     } catch (err) {
                         console.warn('[AutoMedia] Lỗi load footage metadata:', err)
@@ -619,13 +723,14 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                 // Load music folder + metadata (nếu chưa có items từ project)
                 let savedMusic = await getSavedFolder('musicFolder')
                 if (!savedMusic) savedMusic = await getMusicFolderPath()
-                
-                if (savedMusic) {
-                    setMusicFolder(savedMusic)
+                const preferredMusicFolder = musicFolder || persistedUiState.musicFolder || savedMusic || ''
+
+                if (preferredMusicFolder) {
+                    setMusicFolder(preferredMusicFolder)
                     if (musicItems.length === 0) {
                         try {
                             const { loadAudioItemsFromFolder } = await import('@/services/audio-library-service')
-                            const items = await loadAudioItemsFromFolder(savedMusic)
+                            const items = await loadAudioItemsFromFolder(preferredMusicFolder)
                             setMusicItems(items)
                         } catch (err) {
                             console.warn('[AutoMedia] Lỗi load music metadata:', err)
@@ -636,13 +741,14 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                 // Load SFX folder + metadata (nếu chưa có items từ project)
                 let savedSfx = await getSavedFolder('sfxFolder')
                 if (!savedSfx) savedSfx = await getSfxFolderPath()
-                
-                if (savedSfx) {
-                    setSfxFolder(savedSfx)
+                const preferredSfxFolder = sfxFolder || persistedUiState.sfxFolder || savedSfx || ''
+
+                if (preferredSfxFolder) {
+                    setSfxFolder(preferredSfxFolder)
                     if (sfxItems.length === 0) {
                         try {
                             const { loadAudioItemsFromFolder } = await import('@/services/audio-library-service')
-                            const items = await loadAudioItemsFromFolder(savedSfx)
+                            const items = await loadAudioItemsFromFolder(preferredSfxFolder)
                             setSfxItems(items)
                         } catch (err) {
                             console.warn('[AutoMedia] Lỗi load sfx metadata:', err)
@@ -751,6 +857,10 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
             alert('Chưa kết nối DaVinci Resolve! Hãy kết nối trước.')
             return
         }
+        if (config.targetEngine === 'capcut' && !capcutDraftPath) {
+            alert('CapCut mode chưa tìm thấy draft gần đây. Nhấn "Quét Draft" để app tự lấy draft mới nhất.')
+            return
+        }
 
         // Reset state
         setPipelineState({
@@ -765,15 +875,13 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
         // - Không cần VO để transcribe (lấy trực tiếp word timing từ CapCut draft)
         // - Không import VO vào CapCut draft output
         const isCapCutEngine = config.targetEngine === 'capcut'
-        const shouldUseCapCutDraftTiming = isCapCutEngine && useCapcutSubtitleTiming && !!capcutDraftPath
+        const shouldUseCapCutDraftTiming = isCapCutEngine && !!capcutDraftPath
 
         // Transcript ID:
         // - Nếu có VO: dùng tên file VO để giữ tương thích cũ
         // - Nếu không có VO nhưng đang reuse CapCut draft: dùng tên draft để dễ phân biệt cache
         // - Fallback cuối: capcut_vo
-        const capcutTranscriptId = voFile
-            ? (voFile.split('/').pop()?.replace(/\.[^.]+$/, '') || 'capcut_vo')
-            : (capcutDraftPath.split('/').filter(Boolean).pop() || 'capcut_vo')
+        const capcutTranscriptId = (capcutDraftPath.split('/').filter(Boolean).pop() || 'capcut_vo')
 
         // Quan trọng:
         // - Nếu đang dùng timing từ draft CapCut thì KHÔNG được dùng transcript cũ trong context
@@ -838,10 +946,8 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
             updateMusicLibrary,
             updateSfxLibrary,
             // CapCut mode: truyền file Voice Over + project name
-            // Nếu đang reuse timing từ draft CapCut -> bỏ VO track hoàn toàn
-            voFilePath: config.targetEngine === 'capcut'
-                ? (shouldUseCapCutDraftTiming ? undefined : voFile)
-                : undefined,
+            // UX mới: CapCut mode luôn dùng timing từ draft, không truyền VO thủ công.
+            voFilePath: undefined,
             projectName: config.targetEngine === 'capcut' ? `AutoMedia_${new Date().toISOString().slice(0, 10)}` : undefined,
             // Nếu user đã chọn draft nguồn thì ưu tiên ghi đè trực tiếp vào draft đó.
             capcutTargetDraftPath: config.targetEngine === 'capcut' && capcutDraftPath
@@ -869,8 +975,8 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                 let audioOffset = 0
 
                 // ===== CAPCUT SUBTITLE REUSE MODE =====
-                // Nếu user bật reuse + đã chọn draft path -> đọc word timing trực tiếp từ CapCut.
-                if (isCapCut && useCapcutSubtitleTiming && capcutDraftPath) {
+                // CapCut mode: luôn đọc word timing trực tiếp từ draft đã chọn tự động.
+                if (isCapCut && capcutDraftPath) {
                     onStepUpdate('transcribe', 'running', '📚 CapCut mode — đọc subtitle_cache_info (word timing) từ draft...')
 
                     // Log request/response vào Debug Panel để user kiểm tra rõ nguồn dữ liệu.
@@ -949,7 +1055,7 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                         const filename = await processTranscriptionResults(
                             transcript,
                             settings,
-                            voFile || null,
+                            null,
                             capcutTranscriptId
                         )
 
@@ -960,19 +1066,9 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                 }
 
                 if (isCapCut) {
-                    // ===== CAPCUT MODE: dùng file VO trực tiếp =====
-                    if (!voFile) {
-                        // Nếu user chọn reuse CapCut timing mà đọc draft lỗi, và cũng không có VO fallback:
-                        // báo lỗi rõ ràng để user biết cần làm gì tiếp theo.
-                        if (shouldUseCapCutDraftTiming) {
-                            throw new Error('CapCut mode: Không đọc được word timing từ draft đã chọn, và bạn chưa chọn VO để fallback Whisper.')
-                        }
-                        throw new Error('CapCut mode: Chưa chọn file Voice Over (VO)! Hãy chọn file VO trước khi bắt đầu.')
-                    }
-                    onStepUpdate('transcribe', 'running', `🎙️ CapCut mode — dùng file VO: ${voFile.split('/').pop()}`)
-                    audioPath = voFile
-                    audioOffset = 0 // VO file bắt đầu từ 0s
-                    console.log('[AutoMedia] CapCut mode — VO file:', voFile)
+                    // ===== CAPCUT MODE =====
+                    // UI mới không còn chọn VO thủ công. Nếu đọc draft thất bại thì dừng rõ ràng.
+                    throw new Error('CapCut mode: Không đọc được word timing từ draft CapCut. Hãy nhấn "Quét Draft" rồi chạy lại.')
                 } else {
                     // ===== DAVINCI MODE: export audio từ Resolve =====
                     // FIX ROOT CAUSE: nếu selectedInputTracks rỗng → fallback ["2"]
@@ -1077,8 +1173,8 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                 const filename = await processTranscriptionResults(
                     transcript as any,
                     settings,
-                    // CapCut: có thể null khi dùng reuse timing từ draft, DaVinci luôn null
-                    isCapCut ? (voFile || null) : null,
+                    // CapCut mode hiện dùng draft timing tự động, DaVinci luôn null.
+                    null,
                     transcriptId
                 )
                 console.log('[AutoMedia] Transcript saved:', filename)
@@ -1171,30 +1267,58 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
             footageFolder: footageFolder,
             footageItems: footageItems,
             matchingFolder: project.matchingFolder || imageFolder,
-            setMatchingSentences: () => {},
-            setMatchingFolder: () => {},
-            setMasterSrt: () => {},
-            updateImageImport: () => {},
-            updateSubtitleData: () => {},
+            setMatchingSentences: () => { },
+            setMatchingFolder: () => { },
+            setMasterSrt: () => { },
+            updateImageImport: () => { },
+            updateSubtitleData: () => { },
             subtitleTemplate: project.subtitleData.selectedTemplate || 'Subtitle Default',
             subtitleFontSize: project.subtitleData.fontSize || 0.04,
-            updateMusicLibrary: () => {},
-            updateSfxLibrary: () => {},
-            runTranscribe: async (_onStepUpdate) => {},
+            updateMusicLibrary: () => { },
+            updateSfxLibrary: () => { },
+            runTranscribe: async (_onStepUpdate) => { },
             hasTranscript: subtitles && subtitles.length > 0,
             capcutChannelBranding: undefined,
         }
         return checkPrerequisites(deps, config)
-    // musicFolder, sfxFolder là local state — phải có trong deps để re-check sau khi useEffect load xong
+        // musicFolder, sfxFolder là local state — phải có trong deps để re-check sau khi useEffect load xong
     }, [mode, config, imageFolder, scriptText, imageFiles, subtitles, project, timelineInfo, footageFolder, footageItems, musicFolder, sfxFolder, musicItems, sfxItems])
 
     const notReadyItems = prereqChecks.filter(c => !c.ready)
 
+    /**
+     * Callback ổn định truyền cho CapCutEffectsSettingsPanel.
+     * Request: settings object từ panel con (nội bộ app).
+     * Response: parent cập nhật state settings (chỉ khi dữ liệu thực sự đổi).
+     */
+    const handleCapCutEffectsSettingsChange = React.useCallback((effConfig: any) => {
+        const nextSignature = JSON.stringify(effConfig || {})
+        if (nextSignature === lastCapCutEffectsSignatureRef.current) {
+            return
+        }
+        lastCapCutEffectsSignatureRef.current = nextSignature
+        setCapCutEffectsSettings(effConfig)
+        console.log('[AutoMedia] CapCut Effects:', effConfig)
+    }, [])
+
     // ======================== RENDER ========================
 
-    return (
-        <Dialog open={isOpen} onOpenChange={onOpenChange}>
-            <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+    // Ẩn block Track Layout theo yêu cầu UX mới (giảm nhiễu cho màn hình chính).
+    const showTrackLayoutNote = false
+
+    const panelContent = (
+        <>
+            {renderMode === 'embedded' ? (
+                <div className="space-y-1">
+                    <h2 className="flex items-center gap-2 text-lg font-semibold">
+                        <Rocket className="h-5 w-5 text-purple-500" />
+                        Auto Media
+                    </h2>
+                    <p className="text-sm text-muted-foreground">
+                        Tự động hoá toàn bộ hậu kỳ — 1 click, timeline đầy đủ
+                    </p>
+                </div>
+            ) : (
                 <DialogHeader>
                     <DialogTitle className="flex items-center gap-2">
                         <Rocket className="h-5 w-5 text-purple-500" />
@@ -1204,8 +1328,10 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                         Tự động hoá toàn bộ hậu kỳ — 1 click, timeline đầy đủ
                     </DialogDescription>
                 </DialogHeader>
+            )}
 
-                {/* ====== NOTE: Track layout 7V+5A ====== */}
+            {/* ====== NOTE: Track layout 7V+5A ====== */}
+            {showTrackLayoutNote && (
                 <div className="rounded-lg bg-blue-500/10 border border-blue-500/20 p-3 text-xs space-y-1.5">
                     <div className="flex items-center gap-1.5 font-medium text-blue-400">
                         <Info className="h-3.5 w-3.5" />
@@ -1226,660 +1352,739 @@ export function AutoMediaPanel({ open: isOpen, onOpenChange }: AutoMediaPanelPro
                         <span></span>
                     </div>
                 </div>
+            )}
 
-                {/* ====== MODE: INPUT — Nhập liệu ====== */}
-                {mode === 'input' && (
-                    <div className="space-y-4">
-                        {/* Script Text */}
-                        <div className="space-y-1.5">
-                            <label className="text-sm font-medium">Kịch bản chia câu</label>
-                            <Textarea
-                                value={scriptText}
-                                onChange={(e) => setScriptText(e.target.value)}
-                                onPaste={(e) => {
-                                    // Khi paste: tự đánh số mỗi dòng nếu chưa có
-                                    e.preventDefault()
-                                    const pastedText = e.clipboardData.getData('text')
-                                    const lines = pastedText.split('\n').filter(l => l.trim().length > 0)
-                                    // Kiểm tra xem đã có số chưa (VD: "1. ...", "1) ...")
-                                    const alreadyNumbered = lines.every(l => /^\d+[\.\)]\s/.test(l.trim()))
-                                    if (alreadyNumbered) {
-                                        // Đã có số → giữ nguyên
-                                        setScriptText(lines.join('\n'))
-                                    } else {
-                                        // Chưa có số → tự đánh số
-                                        const numbered = lines.map((line, i) => {
-                                            const clean = line.trim().replace(/^\d+[\.\)]\s*/, '')
-                                            return `${i + 1}. ${clean}`
-                                        })
-                                        setScriptText(numbered.join('\n'))
-                                    }
-                                }}
-                                placeholder={`Paste kịch bản vào đây — sẽ tự đánh số\n\nVí dụ:\nCâu đầu tiên trong kịch bản\nCâu thứ hai...\nCâu thứ ba...\n\n→ Tự chuyển thành:\n1. Câu đầu tiên\n2. Câu thứ hai...`}
-                                className="h-28 text-xs font-mono resize-none"
-                            />
-                            <p className="text-[10px] text-muted-foreground">
-                                📋 Paste kịch bản → tự đánh số. Hoặc nhập thủ công: 1. ..., 2. ..., 3. ...
-                            </p>
+            {/* ====== MODE: INPUT — Nhập liệu ====== */}
+            {mode === 'input' && (
+                <div className="space-y-4">
+                    {/* Script Text */}
+                    <div className="space-y-1.5">
+                        <label className="text-sm font-medium">Kịch bản chia câu</label>
+                        <Textarea
+                            value={scriptText}
+                            onChange={(e) => setScriptText(e.target.value)}
+                            onPaste={(e) => {
+                                // Khi paste: tự đánh số mỗi dòng nếu chưa có
+                                e.preventDefault()
+                                const pastedText = e.clipboardData.getData('text')
+                                const lines = pastedText.split('\n').filter(l => l.trim().length > 0)
+                                // Kiểm tra xem đã có số chưa (VD: "1. ...", "1) ...")
+                                const alreadyNumbered = lines.every(l => /^\d+[\.\)]\s/.test(l.trim()))
+                                if (alreadyNumbered) {
+                                    // Đã có số → giữ nguyên
+                                    setScriptText(lines.join('\n'))
+                                } else {
+                                    // Chưa có số → tự đánh số
+                                    const numbered = lines.map((line, i) => {
+                                        const clean = line.trim().replace(/^\d+[\.\)]\s*/, '')
+                                        return `${i + 1}. ${clean}`
+                                    })
+                                    setScriptText(numbered.join('\n'))
+                                }
+                            }}
+                            placeholder={`Paste kịch bản vào đây — sẽ tự đánh số\n\nVí dụ:\nCâu đầu tiên trong kịch bản\nCâu thứ hai...\nCâu thứ ba...\n\n→ Tự chuyển thành:\n1. Câu đầu tiên\n2. Câu thứ hai...`}
+                            className="h-32 text-xs font-mono resize-none"
+                        />
+                    </div>
+
+                    {/* Folder ảnh */}
+                    <div className="space-y-1.5">
+                        <label className="text-sm font-medium">Folder Ảnh</label>
+                        <div className="flex items-center gap-2">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="gap-1.5"
+                                onClick={handleSelectImageFolder}
+                            >
+                                <FolderOpen className="h-3.5 w-3.5" />
+                                Chọn Folder
+                            </Button>
+                            {imageFolder && (
+                                <span className="text-xs text-muted-foreground truncate max-w-[200px]">
+                                    {imageFolder.split('/').pop()} ({imageFiles.length} ảnh)
+                                </span>
+                            )}
                         </div>
+                    </div>
 
-                        {/* Folder ảnh */}
+                    {/* CapCut mode: UX rút gọn — luôn dùng timing từ draft mới nhất, không cho chọn tay. */}
+                    {config.targetEngine === 'capcut' && (
                         <div className="space-y-1.5">
-                            <label className="text-sm font-medium">Folder Ảnh</label>
-                            <div className="flex items-center gap-2">
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="gap-1.5"
-                                    onClick={handleSelectImageFolder}
-                                >
-                                    <FolderOpen className="h-3.5 w-3.5" />
-                                    Chọn Folder
-                                </Button>
-                                {imageFolder && (
-                                    <span className="text-xs text-muted-foreground truncate max-w-[200px]">
-                                        {imageFolder.split('/').pop()} ({imageFiles.length} ảnh)
-                                    </span>
-                                )}
-                            </div>
-                        </div>
+                            <div className="mt-2 rounded-xl border border-border bg-card p-3 space-y-3 shadow-sm">
+                                <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2">
+                                        <div className="h-7 w-7 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center">
+                                            <FileAudio className="h-3.5 w-3.5 text-primary" />
+                                        </div>
+                                        <div className="leading-tight">
+                                            <p className="text-[11px] font-semibold uppercase tracking-wide text-foreground">
+                                                Nguồn Timing CapCut
+                                            </p>
 
-                        {/* Chọn file VO — chỉ hiện khi CapCut mode */}
-                        {config.targetEngine === 'capcut' && (
-                            <div className="space-y-1.5">
-                                <label className="text-sm font-medium flex items-center gap-1.5">
-                                    <FileAudio className="h-3.5 w-3.5 text-blue-400" />
-                                    File Voice Over (VO)
-                                </label>
-                                <div className="flex items-center gap-2">
-                                    <Button
-                                        variant="outline"
-                                        size="sm"
-                                        className="gap-1.5"
-                                        onClick={handleSelectVoFile}
-                                    >
-                                        <Mic className="h-3.5 w-3.5" />
-                                        Chọn File VO
-                                    </Button>
-                                    {voFile ? (
-                                        <span className="text-xs text-muted-foreground truncate max-w-[200px]" title={voFile}>
-                                            🎙️ {voFile.split('/').pop()}
-                                        </span>
-                                    ) : (
-                                        <span className="text-xs text-yellow-500/70">
-                                            {useCapcutSubtitleTiming && capcutDraftPath
-                                                ? 'ℹ️ Chưa chọn VO (không sao — đang dùng word timing từ draft)'
-                                                : '⚠️ Chưa chọn file VO'}
+                                        </div>
+                                    </div>
+                                    {capcutDraftPath && (
+                                        <span className="inline-flex items-center rounded-full border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-300">
+                                            Auto Ready
                                         </span>
                                     )}
                                 </div>
-                                <p className="text-[10px] text-muted-foreground">
-                                    {useCapcutSubtitleTiming && capcutDraftPath
-                                        ? 'Đang ưu tiên word timing từ draft CapCut: VO là tuỳ chọn, không bắt buộc import vào draft mới.'
-                                        : 'File giọng đọc (.wav/.mp3) sẽ được đặt vào track Voice Over trong CapCut Draft.'}
-                                </p>
 
-                                <div className="mt-2 rounded-md border p-2 bg-muted/30 space-y-2">
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-[11px] font-medium text-muted-foreground uppercase">
-                                            Nguồn Timing Ưu Tiên
-                                        </span>
-                                        <Switch
-                                            checked={useCapcutSubtitleTiming}
-                                            onCheckedChange={() => setUseCapcutSubtitleTiming(prev => !prev)}
-                                        />
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-8 gap-1.5 rounded-full border-input bg-background hover:bg-accent"
+                                        onClick={() => {
+                                            void loadCapCutDraftOptions()
+                                        }}
+                                        disabled={isLoadingCapcutDrafts}
+                                    >
+                                        <RefreshCw className={`h-3.5 w-3.5 ${isLoadingCapcutDrafts ? 'animate-spin' : ''}`} />
+                                        Quét Draft
+                                    </Button>
+                                </div>
+                                {/* Chỉ hiện khi không tìm thấy root mặc định com.lveditor.draft để tránh làm phiền UI. */}
+                                {isCapcutDefaultDraftRootMissing && (
+                                    <div className="rounded-lg border border-amber-400/40 bg-amber-50/60 dark:bg-amber-950/20 px-2.5 py-2 space-y-1.5">
+                                        <p className="text-[10px] text-amber-700 dark:text-amber-300 leading-relaxed">
+                                            Không tìm thấy đường dẫn draft mặc định của CapCut. Bạn có thể chọn root draft thủ công.
+                                        </p>
+                                        <div className="flex items-center gap-2">
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                className="h-7 text-[11px] gap-1.5"
+                                                onClick={handleSelectCapcutDraftRoot}
+                                                disabled={isLoadingCapcutDrafts}
+                                            >
+                                                <FolderOpen className="h-3.5 w-3.5" />
+                                                Chọn Root Draft
+                                            </Button>
+                                            {capcutDraftsRootOverride && (
+                                                <span className="text-[10px] text-muted-foreground truncate max-w-[260px]">
+                                                    {capcutDraftsRootOverride}
+                                                </span>
+                                            )}
+                                        </div>
                                     </div>
-                                    <p className="text-[10px] text-muted-foreground">
-                                        Bật: lấy trực tiếp word timing từ subtitle_cache_info trong draft CapCut (nếu có), bỏ qua Whisper.
-                                    </p>
-                                    <div className="flex items-center gap-2">
-                                        <Button
-                                            variant="outline"
-                                            size="sm"
-                                            className="gap-1.5"
-                                            onClick={loadCapCutDraftOptions}
-                                            disabled={isLoadingCapcutDrafts}
-                                        >
-                                            <RefreshCw className={`h-3.5 w-3.5 ${isLoadingCapcutDrafts ? 'animate-spin' : ''}`} />
-                                            Quét Draft
-                                        </Button>
-                                    </div>
-
-                                    <div className="space-y-1">
-                                        <label className="text-[11px] text-muted-foreground">Danh sách Draft CapCut gần đây</label>
+                                )}
+                                {capcutDraftOptions.length > 0 && (
+                                    <div className="space-y-1.5">
+                                        <label className="text-[11px] text-muted-foreground font-medium">Chọn Draft CapCut</label>
                                         <select
-                                            className="w-full rounded border bg-background px-2 py-1.5 text-xs"
+                                            className="w-full h-9 rounded-lg border border-input bg-background px-2.5 text-xs shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
                                             value={capcutDraftPath}
                                             onChange={(e) => setCapcutDraftPath(e.target.value)}
-                                            disabled={isLoadingCapcutDrafts || capcutDraftOptions.length === 0}
+                                            disabled={isLoadingCapcutDrafts}
                                         >
-                                            <option value="">-- Chọn draft --</option>
                                             {capcutDraftOptions.map((d) => (
                                                 <option key={d.path} value={d.path}>
                                                     {d.name}
                                                 </option>
                                             ))}
                                         </select>
-                                        {capcutDraftLoadError && (
-                                            <p className="text-[10px] text-red-400 break-words">
-                                                ❌ Lỗi quét draft: {capcutDraftLoadError}
-                                            </p>
-                                        )}
-                                    </div>
-
-                                    <div className="flex items-center gap-2">
-                                        <Button
-                                            variant="outline"
-                                            size="sm"
-                                            className="gap-1.5"
-                                            onClick={handlePreviewCapCutWordTiming}
-                                            disabled={isLoadingWordTimingPreview || !capcutDraftPath}
-                                        >
-                                            {isLoadingWordTimingPreview ? (
-                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                            ) : (
-                                                <FileAudio className="h-3.5 w-3.5" />
-                                            )}
-                                            Xem Word Timing
-                                        </Button>
-                                        <Button
-                                            variant="outline"
-                                            size="sm"
-                                            className="gap-1.5"
-                                            onClick={handleCopyWordTimingPreview}
-                                            disabled={!capcutWordTimingPreview}
-                                        >
-                                            <Copy className="h-3.5 w-3.5" />
-                                            Copy
-                                        </Button>
-                                    </div>
-                                    {capcutWordTimingStats && (
                                         <p className="text-[10px] text-muted-foreground">
-                                            ✅ Preview: {capcutWordTimingStats.sentences} câu • {capcutWordTimingStats.words} từ
+                                            Đã tìm thấy {capcutDraftOptions.length} draft.
                                         </p>
-                                    )}
-                                    {wordTimingPreviewError && (
-                                        <p className="text-[10px] text-red-400 break-words">
-                                            ❌ Không đọc được word timing: {wordTimingPreviewError}
-                                        </p>
-                                    )}
-                                    {capcutWordTimingPreview && (
-                                        <Textarea
-                                            value={capcutWordTimingPreview}
-                                            readOnly
-                                            className="h-32 text-[10px] font-mono resize-y"
-                                        />
-                                    )}
-
-                                    <div className="flex items-center gap-2">
-                                        <Button
-                                            variant="outline"
-                                            size="sm"
-                                            className="gap-1.5"
-                                            onClick={handleSelectCapCutDraftFolder}
-                                        >
-                                            <FolderOpen className="h-3.5 w-3.5" />
-                                            Chọn Draft CapCut
-                                        </Button>
-                                        {capcutDraftPath ? (
-                                            <span className="text-xs text-muted-foreground truncate max-w-[210px]" title={capcutDraftPath}>
-                                                📁 {capcutDraftPath.split('/').pop()}
-                                            </span>
-                                        ) : (
-                                            <span className="text-xs text-muted-foreground/70">
-                                                Chưa chọn draft
-                                            </span>
-                                        )}
                                     </div>
+                                )}
+
+                                <div className="flex items-center gap-2">
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-8 gap-1.5 rounded-full border-input bg-background hover:bg-accent"
+                                        onClick={handlePreviewCapCutWordTiming}
+                                        disabled={isLoadingWordTimingPreview || !capcutDraftPath}
+                                    >
+                                        {isLoadingWordTimingPreview ? (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                            <FileAudio className="h-3.5 w-3.5" />
+                                        )}
+                                        Xem Word Timing
+                                    </Button>
                                 </div>
+                                {capcutDraftLoadError && (
+                                    <p className="text-[10px] text-red-600 dark:text-red-400 break-words">
+                                        ❌ Lỗi quét draft: {capcutDraftLoadError}
+                                    </p>
+                                )}
+                                {capcutWordTimingStats && (
+                                    <div className="inline-flex items-center gap-1.5 rounded-md border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-1 text-[10px] text-emerald-700 dark:text-emerald-300">
+                                        <span>✅</span>
+                                        <span>Preview: {capcutWordTimingStats.sentences} câu • {capcutWordTimingStats.words} từ</span>
+                                    </div>
+                                )}
+                                {wordTimingPreviewError && (
+                                    <p className="text-[10px] text-red-600 dark:text-red-400 break-words">
+                                        ❌ Không đọc được word timing: {wordTimingPreviewError}
+                                    </p>
+                                )}
+                                {capcutWordTimingPreview && (
+                                    <Textarea
+                                        value={capcutWordTimingPreview}
+                                        readOnly
+                                        className="h-36 rounded-lg border-input bg-background text-[10px] font-mono resize-y"
+                                    />
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Toggle từng bước */}
+                    <div className="space-y-2">
+                        <button
+                            type="button"
+                            className="w-full flex items-center justify-between rounded-md border px-3 py-2 hover:bg-muted/40 transition-colors"
+                            onClick={() => setIsAutoStepsExpanded(prev => !prev)}
+                            aria-expanded={isAutoStepsExpanded}
+                        >
+                            <span className="text-sm font-medium">Bước tự động</span>
+                            <ChevronDown
+                                className={`h-4 w-4 text-muted-foreground transition-transform ${isAutoStepsExpanded ? 'rotate-180' : ''}`}
+                            />
+                        </button>
+
+                        {/* Chỉ khi user mở mới hiển thị danh sách bước để custom. */}
+                        {isAutoStepsExpanded && (
+                            <>
+                                <div className="grid grid-cols-2 gap-2">
+                                    {([
+                                        ['enableMasterSrt', 'Tạo Master SRT', <Brain key="msrt" className="h-3.5 w-3.5" />],
+                                        ['enableImage', 'Import Ảnh', <Image key="img" className="h-3.5 w-3.5" />],
+                                        ['enableSubtitle', 'Phụ Đề', <Subtitles key="sub" className="h-3.5 w-3.5" />],
+                                        ['enableMusic', 'Nhạc Nền', <Music key="mus" className="h-3.5 w-3.5" />],
+                                        ['enableSfx', 'SFX', <Zap key="sfx" className="h-3.5 w-3.5" />],
+                                        ['enableFootage', 'Footage', <Film key="ft" className="h-3.5 w-3.5" />],
+                                        ['enableEffects', 'Hiệu Ứng', <Sparkles key="fx" className="h-3.5 w-3.5" />],
+                                    ] as [keyof AutoMediaConfig, string, React.ReactNode][]).map(([key, label, icon]) => (
+                                        <div key={key} className="flex items-center justify-between gap-2 rounded-md border p-2">
+                                            <div className="flex items-center gap-1.5 text-xs">
+                                                {icon}
+                                                {label}
+                                            </div>
+                                            <Switch
+                                                checked={config[key] as boolean}
+                                                onCheckedChange={() => toggleStep(key)}
+                                            />
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* Tùy chọn Phụ Đề chỉ hiện khi bật bước Phụ Đề. */}
+                                {config.enableSubtitle && (
+                                    <div className="mt-2 rounded-md border p-2 bg-muted/30">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <span className="text-[11px] font-medium text-muted-foreground uppercase">Chế độ Phụ Đề</span>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-1.5 bg-background border rounded-md p-1">
+                                            <button
+                                                onClick={() => setConfig(prev => ({ ...prev, subtitleMode: 'srt' }))}
+                                                className={`text-xs py-1.5 rounded-sm font-medium transition-colors ${config.subtitleMode === 'srt' ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-muted text-muted-foreground'}`}
+                                            >
+                                                📝 File .srt (Nhẹ/Chuẩn)
+                                            </button>
+                                            <button
+                                                onClick={() => setConfig(prev => ({ ...prev, subtitleMode: 'fusion' }))}
+                                                className={`text-xs py-1.5 rounded-sm font-medium transition-colors ${config.subtitleMode === 'fusion' ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-muted text-muted-foreground'}`}
+                                            >
+                                                ✨ Fusion Text+ (Nặng/Đẹp)
+                                            </button>
+                                        </div>
+                                        <p className="text-[9.5px] text-muted-foreground mt-1.5 leading-tight px-1 text-center">
+                                            {config.subtitleMode === 'srt'
+                                                ? "Khuyên dùng cho Phim Tài Liệu. Rất nhẹ, không ăn RAM, tự import vào Native Subtitle Track."
+                                                : "Khuyên dùng cho Short/Stories. Ăn nhiều RAM vì render từng hiệu ứng chuyển động."}
+                                        </p>
+                                    </div>
+                                )}
+                            </>
+                        )}
+
+                        {/* Export Target Toggle */}
+                        <div className="mt-4 space-y-2">
+                            <label className="text-sm font-medium">Export Target</label>
+                            <div className="grid grid-cols-2 gap-1.5 bg-muted/30 border rounded-md p-1.5">
+                                <button
+                                    onClick={() => setConfig(prev => ({ ...prev, targetEngine: 'davinci' }))}
+                                    className={`flex items-center justify-center gap-1.5 text-xs py-2 rounded-sm font-medium transition-colors ${(!config.targetEngine || config.targetEngine === 'davinci') ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-muted text-muted-foreground'}`}
+                                >
+                                    <img src="/davinci-resolve-logo.png" className="h-4 w-4 object-contain" alt="DaVinci" />
+                                    DaVinci Resolve
+                                </button>
+                                <button
+                                    onClick={() => setConfig(prev => ({ ...prev, targetEngine: 'capcut' }))}
+                                    className={`flex items-center justify-center gap-1.5 text-xs py-2 rounded-sm font-medium transition-colors ${config.targetEngine === 'capcut' ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-muted text-muted-foreground'}`}
+                                >
+                                    <span className="font-bold text-[13px] tracking-tight text-white bg-black rounded p-0.5 px-1 leading-none">C</span>
+                                    CapCut Draft
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Panel cài đặt hiệu ứng (chỉ hiện cho CapCut) */}
+                        {config.targetEngine === 'capcut' && (
+                            <div className="mt-2">
+                                <CapCutEffectsSettingsPanel
+                                    onSettingsChange={handleCapCutEffectsSettingsChange}
+                                />
                             </div>
                         )}
 
-                        {/* Toggle từng bước */}
-                        <div className="space-y-2">
-                            <label className="text-sm font-medium">Bước tự động</label>
-                            <div className="grid grid-cols-2 gap-2">
-                                {([
-                                    ['enableMasterSrt', 'Tạo Master SRT', <Brain key="msrt" className="h-3.5 w-3.5" />],
-                                    ['enableImage', 'Import Ảnh', <Image key="img" className="h-3.5 w-3.5" />],
-                                    ['enableSubtitle', 'Phụ Đề', <Subtitles key="sub" className="h-3.5 w-3.5" />],
-                                    ['enableMusic', 'Nhạc Nền', <Music key="mus" className="h-3.5 w-3.5" />],
-                                    ['enableSfx', 'SFX', <Zap key="sfx" className="h-3.5 w-3.5" />],
-                                    ['enableFootage', 'Footage', <Film key="ft" className="h-3.5 w-3.5" />],
-                                    ['enableEffects', 'Hiệu Ứng', <Sparkles key="fx" className="h-3.5 w-3.5" />],
-                                ] as [keyof AutoMediaConfig, string, React.ReactNode][]).map(([key, label, icon]) => (
-                                    <div key={key} className="flex items-center justify-between gap-2 rounded-md border p-2">
-                                        <div className="flex items-center gap-1.5 text-xs">
-                                            {icon}
-                                            {label}
+                        {/* Channel Branding cho CapCut: chọn kênh + logo + vị trí + transform */}
+                        {config.targetEngine === 'capcut' && (
+                            <div className="mt-2 overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+
+                                {/* ── Header toggle ── */}
+                                <button
+                                    type="button"
+                                    className="w-full flex items-center justify-between px-3.5 py-2.5 hover:bg-muted/40 transition-colors"
+                                    onClick={() => {
+                                        setIsCapcutBrandingExpanded(prev => {
+                                            const next = !prev
+                                            if (!next) setIsCreatingCapcutChannel(false)
+                                            return next
+                                        })
+                                    }}
+                                >
+                                    <div className="flex items-center gap-2">
+                                        <div className="text-left">
+                                            <p className="text-[13px] font-semibold leading-tight">Logo YouTube</p>
+                                            <p className="text-[10px] text-muted-foreground leading-none mt-0.5">
+                                                {selectedCapcutChannelId
+                                                    ? capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.name || 'Đã chọn kênh'
+                                                    : 'Chưa chọn kênh'}
+                                            </p>
                                         </div>
-                                        <Switch
-                                            checked={config[key] as boolean}
-                                            onCheckedChange={() => toggleStep(key)}
-                                        />
                                     </div>
-                                ))}
-                            </div>
-
-                            {/* Tùy chọn Phụ Đề */}
-                            {config.enableSubtitle && (
-                                <div className="mt-2 rounded-md border p-2 bg-muted/30">
-                                    <div className="flex items-center justify-between mb-2">
-                                        <span className="text-[11px] font-medium text-muted-foreground uppercase">Chế độ Phụ Đề</span>
+                                    <div className="flex items-center gap-2">
+                                        {/* Badge trạng thái */}
+                                        {selectedCapcutChannelId && (
+                                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                                                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 inline-block" />
+                                                Active
+                                            </span>
+                                        )}
+                                        <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${isCapcutBrandingExpanded ? 'rotate-180' : ''}`} />
                                     </div>
-                                    <div className="grid grid-cols-2 gap-1.5 bg-background border rounded-md p-1">
-                                        <button 
-                                            onClick={() => setConfig(prev => ({...prev, subtitleMode: 'srt'}))}
-                                            className={`text-xs py-1.5 rounded-sm font-medium transition-colors ${config.subtitleMode === 'srt' ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-muted text-muted-foreground'}`}
-                                        >
-                                            📝 File .srt (Nhẹ/Chuẩn)
-                                        </button>
-                                        <button 
-                                            onClick={() => setConfig(prev => ({...prev, subtitleMode: 'fusion'}))}
-                                            className={`text-xs py-1.5 rounded-sm font-medium transition-colors ${config.subtitleMode === 'fusion' ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-muted text-muted-foreground'}`}
-                                        >
-                                            ✨ Fusion Text+ (Nặng/Đẹp)
-                                        </button>
-                                    </div>
-                                    <p className="text-[9.5px] text-muted-foreground mt-1.5 leading-tight px-1 text-center">
-                                        {config.subtitleMode === 'srt' 
-                                            ? "Khuyên dùng cho Phim Tài Liệu. Rất nhẹ, không ăn RAM, tự import vào Native Subtitle Track." 
-                                            : "Khuyên dùng cho Short/Stories. Ăn nhiều RAM vì render từng hiệu ứng chuyển động."}
-                                    </p>
-                                </div>
-                            )}
+                                </button>
 
-                            {/* Export Target Toggle */}
-                            <div className="mt-4 space-y-2">
-                                <label className="text-sm font-medium">Export Target</label>
-                                <div className="grid grid-cols-2 gap-1.5 bg-muted/30 border rounded-md p-1.5">
-                                    <button 
-                                        onClick={() => setConfig(prev => ({...prev, targetEngine: 'davinci'}))}
-                                        className={`flex items-center justify-center gap-1.5 text-xs py-2 rounded-sm font-medium transition-colors ${(!config.targetEngine || config.targetEngine === 'davinci') ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-muted text-muted-foreground'}`}
-                                    >
-                                        <img src="/davinci-resolve-logo.png" className="h-4 w-4 object-contain" alt="DaVinci" />
-                                        DaVinci Resolve
-                                    </button>
-                                    <button 
-                                        onClick={() => setConfig(prev => ({...prev, targetEngine: 'capcut'}))}
-                                        className={`flex items-center justify-center gap-1.5 text-xs py-2 rounded-sm font-medium transition-colors ${config.targetEngine === 'capcut' ? 'bg-primary text-primary-foreground shadow' : 'hover:bg-muted text-muted-foreground'}`}
-                                    >
-                                        <span className="font-bold text-[13px] tracking-tight text-white bg-black rounded p-0.5 px-1 leading-none">C</span>
-                                        CapCut Draft (v3)
-                                    </button>
-                                </div>
-                            </div>
+                                {/* ── Nội dung mở rộng ── */}
+                                {isCapcutBrandingExpanded && (
+                                    <div className="border-t border-border/60 p-3 space-y-3">
 
-                            {/* Panel cài đặt hiệu ứng (chỉ hiện cho CapCut) */}
-                            {config.targetEngine === 'capcut' && (
-                                <div className="mt-2">
-                                    <CapCutEffectsSettingsPanel 
-                                        onSettingsChange={(effConfig) => {
-                                            // Quan trọng: phải đưa settings effect vào deps pipeline.
-                                            // Nếu chỉ console.log thì export CapCut sẽ nhận {} và không inject transition/video effect.
-                                            setCapCutEffectsSettings(effConfig)
-                                            console.log('[AutoMedia] CapCut Effects:', effConfig)
-                                        }} 
-                                    />
-                                </div>
-                            )}
-
-                            {/* Channel Branding cho CapCut: chỉ chọn kênh + logo + vị trí */}
-                            {config.targetEngine === 'capcut' && (
-                                <div className="mt-2 rounded-md border p-2 bg-muted/20 space-y-2">
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-xs font-medium">Kênh YouTube (Logo Auto Overlay)</span>
-                                        <div className="flex items-center gap-1">
+                                        {/* Hàng action buttons */}
+                                        <div className="flex items-center gap-1.5 flex-wrap">
                                             <Button
                                                 type="button"
                                                 variant="outline"
                                                 size="sm"
-                                                className="h-6 text-[10px]"
+                                                className="h-7 px-2.5 text-[11px] rounded-lg gap-1.5 border-dashed"
                                                 onClick={() => setIsCreatingCapcutChannel(prev => !prev)}
                                             >
-                                                {isCreatingCapcutChannel ? 'Đóng' : '+ Tạo kênh'}
-                                            </Button>
-                                            <Button type="button" variant="outline" size="sm" className="h-6 text-[10px]" onClick={handleUpdateCapCutChannelLogo} disabled={!selectedCapcutChannelId}>
-                                                Cập nhật logo
+                                                {/* Dấu + / X tùy trạng thái */}
+                                                <span className="text-base leading-none">{isCreatingCapcutChannel ? '✕' : '＋'}</span>
+                                                {isCreatingCapcutChannel ? 'Đóng' : 'Tạo kênh'}
                                             </Button>
                                             <Button
                                                 type="button"
                                                 variant="outline"
                                                 size="sm"
-                                                className="h-6 text-[10px] text-red-500 border-red-200 hover:bg-red-50"
+                                                className="h-7 px-2.5 text-[11px] rounded-lg gap-1.5"
+                                                onClick={handleUpdateCapCutChannelLogo}
+                                                disabled={!selectedCapcutChannelId}
+                                            >
+                                                🖼 Cập nhật logo
+                                            </Button>
+                                            <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="sm"
+                                                className="h-7 px-2.5 text-[11px] rounded-lg gap-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 ml-auto"
                                                 onClick={handleDeleteCapCutChannel}
                                                 disabled={!selectedCapcutChannelId}
                                             >
-                                                Xoá kênh
+                                                🗑 Xoá kênh
                                             </Button>
                                         </div>
-                                    </div>
 
-                                    {isCreatingCapcutChannel && (
-                                        <div className="flex items-center gap-1.5">
-                                            <input
-                                                value={newCapcutChannelName}
-                                                onChange={(e) => setNewCapcutChannelName(e.target.value)}
-                                                placeholder="Nhập tên kênh..."
-                                                className="h-8 flex-1 rounded-md border bg-background px-2 text-xs"
-                                            />
-                                            <Button
-                                                type="button"
-                                                size="sm"
-                                                className="h-8 text-[10px]"
-                                                onClick={handleCreateCapCutChannel}
-                                                disabled={!newCapcutChannelName.trim()}
-                                            >
-                                                Lưu + Chọn logo
-                                            </Button>
-                                        </div>
-                                    )}
-
-                                    <div className="grid grid-cols-2 gap-2">
-                                        <div className="space-y-1">
-                                            <label className="text-[11px] text-muted-foreground">Chọn kênh</label>
-                                            <select
-                                                value={selectedCapcutChannelId}
-                                                onChange={(e) => setSelectedCapcutChannelId(e.target.value)}
-                                                className="w-full h-8 rounded-md border bg-background px-2 text-xs"
-                                            >
-                                                <option value="">Không dùng logo kênh</option>
-                                                {capcutChannelProfiles.map(ch => (
-                                                    <option key={ch.id} value={ch.id}>{ch.name}</option>
-                                                ))}
-                                            </select>
-                                        </div>
-
-                                        <div className="space-y-1">
-                                            <label className="text-[11px] text-muted-foreground">Vị trí logo</label>
-                                            <select
-                                                value={capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.position || 'top-right'}
-                                                onChange={(e) => {
-                                                    const pos = e.target.value as ChannelLogoPosition
-                                                    const defaults = getDefaultLogoTransform(pos)
-                                                    setCapcutChannelProfiles(prev =>
-                                                        prev.map(ch => ch.id === selectedCapcutChannelId ? {
-                                                            ...ch,
-                                                            position: pos,
-                                                            x: defaults.x,
-                                                            y: defaults.y,
-                                                        } : ch)
-                                                    )
-                                                }}
-                                                disabled={!selectedCapcutChannelId}
-                                                className="w-full h-8 rounded-md border bg-background px-2 text-xs disabled:opacity-60"
-                                            >
-                                                <option value="top-left">Trên trái</option>
-                                                <option value="top-right">Trên phải</option>
-                                                <option value="bottom-left">Dưới trái</option>
-                                                <option value="bottom-right">Dưới phải</option>
-                                            </select>
-                                        </div>
-                                    </div>
-
-                                    {selectedCapcutChannelId && (
-                                        <div className="space-y-2 rounded-md border bg-background/60 p-2">
-                                            <div className="flex items-center justify-end">
+                                        {/* Form tạo kênh mới — hiện khi bấm Tạo kênh */}
+                                        {isCreatingCapcutChannel && (
+                                            <div className="flex items-center gap-2 rounded-lg border border-dashed border-primary/40 bg-primary/5 p-2">
+                                                <input
+                                                    value={newCapcutChannelName}
+                                                    onChange={(e) => setNewCapcutChannelName(e.target.value)}
+                                                    placeholder="Tên kênh YouTube..."
+                                                    className="h-8 flex-1 rounded-lg border bg-background px-2.5 text-xs focus:outline-none focus:ring-2 focus:ring-primary/30"
+                                                />
                                                 <Button
                                                     type="button"
-                                                    variant="outline"
                                                     size="sm"
-                                                    className="h-6 text-[10px]"
-                                                    onClick={() => {
-                                                        setCapcutChannelProfiles(prev =>
-                                                            prev.map(ch => {
-                                                                if (ch.id !== selectedCapcutChannelId) return ch
-                                                                const defaults = getDefaultLogoTransform(ch.position)
-                                                                return {
-                                                                    ...ch,
-                                                                    x: defaults.x,
-                                                                    y: defaults.y,
-                                                                    scale: getDefaultLogoScale(),
-                                                                }
-                                                            })
-                                                        )
-                                                    }}
+                                                    className="h-8 text-[11px] rounded-lg bg-primary"
+                                                    onClick={handleCreateCapCutChannel}
+                                                    disabled={!newCapcutChannelName.trim()}
                                                 >
-                                                    Về mặc định
+                                                    Lưu + Chọn logo
                                                 </Button>
                                             </div>
-                                            <div className="grid grid-cols-3 gap-2">
-                                                <div className="space-y-1">
-                                                    <label className="text-[11px] text-muted-foreground">X (trái/phải)</label>
-                                                    <input
-                                                        type="range"
-                                                        min={-1.2}
-                                                        max={1.2}
-                                                        step={0.01}
-                                                        value={capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.x ?? 0.87}
-                                                        onChange={(e) => {
-                                                            const nextX = Number(e.target.value)
-                                                            setCapcutChannelProfiles(prev =>
-                                                                prev.map(ch => ch.id === selectedCapcutChannelId ? { ...ch, x: nextX } : ch)
-                                                            )
-                                                        }}
-                                                        className="w-full"
-                                                    />
-                                                    <div className="text-[10px] text-muted-foreground">
-                                                        {(capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.x ?? 0.8).toFixed(2)}
-                                                    </div>
-                                                </div>
+                                        )}
 
-                                                <div className="space-y-1">
-                                                    <label className="text-[11px] text-muted-foreground">Y (lên/xuống)</label>
-                                                    <input
-                                                        type="range"
-                                                        min={-1.2}
-                                                        max={1.2}
-                                                        step={0.01}
-                                                        value={capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.y ?? 0.75}
-                                                        onChange={(e) => {
-                                                            const nextY = Number(e.target.value)
-                                                            setCapcutChannelProfiles(prev =>
-                                                                prev.map(ch => ch.id === selectedCapcutChannelId ? { ...ch, y: nextY } : ch)
-                                                            )
-                                                        }}
-                                                        className="w-full"
-                                                    />
-                                                    <div className="text-[10px] text-muted-foreground">
-                                                        {(capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.y ?? 0.56).toFixed(2)}
-                                                    </div>
-                                                </div>
+                                        {/* Grid: Chọn kênh + Vị trí logo */}
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                            {/* Dropdown: chọn kênh */}
+                                            <div className="space-y-1.5">
+                                                <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Chọn kênh</label>
+                                                <select
+                                                    value={selectedCapcutChannelId}
+                                                    onChange={(e) => setSelectedCapcutChannelId(e.target.value)}
+                                                    className="w-full h-9 rounded-lg border border-input bg-background px-2.5 text-xs shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                                                >
+                                                    <option value="">— Không dùng logo kênh —</option>
+                                                    {capcutChannelProfiles.map(ch => (
+                                                        <option key={ch.id} value={ch.id}>{ch.name}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
 
-                                                <div className="space-y-1">
-                                                    <label className="text-[11px] text-muted-foreground">Scale</label>
-                                                    <input
-                                                        type="range"
-                                                        min={0.05}
-                                                        max={1.2}
-                                                        step={0.01}
-                                                        value={capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.scale ?? getDefaultLogoScale()}
-                                                        onChange={(e) => {
-                                                            const nextScale = Number(e.target.value)
-                                                            setCapcutChannelProfiles(prev =>
-                                                                prev.map(ch => ch.id === selectedCapcutChannelId ? { ...ch, scale: nextScale } : ch)
-                                                            )
-                                                        }}
-                                                        className="w-full"
-                                                    />
-                                                    <div className="text-[10px] text-muted-foreground">
-                                                        {(((capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.scale ?? getDefaultLogoScale()) * 100)).toFixed(0)}%
-                                                    </div>
-                                                </div>
+                                            {/* Dropdown: vị trí logo */}
+                                            <div className="space-y-1.5">
+                                                <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Vị trí logo</label>
+                                                <select
+                                                    value={capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.position || 'top-right'}
+                                                    onChange={(e) => {
+                                                        const pos = e.target.value as ChannelLogoPosition
+                                                        const defaults = getDefaultLogoTransform(pos)
+                                                        setCapcutChannelProfiles(prev =>
+                                                            prev.map(ch => ch.id === selectedCapcutChannelId ? {
+                                                                ...ch,
+                                                                position: pos,
+                                                                x: defaults.x,
+                                                                y: defaults.y,
+                                                            } : ch)
+                                                        )
+                                                    }}
+                                                    disabled={!selectedCapcutChannelId}
+                                                    className="w-full h-9 rounded-lg border border-input bg-background px-2.5 text-xs shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+                                                >
+                                                    <option value="top-left">↖ Trên trái</option>
+                                                    <option value="top-right">↗ Trên phải</option>
+                                                    <option value="bottom-left">↙ Dưới trái</option>
+                                                    <option value="bottom-right">↘ Dưới phải</option>
+                                                </select>
                                             </div>
                                         </div>
-                                    )}
-                                </div>
-                            )}
 
-                            {/* Debug Mode toggle */}
-                            <div className="flex items-center justify-between rounded-md border border-orange-500/20 bg-orange-500/5 p-2 mt-2">
-                                <div className="flex items-center gap-1.5 text-xs text-orange-400">
-                                    🐛 Debug Mode (tuần tự + nút Tiếp tục)
-                                </div>
-                                <Switch
-                                    checked={config.debugMode}
-                                    onCheckedChange={() => setConfig(prev => ({ ...prev, debugMode: !prev.debugMode }))}
-                                />
-                            </div>
-                        </div>
+                                        {/* Sliders tinh chỉnh vị trí — chỉ hiện khi đã chọn kênh */}
+                                        {selectedCapcutChannelId && (
+                                            <div className="rounded-xl border border-border/70 bg-muted/20 p-3 space-y-3">
+                                                {/* Header slider panel: bấm để mở/đóng phần custom vị trí. */}
+                                                <button
+                                                    type="button"
+                                                    className="w-full flex items-center justify-between rounded-lg border border-border/60 bg-background/60 px-2.5 py-2 hover:bg-muted/40 transition-colors"
+                                                    onClick={() => setIsCapcutPositionAdjustExpanded(prev => !prev)}
+                                                    aria-expanded={isCapcutPositionAdjustExpanded}
+                                                >
+                                                    <span className="text-[11px] font-semibold text-foreground/70 uppercase tracking-wide">Tinh chỉnh vị trí</span>
+                                                    <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${isCapcutPositionAdjustExpanded ? 'rotate-180' : ''}`} />
+                                                </button>
 
-                        {/* Cảnh báo thiếu điều kiện */}
-                        {notReadyItems.length > 0 && (
-                            <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/20 p-2.5 space-y-1">
-                                <div className="flex items-center gap-1 text-xs font-medium text-yellow-500">
-                                    <AlertTriangle className="h-3.5 w-3.5" />
-                                    Chưa đủ điều kiện:
-                                </div>
-                                {notReadyItems.map((item, i) => (
-                                    <p key={i} className="text-[10px] text-yellow-500/70 pl-5">
-                                        • {item.reason}
-                                    </p>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                )}
+                                                {/* Mặc định đóng: chỉ khi user mở mới hiện các slider custom. */}
+                                                {isCapcutPositionAdjustExpanded && (
+                                                    <>
+                                                        <div className="flex items-center justify-between">
+                                                            <span className="text-[10px] text-muted-foreground">Tuỳ chỉnh vị trí logo theo nhu cầu kênh.</span>
+                                                            <Button
+                                                                type="button"
+                                                                variant="ghost"
+                                                                size="sm"
+                                                                className="h-6 px-2 text-[10px] rounded-md text-muted-foreground hover:text-foreground"
+                                                                onClick={() => {
+                                                                    setCapcutChannelProfiles(prev =>
+                                                                        prev.map(ch => {
+                                                                            if (ch.id !== selectedCapcutChannelId) return ch
+                                                                            const defaults = getDefaultLogoTransform(ch.position)
+                                                                            return {
+                                                                                ...ch,
+                                                                                x: defaults.x,
+                                                                                y: defaults.y,
+                                                                                scale: getDefaultLogoScale(),
+                                                                            }
+                                                                        })
+                                                                    )
+                                                                }}
+                                                            >
+                                                                ↺ Về mặc định
+                                                            </Button>
+                                                        </div>
 
-                {/* ====== MODE: RUNNING + SUMMARY — Dashboard tiến trình ====== */}
-                {(mode === 'running' || mode === 'summary') && (
-                    <div className="space-y-2">
-                        {/* Danh sách 8 bước */}
-                        {stepEntries
-                            .filter(([, s]) => s.status !== 'idle')
-                            .map(([step, stepState]) => {
-                                const info = STEP_INFO[step]
-                                return (
-                                    <div
-                                        key={step}
-                                        className={`flex items-start gap-2.5 rounded-lg border p-2.5 transition-colors ${getStatusColor(stepState.status)}`}
-                                    >
-                                        {/* Icon trạng thái */}
-                                        <div className="mt-0.5 shrink-0">
-                                            {getStatusIcon(stepState.status)}
-                                        </div>
+                                                        {/* Grid 3 slider: X / Y / Scale */}
+                                                        <div className="grid grid-cols-3 gap-2">
+                                                            {/* Slider X */}
+                                                            <div className="space-y-2">
+                                                                <div className="flex items-center justify-between">
+                                                                    <label className="text-[10px] font-medium text-muted-foreground">X (trái/phải)</label>
+                                                                    <span className="text-[10px] font-mono font-semibold text-foreground/80 bg-background border rounded px-1 py-0.5">
+                                                                        {(capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.x ?? 0.8).toFixed(2)}
+                                                                    </span>
+                                                                </div>
+                                                                <input
+                                                                    type="range"
+                                                                    min={-1.2}
+                                                                    max={1.2}
+                                                                    step={0.01}
+                                                                    value={capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.x ?? 0.87}
+                                                                    onChange={(e) => {
+                                                                        const nextX = Number(e.target.value)
+                                                                        setCapcutChannelProfiles(prev =>
+                                                                            prev.map(ch => ch.id === selectedCapcutChannelId ? { ...ch, x: nextX } : ch)
+                                                                        )
+                                                                    }}
+                                                                    className="w-full accent-red-500"
+                                                                />
+                                                            </div>
 
-                                        {/* Nội dung */}
-                                        <div className="min-w-0 flex-1">
-                                            <div className="flex items-center gap-1.5">
-                                                <span className="text-xs font-medium">{info.label}</span>
-                                                <span className="text-[10px] text-muted-foreground">{info.desc}</span>
+                                                            {/* Slider Y */}
+                                                            <div className="space-y-2">
+                                                                <div className="flex items-center justify-between">
+                                                                    <label className="text-[10px] font-medium text-muted-foreground">Y (lên/xuống)</label>
+                                                                    <span className="text-[10px] font-mono font-semibold text-foreground/80 bg-background border rounded px-1 py-0.5">
+                                                                        {(capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.y ?? 0.56).toFixed(2)}
+                                                                    </span>
+                                                                </div>
+                                                                <input
+                                                                    type="range"
+                                                                    min={-1.2}
+                                                                    max={1.2}
+                                                                    step={0.01}
+                                                                    value={capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.y ?? 0.75}
+                                                                    onChange={(e) => {
+                                                                        const nextY = Number(e.target.value)
+                                                                        setCapcutChannelProfiles(prev =>
+                                                                            prev.map(ch => ch.id === selectedCapcutChannelId ? { ...ch, y: nextY } : ch)
+                                                                        )
+                                                                    }}
+                                                                    className="w-full accent-red-500"
+                                                                />
+                                                            </div>
+
+                                                            {/* Slider Scale */}
+                                                            <div className="space-y-2">
+                                                                <div className="flex items-center justify-between">
+                                                                    <label className="text-[10px] font-medium text-muted-foreground">Scale</label>
+                                                                    <span className="text-[10px] font-mono font-semibold text-foreground/80 bg-background border rounded px-1 py-0.5">
+                                                                        {(((capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.scale ?? getDefaultLogoScale()) * 100)).toFixed(0)}%
+                                                                    </span>
+                                                                </div>
+                                                                <input
+                                                                    type="range"
+                                                                    min={0.05}
+                                                                    max={1.2}
+                                                                    step={0.01}
+                                                                    value={capcutChannelProfiles.find(ch => ch.id === selectedCapcutChannelId)?.scale ?? getDefaultLogoScale()}
+                                                                    onChange={(e) => {
+                                                                        const nextScale = Number(e.target.value)
+                                                                        setCapcutChannelProfiles(prev =>
+                                                                            prev.map(ch => ch.id === selectedCapcutChannelId ? { ...ch, scale: nextScale } : ch)
+                                                                        )
+                                                                    }}
+                                                                    className="w-full accent-red-500"
+                                                                />
+                                                            </div>
+                                                        </div>
+                                                    </>
+                                                )}
                                             </div>
-                                            {/* Message chính — KHÔNG truncate để hiện full chi tiết */}
-                                            {stepState.message && (
-                                                <p className="text-[10px] text-muted-foreground mt-0.5 break-words">
-                                                    {stepState.message}
-                                                </p>
-                                            )}
-                                            {/* Error message */}
-                                            {stepState.error && (
-                                                <p className="text-[10px] text-red-400 mt-0.5 break-words">
-                                                    ❌ {stepState.error}
-                                                </p>
-                                            )}
-                                            {/* Debug details — hiện chi tiết, multi-line */}
-                                            {stepState.debugDetails && (
-                                                <pre className="text-[9px] text-muted-foreground/70 mt-1 break-words font-mono bg-black/20 rounded p-1.5 whitespace-pre-wrap border border-white/5 max-h-[120px] overflow-y-auto">
-                                                    📋 {stepState.debugDetails}
-                                                </pre>
-                                            )}
-                                        </div>
+                                        )}
                                     </div>
-                                )
-                            })}
-
-                        {/* Summary khi xong */}
-                        {mode === 'summary' && (
-                            <div className="rounded-lg bg-card border p-3 text-center space-y-1">
-                                <p className="text-sm font-medium">
-                                    {errorCount === 0
-                                        ? '✅ Hoàn tất!'
-                                        : `⚠️ ${doneCount}/${totalActive} bước thành công`}
-                                </p>
-                                <p className="text-xs text-muted-foreground">
-                                    ✅ {doneCount} xong
-                                    {errorCount > 0 && ` • ❌ ${errorCount} lỗi`}
-                                    {skippedCount > 0 && ` • ⏭️ ${skippedCount} bỏ qua`}
-                                </p>
-                                {pipelineState.startedAt && pipelineState.finishedAt && (
-                                    <p className="text-[10px] text-muted-foreground">
-                                        Thời gian: {((pipelineState.finishedAt - pipelineState.startedAt) / 1000).toFixed(0)}s
-                                    </p>
                                 )}
                             </div>
                         )}
+
+                        {/* Debug Mode UI đã ẩn theo yêu cầu user. */}
+                    </div>
+
+                    {/* Cảnh báo thiếu điều kiện */}
+                    {notReadyItems.length > 0 && (
+                        <div className="rounded-lg bg-yellow-500/10 border border-yellow-500/20 p-2.5 space-y-1">
+                            <div className="flex items-center gap-1 text-xs font-medium text-yellow-500">
+                                <AlertTriangle className="h-3.5 w-3.5" />
+                                Chưa đủ điều kiện:
+                            </div>
+                            {notReadyItems.map((item, i) => (
+                                <p key={i} className="text-[10px] text-yellow-500/70 pl-5">
+                                    • {item.reason}
+                                </p>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* ====== MODE: RUNNING + SUMMARY — Dashboard tiến trình ====== */}
+            {(mode === 'running' || mode === 'summary') && (
+                <div className="space-y-2">
+                    {/* Danh sách 8 bước */}
+                    {stepEntries
+                        .filter(([, s]) => s.status !== 'idle')
+                        .map(([step, stepState]) => {
+                            const info = STEP_INFO[step]
+                            return (
+                                <div
+                                    key={step}
+                                    className={`flex items-start gap-2.5 rounded-lg border p-2.5 transition-colors ${getStatusColor(stepState.status)}`}
+                                >
+                                    {/* Icon trạng thái */}
+                                    <div className="mt-0.5 shrink-0">
+                                        {getStatusIcon(stepState.status)}
+                                    </div>
+
+                                    {/* Nội dung */}
+                                    <div className="min-w-0 flex-1">
+                                        <div className="flex items-center gap-1.5">
+                                            <span className="text-xs font-medium">{info.label}</span>
+                                            <span className="text-[10px] text-muted-foreground">{info.desc}</span>
+                                        </div>
+                                        {/* Message chính — KHÔNG truncate để hiện full chi tiết */}
+                                        {stepState.message && (
+                                            <p className="text-[10px] text-muted-foreground mt-0.5 break-words">
+                                                {stepState.message}
+                                            </p>
+                                        )}
+                                        {/* Error message */}
+                                        {stepState.error && (
+                                            <p className="text-[10px] text-red-400 mt-0.5 break-words">
+                                                ❌ {stepState.error}
+                                            </p>
+                                        )}
+                                        {/* Debug details — hiện chi tiết, multi-line */}
+                                        {stepState.debugDetails && (
+                                            <pre className="text-[9px] text-muted-foreground/70 mt-1 break-words font-mono bg-black/20 rounded p-1.5 whitespace-pre-wrap border border-white/5 max-h-[120px] overflow-y-auto">
+                                                📋 {stepState.debugDetails}
+                                            </pre>
+                                        )}
+                                    </div>
+                                </div>
+                            )
+                        })}
+
+                    {/* Summary khi xong */}
+                    {mode === 'summary' && (
+                        <div className="rounded-lg bg-card border p-3 text-center space-y-1">
+                            <p className="text-sm font-medium">
+                                {errorCount === 0
+                                    ? '✅ Hoàn tất!'
+                                    : `⚠️ ${doneCount}/${totalActive} bước thành công`}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                                ✅ {doneCount} xong
+                                {errorCount > 0 && ` • ❌ ${errorCount} lỗi`}
+                                {skippedCount > 0 && ` • ⏭️ ${skippedCount} bỏ qua`}
+                            </p>
+                            {pipelineState.startedAt && pipelineState.finishedAt && (
+                                <p className="text-[10px] text-muted-foreground">
+                                    Thời gian: {((pipelineState.finishedAt - pipelineState.startedAt) / 1000).toFixed(0)}s
+                                </p>
+                            )}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* ====== FOOTER — Nút hành động ====== */}
+            <div className="flex items-center gap-2">
+                {mode === 'input' && (() => {
+                    // Chỉ yêu cầu timelineId khi DaVinci mode, CapCut mode không cần
+                    const isDaVinci = !config.targetEngine || config.targetEngine === 'davinci'
+                    const btnDisabled = !scriptText.trim() || (isDaVinci && !timelineInfo?.timelineId)
+                    if (btnDisabled) {
+                        console.log('[AutoMedia] ⚠️ Nút disabled:', {
+                            scriptEmpty: !scriptText.trim(),
+                            scriptLen: scriptText.length,
+                            timelineId: timelineInfo?.timelineId || '(null)',
+                            timelineInfo: timelineInfo || '(null)',
+                            targetEngine: config.targetEngine || 'davinci (default)',
+                            isDaVinci,
+                        })
+                    }
+                    return (
+                        <Button
+                            className="w-full gap-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
+                            onClick={handleStart}
+                            disabled={btnDisabled}
+                        >
+                            <Rocket className="h-4 w-4" />
+                            🚀 Bắt Đầu Auto Media
+                        </Button>
+                    )
+                })()}
+
+                {mode === 'running' && (
+                    <div className="flex gap-2 w-full">
+                        {/* Nút Tiếp tục — chỉ hiện trong debug mode */}
+                        {config.debugMode && (
+                            <Button
+                                className="flex-1 gap-2 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700"
+                                onClick={handleContinue}
+                            >
+                                <Play className="h-4 w-4" />
+                                ▶ Tiếp tục
+                            </Button>
+                        )}
+                        <Button
+                            variant="destructive"
+                            className={config.debugMode ? "gap-2" : "w-full gap-2"}
+                            onClick={handleStop}
+                        >
+                            <Square className="h-4 w-4" />
+                            ⏸ Dừng
+                        </Button>
                     </div>
                 )}
 
-                {/* ====== FOOTER — Nút hành động ====== */}
-                <DialogFooter className="flex items-center gap-2">
-                    {mode === 'input' && (() => {
-                        // Chỉ yêu cầu timelineId khi DaVinci mode, CapCut mode không cần
-                        const isDaVinci = !config.targetEngine || config.targetEngine === 'davinci'
-                        const btnDisabled = !scriptText.trim() || (isDaVinci && !timelineInfo?.timelineId)
-                        if (btnDisabled) {
-                            console.log('[AutoMedia] ⚠️ Nút disabled:', {
-                                scriptEmpty: !scriptText.trim(),
-                                scriptLen: scriptText.length,
-                                timelineId: timelineInfo?.timelineId || '(null)',
-                                timelineInfo: timelineInfo || '(null)',
-                                targetEngine: config.targetEngine || 'davinci (default)',
-                                isDaVinci,
-                            })
-                        }
-                        return (
-                            <Button
-                                className="w-full gap-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700"
-                                onClick={handleStart}
-                                disabled={btnDisabled}
-                            >
-                                <Rocket className="h-4 w-4" />
-                                🚀 Bắt Đầu Auto Media
-                            </Button>
-                        )
-                    })()}
+                {mode === 'summary' && (
+                    <div className="flex gap-2 w-full">
+                        <Button
+                            variant="outline"
+                            className="flex-1"
+                            onClick={handleReset}
+                        >
+                            ← Quay lại
+                        </Button>
+                        <Button
+                            className="flex-1"
+                            onClick={() => {
+                                if (renderMode === 'embedded') {
+                                    handleReset()
+                                    return
+                                }
+                                handleOpenChange(false)
+                            }}
+                        >
+                            {renderMode === 'embedded' ? 'Làm lại' : 'Đóng'}
+                        </Button>
+                    </div>
+                )}
+            </div>
+        </>
+    )
 
-                    {mode === 'running' && (
-                        <div className="flex gap-2 w-full">
-                            {/* Nút Tiếp tục — chỉ hiện trong debug mode */}
-                            {config.debugMode && (
-                                <Button
-                                    className="flex-1 gap-2 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700"
-                                    onClick={handleContinue}
-                                >
-                                    <Play className="h-4 w-4" />
-                                    ▶ Tiếp tục
-                                </Button>
-                            )}
-                            <Button
-                                variant="destructive"
-                                className={config.debugMode ? "gap-2" : "w-full gap-2"}
-                                onClick={handleStop}
-                            >
-                                <Square className="h-4 w-4" />
-                                ⏸ Dừng
-                            </Button>
-                        </div>
-                    )}
+    if (renderMode === 'embedded') {
+        return (
+            <div className="h-full overflow-y-auto p-3 md:p-4">
+                <div className="mx-auto w-full max-w-4xl space-y-4">
+                    {panelContent}
+                </div>
+            </div>
+        )
+    }
 
-                    {mode === 'summary' && (
-                        <div className="flex gap-2 w-full">
-                            <Button
-                                variant="outline"
-                                className="flex-1"
-                                onClick={handleReset}
-                            >
-                                ← Quay lại
-                            </Button>
-                            <Button
-                                className="flex-1"
-                                onClick={() => onOpenChange(false)}
-                            >
-                                Đóng
-                            </Button>
-                        </div>
-                    )}
-                </DialogFooter>
+    return (
+        <Dialog open={isOpen} onOpenChange={handleOpenChange}>
+            <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+                {panelContent}
             </DialogContent>
         </Dialog>
     )

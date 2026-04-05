@@ -14,6 +14,8 @@ import { aiMatchScriptToTimeline } from "./ai-matcher"
 import { parseScript } from "@/utils/media-matcher"
 import type { TranscriptionOptions } from "@/types/interfaces"
 import type { ScriptSentence } from "@/utils/media-matcher"
+import { logTranscribePhaseTimingToDebug } from "@/services/transcribe-phase-debug-service"
+import { startTranscribePhaseDebugLog } from "@/services/transcribe-phase-debug-service"
 
 // ======================== TYPES ========================
 
@@ -53,15 +55,21 @@ export async function runVoicePacingPipeline(
     // → Relay % này lên UI để user thấy Whisper đang tiến triển, không phải treo
     let whisperUnlisten: (() => void) | null = null
 
-    const unlistenFn = await listen<{ progress: number; type?: string }>(
+    const unlistenFn = await listen<{ progress: number; type?: string; label?: string }>(
         "labeled-progress",
         (event) => {
-            const { progress, type } = event.payload
+            const { progress, type, label } = event.payload
             if (type === "Transcribe") {
                 const pct = Math.round(progress)
+                // Nếu backend trả label (vd: cache hit), ưu tiên hiển thị đúng trạng thái thật.
+                const labelText = typeof label === "string" && label.trim().length > 0
+                    ? label.trim()
+                    : null
                 onProgress({
                     step: 1,
-                    message: `🎙️ Whisper đang xử lý: ${pct}% (vui lòng chờ, file dài mất nhiều phút)`,
+                    message: labelText
+                        ? `🎙️ ${labelText} (${pct}%)`
+                        : `🎙️ Whisper đang xử lý: ${pct}% (vui lòng chờ, file dài mất nhiều phút)`,
                 })
             }
         }
@@ -77,21 +85,38 @@ export async function runVoicePacingPipeline(
         // ─── Bước 2: Gọi Tauri backend Whisper ───
         // invoke() block cho đến khi Whisper hoàn tất, trong thời gian đó
         // listener bên trên sẽ liên tục nhận events và cập nhật UI
-        const transcriptData = await invoke<any>("transcribe_audio", {
-            options: {
-                audioPath,
-                offset: 0,
-                model: modelValue,
-                lang: language,
-                translate: false,
-                targetLanguage: "en",
-                enableDtw: true,   // Word-level timestamps — QUAN TRỌNG để timing chuẩn
-                enableGpu: true,
-                enableDiarize: false,
-                maxSpeakers: null,
-                density: "standard",
-            } satisfies TranscriptionOptions,
+        const transcribeOptions = {
+            audioPath,
+            offset: 0,
+            model: modelValue,
+            lang: language,
+            translate: false,
+            targetLanguage: "en",
+            enableDtw: true,   // Word-level timestamps — QUAN TRỌNG để timing chuẩn
+            enableGpu: true,
+            enableDiarize: false,
+            maxSpeakers: null,
+            density: "standard",
+        } satisfies TranscriptionOptions
+        // Tạo log pending ngay khi bắt đầu transcribe để tab API thấy trạng thái đang chạy.
+        const transcribeDebugLogId = startTranscribePhaseDebugLog({
+            label: "Voice Pacing Pipeline",
+            options: transcribeOptions,
         })
+        const rawTranscriptData = await invoke<any>("transcribe_audio", {
+            options: transcribeOptions,
+        })
+        // Ghi timing chi tiết các pha vào DEBUG Panel.
+        logTranscribePhaseTimingToDebug({
+            logId: transcribeDebugLogId,
+            label: "Voice Pacing Pipeline",
+            options: transcribeOptions,
+            transcript: rawTranscriptData,
+        })
+
+        // Fix Whisper hallucination đầu file (text sai ở 2-5 giây đầu)
+        const { removeHallucinatedSegments } = await import('@/utils/whisper-hallucination-fix')
+        const transcriptData = removeHallucinatedSegments(rawTranscriptData as any, language || 'en')
 
         // Whisper xong → dọn dẹp listener
         whisperUnlisten?.()
@@ -197,4 +222,3 @@ export async function runVoicePacingPipelineFromSRT(
 
     return { success: true, folderPath, matchedSentences: matched }
 }
-

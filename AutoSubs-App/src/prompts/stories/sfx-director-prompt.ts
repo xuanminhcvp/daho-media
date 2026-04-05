@@ -229,8 +229,7 @@ Trả về ĐÚNG chuẩn JSON sau, KHÔNG giải thích gì thêm, KHÔNG dùng
       "sfxCategory": "impact",
       "assignedSfxFileName": "Impact-Dramatic_Deep-Dramatic-Impact-With-Long-Tail-Hard_SDT3-0546.wav",
       "trimStartSec": 0,
-      "trimEndSec": 2.5,
-      "reason": "Plot twist lớn nhất — tiết lộ bí mật 9 năm. Chọn impact nặng + đuôi vang."
+      "trimEndSec": 2.5
     }
   ]
 }
@@ -298,9 +297,7 @@ Trả về ĐÚNG chuẩn JSON sau, KHÔNG giải thích gì thêm, KHÔNG dùng
       "sentenceNum": 16,
       "triggerWord": "killed your parents",
       "timeOffset": 1.2,
-      "sfxCategory": "impact",
-      "searchKeywords": ["cinematic braam", "dark reveal", "heavy impact"],
-      "reason": "Plot twist lớn nhất — tiết lộ bí mật 9 năm"
+      "sfxCategory": "impact"
     }
   ]
 }`;

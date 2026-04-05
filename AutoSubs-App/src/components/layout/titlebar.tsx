@@ -45,7 +45,6 @@ import { SettingsDialog } from "@/components/dialogs/settings-dialog";
 import { ManageModelsDialog } from "@/components/settings/model-manager";
 import { pingResolve, setupTimelineTracks } from "@/api/resolve-api";
 import { useResolve } from "@/contexts/ResolveContext";
-import { AutoMediaPanel } from "@/components/postprod/auto-media-panel";
 import { ClaudeModelSelector } from "@/components/settings/claude-model-selector";
 import { AiAdvancedSettings } from "@/components/settings/ai-advanced-settings";
 import { ProfileSelector } from "@/components/settings/profile-selector";
@@ -475,9 +474,9 @@ function TranscriptsButton() {
 export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }) {
   const { t } = useTranslation();
   const [isMacOS, setIsMacOS] = useState(false);
-
-  // State hiển thị popup Auto Media
-  const [showAutoMedia, setShowAutoMedia] = useState(false);
+  // Cờ hiển thị nút "Auto Media" trên title bar.
+  // Theo yêu cầu hiện tại: ẩn nút này khỏi thanh trạng thái.
+  const showAutoMediaButton = false;
 
   // State nút Setup Track (tạo 7V+5A)
   const [setupLoading, setSetupLoading] = useState(false);
@@ -504,6 +503,11 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
 
   const handleClose = () => {
     getCurrentWindow().close();
+  };
+
+  // Chuyển UI về tab Auto Media chính (không mở overlay).
+  const handleOpenAutoMediaMain = () => {
+    window.dispatchEvent(new Event("autosubs:open-auto-media"));
   };
 
   // Mã Lua paste vào DaVinci Console — tự detect đường dẫn resources
@@ -584,12 +588,14 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
     >
       {isMacOS ? (
         // macOS layout: System handles traffic lights, status in center, settings on right
-        <>
+        <div className="grid w-full grid-cols-[1fr_auto_1fr] items-center" data-tauri-drag-region>
           {/* Left side - Empty spacer for system traffic lights */}
-          <div className="w-20" data-tauri-drag-region />
+          <div className="flex items-center justify-start">
+            <div className="w-20" data-tauri-drag-region />
+          </div>
 
           {/* Center - Resolve status + Copy mã + Auto Media */}
-          <div className="flex items-center justify-center flex-1 gap-1.5" data-tauri-drag-region>
+          <div className="flex items-center justify-center gap-1.5" data-tauri-drag-region>
             <ResolveStatus timelineInfo={timelineInfo} />
             {/* Nút Copy mã kết nối DaVinci */}
             <Button
@@ -634,19 +640,21 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
               )}
             </Button>
             {/* Nút Auto Media — gradient tím-xanh */}
-            <Button
-              size="sm"
-              className="h-6 gap-1 text-[10px] px-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 rounded-full"
-              onClick={() => setShowAutoMedia(true)}
-              data-tauri-drag-region="false"
-            >
-              <Rocket className="h-3 w-3" />
-              Auto Media
-            </Button>
+            {showAutoMediaButton && (
+              <Button
+                size="sm"
+                className="h-6 gap-1 text-[10px] px-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 rounded-full"
+                onClick={handleOpenAutoMediaMain}
+                data-tauri-drag-region="false"
+              >
+                <Rocket className="h-3 w-3" />
+                Auto Media
+              </Button>
+            )}
           </div>
 
           {/* Right side - Model selector, Transcripts, Settings */}
-          <div className="flex items-center w-auto justify-end gap-0.5">
+          <div className="flex items-center justify-end gap-0.5">
             <div data-tauri-drag-region="false">
               <ProfileSelector />
             </div>
@@ -663,7 +671,7 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
               <SettingsDropdown />
             </div>
           </div>
-        </>
+        </div>
       ) : (
         // Windows/Linux layout: Settings on left, status in center, window buttons on right
         <>
@@ -732,15 +740,17 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
               )}
             </Button>
             {/* Nút Auto Media — gradient tím-xanh */}
-            <Button
-              size="sm"
-              className="h-6 gap-1 text-[10px] px-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 rounded-full"
-              onClick={() => setShowAutoMedia(true)}
-              data-tauri-drag-region="false"
-            >
-              <Rocket className="h-3 w-3" />
-              Auto Media
-            </Button>
+            {showAutoMediaButton && (
+              <Button
+                size="sm"
+                className="h-6 gap-1 text-[10px] px-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 rounded-full"
+                onClick={handleOpenAutoMediaMain}
+                data-tauri-drag-region="false"
+              >
+                <Rocket className="h-3 w-3" />
+                Auto Media
+              </Button>
+            )}
           </div>
 
           {/* Right side - Window controls */}
@@ -772,8 +782,6 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
           </div>
         </>
       )}
-      {/* Auto Media Dialog — popup pipeline */}
-      <AutoMediaPanel open={showAutoMedia} onOpenChange={setShowAutoMedia} />
     </header>
   );
 }
