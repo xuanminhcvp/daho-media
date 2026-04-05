@@ -82,9 +82,6 @@ interface CapCutChannelProfile {
  * Mục tiêu: user mở lại app vẫn thấy đúng lựa chọn lần trước.
  */
 interface AutoMediaPersistedUiState {
-    scriptText?: string
-    imageFolder?: string
-    imageFiles?: string[]
     footageFolder?: string
     musicFolder?: string
     sfxFolder?: string
@@ -307,26 +304,17 @@ export function AutoMediaPanel({
     }, [config]);
 
     // Script text (user paste vào popup)
-    const [scriptText, setScriptText] = React.useState(() => {
-        if (typeof autoMediaUiFromStorage.scriptText === 'string') {
-            return autoMediaUiFromStorage.scriptText
-        }
-        return project.imageImport.scriptText || ''
-    })
+    const [scriptText, setScriptText] = React.useState(
+        project.imageImport.scriptText || ''
+    )
 
     // Folder ảnh
-    const [imageFolder, setImageFolder] = React.useState(() => {
-        if (typeof autoMediaUiFromStorage.imageFolder === 'string') {
-            return autoMediaUiFromStorage.imageFolder
-        }
-        return project.imageImport.imageFolder || ''
-    })
-    const [imageFiles, setImageFiles] = React.useState<string[]>(() => {
-        if (Array.isArray(autoMediaUiFromStorage.imageFiles)) {
-            return autoMediaUiFromStorage.imageFiles.filter((v): v is string => typeof v === 'string')
-        }
-        return project.imageImport.imageFiles || []
-    })
+    const [imageFolder, setImageFolder] = React.useState(
+        project.imageImport.imageFolder || ''
+    )
+    const [imageFiles, setImageFiles] = React.useState<string[]>(
+        project.imageImport.imageFiles || []
+    )
 
     // Folders — load từ settings.json khi popup mở
     const [footageFolder, setFootageFolder] = React.useState(
@@ -486,9 +474,6 @@ export function AutoMediaPanel({
     React.useEffect(() => {
         const profileId = getActiveProfileId()
         const payload: AutoMediaPersistedUiState = {
-            scriptText,
-            imageFolder,
-            imageFiles,
             footageFolder,
             musicFolder,
             sfxFolder,
@@ -500,9 +485,6 @@ export function AutoMediaPanel({
         }
         localStorage.setItem(getAutoMediaUiStateStorageKey(profileId), JSON.stringify(payload))
     }, [
-        scriptText,
-        imageFolder,
-        imageFiles,
         footageFolder,
         musicFolder,
         sfxFolder,
@@ -1301,6 +1283,14 @@ export function AutoMediaPanel({
         console.log('[AutoMedia] CapCut Effects:', effConfig)
     }, [])
 
+    // Scope key để lưu CapCut Effects theo từng kênh YouTube.
+    // Không chọn kênh thì dùng global fallback trong profile hiện tại.
+    const capcutEffectsScopeKey = React.useMemo(() => {
+        const profileId = getActiveProfileId()
+        const channelId = selectedCapcutChannelId || '__global__'
+        return `profile:${profileId}:channel:${channelId}`
+    }, [selectedCapcutChannelId])
+
     // ======================== RENDER ========================
 
     // Ẩn block Track Layout theo yêu cầu UX mới (giảm nhiễu cho màn hình chính).
@@ -1630,6 +1620,7 @@ export function AutoMediaPanel({
                             <div className="mt-2">
                                 <CapCutEffectsSettingsPanel
                                     onSettingsChange={handleCapCutEffectsSettingsChange}
+                                    settingsScopeKey={capcutEffectsScopeKey}
                                 />
                             </div>
                         )}

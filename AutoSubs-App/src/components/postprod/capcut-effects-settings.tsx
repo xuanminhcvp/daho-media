@@ -51,6 +51,8 @@ import {
     saveEffectsSettings,
     generateVietnameseNames,
     saveCustomNames,
+    pinEffectBundle,
+    loadPinnedEffectBundles,
     pinSubtitleTemplateBundle,
     loadPinnedSubtitleTemplateBundles,
     removePinnedSubtitleTemplateBundle,
@@ -61,6 +63,8 @@ import {
 interface CapCutEffectsSettingsPanelProps {
     /** Callback khi settings thay đổi — truyền lên parent */
     onSettingsChange?: (settings: CapCutEffectsSettings) => void
+    /** Scope key để lưu settings theo ngữ cảnh (ví dụ: theo kênh YouTube). */
+    settingsScopeKey?: string
 }
 
 // ======================== CANVAS TEXT PREVIEW ========================
@@ -297,7 +301,7 @@ const SHOW_SUBTITLE_TEMPLATE_UI = false
 const SHOW_PINNED_TEMPLATE_UI = false
 const SHOW_AI_NAMING_BUTTON = false
 
-export function CapCutEffectsSettingsPanel({ onSettingsChange }: CapCutEffectsSettingsPanelProps) {
+export function CapCutEffectsSettingsPanel({ onSettingsChange, settingsScopeKey }: CapCutEffectsSettingsPanelProps) {
     // ---- State ----
     // Mặc định đóng để UI gọn, user tự mở khi cần custom.
     const [isExpanded, setIsExpanded] = useState(false)
@@ -321,14 +325,23 @@ export function CapCutEffectsSettingsPanel({ onSettingsChange }: CapCutEffectsSe
         customNames: {},
     })
 
-    // ---- Load settings + scan cache khi mount ----
+    // ---- Load settings theo scope (đổi kênh sẽ load bộ khác) ----
+    useEffect(() => {
+        let mounted = true
+        const loadScopedSettings = async () => {
+            const saved = await loadEffectsSettings(settingsScopeKey)
+            if (!mounted) return
+            setSettings(saved)
+        }
+        loadScopedSettings()
+        return () => {
+            mounted = false
+        }
+    }, [settingsScopeKey])
+
+    // ---- Quét cache + load template pin khi mount ----
     useEffect(() => {
         const init = async () => {
-            // Load settings đã lưu
-            const saved = await loadEffectsSettings()
-            setSettings(saved)
-
-            // Auto scan cache
             await doScan()
             await refreshPinnedTemplates()
         }
@@ -344,14 +357,154 @@ export function CapCutEffectsSettingsPanel({ onSettingsChange }: CapCutEffectsSe
         setPinnedTemplates(list)
     }, [])
 
+    /**
+     * Đảm bảo effect đã chọn vẫn hiện trong combobox dù scan mới không còn.
+     * Cách làm:
+     * - đọc pinned effect bundles trong store
+     * - nếu selectedId bị thiếu trong list hiện tại thì inject fallback option vào list
+     */
+    useEffect(() => {
+        let mounted = true
+        const hydrateSelectedFromPinned = async () => {
+            const pinnedBundles = await loadPinnedEffectBundles()
+            if (!mounted) return
+
+            if (settings.transitionEffectId) {
+                const selectedId = settings.transitionEffectId
+                const pinned = pinnedBundles[selectedId]
+                if (pinned && pinned.type === 'transition') {
+                    setTransitions(prev => {
+                        if (prev.some(e => e.effectId === selectedId)) return prev
+                        return [
+                            ...prev,
+                            {
+                                effectId: pinned.effectId,
+                                resourceId: pinned.effectId,
+                                originalName: pinned.displayName || pinned.effectId,
+                                displayName: pinned.displayName || pinned.effectId,
+                                cachePath: pinned.cachePath || '',
+                                defaultDuration: pinned.defaultDuration,
+                                type: 'transition',
+                                rawJson: pinned.rawJson,
+                            },
+                        ]
+                    })
+                }
+            }
+
+            if (settings.videoEffectId) {
+                const selectedId = settings.videoEffectId
+                const pinned = pinnedBundles[selectedId]
+                if (pinned && pinned.type === 'video_effect') {
+                    setVideoEffects(prev => {
+                        if (prev.some(e => e.effectId === selectedId)) return prev
+                        return [
+                            ...prev,
+                            {
+                                effectId: pinned.effectId,
+                                resourceId: pinned.effectId,
+                                originalName: pinned.displayName || pinned.effectId,
+                                displayName: pinned.displayName || pinned.effectId,
+                                cachePath: pinned.cachePath || '',
+                                type: 'video_effect',
+                                rawJson: pinned.rawJson,
+                            },
+                        ]
+                    })
+                }
+            }
+
+            // Text template: fallback ưu tiên pinned effect bundle mới, rồi đến pinned subtitle bundle cũ.
+            if (settings.textTemplateEffectId) {
+                const selectedId = settings.textTemplateEffectId
+                const pinned = pinnedBundles[selectedId]
+                if (pinned && pinned.type === 'text_template') {
+                    setTextTemplates(prev => {
+                        if (prev.some(e => e.effectId === selectedId)) return prev
+                        return [
+                            ...prev,
+                            {
+                                effectId: pinned.effectId,
+                                resourceId: pinned.effectId,
+                                originalName: pinned.displayName || pinned.effectId,
+                                displayName: pinned.displayName || pinned.effectId,
+                                cachePath: pinned.cachePath || '',
+                                type: 'text_template',
+                                rawJson: pinned.rawJson,
+                                textMaterialRawJson: pinned.textMaterialRawJson,
+                                linkedMaterialAnimationsRawJson: pinned.linkedMaterialAnimationsRawJson,
+                                linkedEffectsRawJson: pinned.linkedEffectsRawJson,
+                            },
+                        ]
+                    })
+                }
+            }
+        }
+
+        hydrateSelectedFromPinned()
+        return () => {
+            mounted = false
+        }
+    }, [settings.transitionEffectId, settings.videoEffectId, settings.textTemplateEffectId])
+
     // ---- Notify parent khi settings thay đổi ----
     // Resolve effectId → full info (cachePath, duration, name) trước khi gửi lên parent
     useEffect(() => {
         // Resolve bất đồng bộ để có thể fallback sang bundle đã pin trong store khi draft nguồn đã bị xoá.
         const resolveAndNotify = async () => {
-            const transitionEffect = transitions.find(e => e.effectId === settings.transitionEffectId)
-            const videoEffect = videoEffects.find(e => e.effectId === settings.videoEffectId)
+            let transitionEffect = transitions.find(e => e.effectId === settings.transitionEffectId)
+            let videoEffect = videoEffects.find(e => e.effectId === settings.videoEffectId)
             let textTemplate = textTemplates.find(e => e.effectId === settings.textTemplateEffectId)
+
+            const pinnedEffectBundles = await loadPinnedEffectBundles()
+
+            // Fallback transition/video từ bundle đã pin để giữ effect cũ dù scan không còn thấy.
+            if (!transitionEffect && settings.transitionEffectId) {
+                const pinned = pinnedEffectBundles[settings.transitionEffectId]
+                if (pinned && pinned.type === 'transition') {
+                    transitionEffect = {
+                        effectId: pinned.effectId,
+                        resourceId: pinned.effectId,
+                        originalName: pinned.displayName,
+                        displayName: pinned.displayName,
+                        cachePath: pinned.cachePath || '',
+                        defaultDuration: pinned.defaultDuration,
+                        type: 'transition',
+                        rawJson: pinned.rawJson,
+                    }
+                }
+            }
+            if (!videoEffect && settings.videoEffectId) {
+                const pinned = pinnedEffectBundles[settings.videoEffectId]
+                if (pinned && pinned.type === 'video_effect') {
+                    videoEffect = {
+                        effectId: pinned.effectId,
+                        resourceId: pinned.effectId,
+                        originalName: pinned.displayName,
+                        displayName: pinned.displayName,
+                        cachePath: pinned.cachePath || '',
+                        type: 'video_effect',
+                        rawJson: pinned.rawJson,
+                    }
+                }
+            }
+            if (!textTemplate && settings.textTemplateEffectId) {
+                const pinned = pinnedEffectBundles[settings.textTemplateEffectId]
+                if (pinned && pinned.type === 'text_template') {
+                    textTemplate = {
+                        effectId: pinned.effectId,
+                        resourceId: pinned.effectId,
+                        originalName: pinned.displayName,
+                        displayName: pinned.displayName,
+                        cachePath: pinned.cachePath || '',
+                        type: 'text_template',
+                        rawJson: pinned.rawJson,
+                        textMaterialRawJson: pinned.textMaterialRawJson,
+                        linkedMaterialAnimationsRawJson: pinned.linkedMaterialAnimationsRawJson,
+                        linkedEffectsRawJson: pinned.linkedEffectsRawJson,
+                    }
+                }
+            }
 
             // Nếu scan hiện tại không còn template đã chọn (ví dụ user xoá draft nguồn),
             // fallback sang bundle đã pin trước đó.
@@ -404,6 +557,11 @@ export function CapCutEffectsSettingsPanel({ onSettingsChange }: CapCutEffectsSe
                 await pinSubtitleTemplateBundle(textTemplate)
                 await refreshPinnedTemplates()
             }
+
+            // Pin effect đã resolve để giữ bền vững qua nhiều lần scan.
+            if (transitionEffect) await pinEffectBundle(transitionEffect)
+            if (videoEffect) await pinEffectBundle(videoEffect)
+            if (textTemplate) await pinEffectBundle(textTemplate)
 
             // Gắn thêm resolved info vào settings trước khi notify
             const resolvedSettings: CapCutEffectsSettings = {
@@ -510,10 +668,10 @@ export function CapCutEffectsSettingsPanel({ onSettingsChange }: CapCutEffectsSe
         setSettings(prev => {
             const next = { ...prev, ...patch }
             // Auto save (fire & forget)
-            saveEffectsSettings(next)
+            saveEffectsSettings(next, settingsScopeKey)
             return next
         })
-    }, [])
+    }, [settingsScopeKey])
 
     // ---- Helper: tìm cache path + name cho effect đã chọn ----
     const findEffect = (id: string, list: CachedEffect[]) =>

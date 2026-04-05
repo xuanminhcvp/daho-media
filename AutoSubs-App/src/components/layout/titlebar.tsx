@@ -48,6 +48,7 @@ import { useResolve } from "@/contexts/ResolveContext";
 import { ClaudeModelSelector } from "@/components/settings/claude-model-selector";
 import { AiAdvancedSettings } from "@/components/settings/ai-advanced-settings";
 import { ProfileSelector } from "@/components/settings/profile-selector";
+import { AppReloadButton } from "@/components/layout/app-reload-button";
 
 interface TimelineInfo {
   timelineId?: string;
@@ -597,6 +598,8 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
           {/* Center - Resolve status + Copy mã + Auto Media */}
           <div className="flex items-center justify-center gap-1.5" data-tauri-drag-region>
             <ResolveStatus timelineInfo={timelineInfo} />
+            {/* Nút Reload App luôn hiện ở màn hình đầu tiên để user bấm nhanh khi cần */}
+            <AppReloadButton />
             {/* Nút Copy mã kết nối DaVinci */}
             <Button
               variant="outline"
@@ -697,6 +700,8 @@ export function Titlebar({ timelineInfo }: { timelineInfo: TimelineInfo | null }
           {/* Center - Resolve status + Copy mã + Auto Media */}
           <div className="flex items-center justify-center flex-1 gap-1.5" data-tauri-drag-region>
             <ResolveStatus timelineInfo={timelineInfo} />
+            {/* Nút Reload App luôn hiện ở màn hình đầu tiên để user bấm nhanh khi cần */}
+            <AppReloadButton />
             {/* Nút Copy mã kết nối DaVinci */}
             <Button
               variant="outline"

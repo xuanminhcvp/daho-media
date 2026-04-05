@@ -50,6 +50,8 @@ export interface CachedEffect {
 
 /** Bundle subtitle đã pin vào local store để không phụ thuộc draft nguồn trên máy */
 export interface PinnedSubtitleTemplateBundle {
+    /** Version schema của bundle pin để migrate về sau */
+    schemaVersion?: number
     effectId: string
     displayName: string
     textTemplateRawJson?: any
@@ -59,8 +61,26 @@ export interface PinnedSubtitleTemplateBundle {
     savedAt: number
 }
 
+/** Bundle effect đã pin để fallback khi scan mới không còn thấy effect cũ */
+export interface PinnedEffectBundle {
+    /** Version schema của bundle pin để migrate về sau */
+    schemaVersion?: number
+    effectId: string
+    type: 'transition' | 'video_effect' | 'text_template'
+    displayName: string
+    cachePath: string
+    defaultDuration?: number
+    rawJson?: any
+    textMaterialRawJson?: any
+    linkedMaterialAnimationsRawJson?: any[]
+    linkedEffectsRawJson?: any[]
+    savedAt: number
+}
+
 /** Settings CapCut effects user đã chọn */
 export interface CapCutEffectsSettings {
+    /** Version schema settings để migrate an toàn */
+    schemaVersion?: number
     /** Effect ID transition đã chọn (empty = không dùng) */
     transitionEffectId: string
     /** Effect ID video effect đã chọn */
@@ -79,11 +99,12 @@ export interface CapCutEffectsSettings {
 
 // ======================== CONSTANTS ========================
 
-/** Key lưu settings trong plugin-store */
-const STORE_KEY = 'capcut_effects_settings'
+/** Key base lưu settings trong plugin-store */
+const STORE_KEY_BASE = 'capcut_effects_settings'
 
 /** Settings mặc định */
 const DEFAULT_SETTINGS: CapCutEffectsSettings = {
+    schemaVersion: 1,
     transitionEffectId: '',
     videoEffectId: '',
     textTemplateEffectId: '',
@@ -92,6 +113,11 @@ const DEFAULT_SETTINGS: CapCutEffectsSettings = {
     muteVideo: true,
     customNames: {},
 }
+
+/** Schema version hiện tại cho settings/bundles */
+const CAPCUT_EFFECTS_SETTINGS_SCHEMA_VERSION = 1
+const PINNED_EFFECT_BUNDLE_SCHEMA_VERSION = 1
+const PINNED_SUBTITLE_BUNDLE_SCHEMA_VERSION = 1
 
 // ======================== STORE MANAGEMENT ========================
 
@@ -106,27 +132,124 @@ async function getStore(): Promise<Store> {
 }
 
 /** Đọc settings đã lưu */
-export async function loadEffectsSettings(): Promise<CapCutEffectsSettings> {
+function buildEffectsSettingsStoreKey(scopeKey?: string): string {
+    const raw = (scopeKey || '').trim()
+    if (!raw) return STORE_KEY_BASE
+    // Chuẩn hoá key để tránh ký tự lạ làm bẩn store key.
+    const normalized = raw.replace(/[^a-zA-Z0-9:_-]/g, '_')
+    return `${STORE_KEY_BASE}__${normalized}`
+}
+
+function toSafeString(value: unknown): string {
+    return typeof value === 'string' ? value : ''
+}
+
+function sanitizeCustomNames(input: unknown): Record<string, string> {
+    if (!input || typeof input !== 'object') return {}
+    const entries = Object.entries(input as Record<string, unknown>)
+    const result: Record<string, string> = {}
+    for (const [k, v] of entries) {
+        if (!k || typeof v !== 'string') continue
+        result[k] = v
+    }
+    return result
+}
+
+function sanitizeEffectsSettings(input: unknown): CapCutEffectsSettings {
+    const raw = (input && typeof input === 'object') ? (input as Record<string, unknown>) : {}
+    const zoomRaw = raw.zoomLevel
+    const zoomLevel = Number.isFinite(zoomRaw as number)
+        ? Math.max(0.05, Math.min(3, Number(zoomRaw)))
+        : DEFAULT_SETTINGS.zoomLevel
+
+    return {
+        schemaVersion: CAPCUT_EFFECTS_SETTINGS_SCHEMA_VERSION,
+        transitionEffectId: toSafeString(raw.transitionEffectId),
+        videoEffectId: toSafeString(raw.videoEffectId),
+        textTemplateEffectId: toSafeString(raw.textTemplateEffectId),
+        zoomEnabled: typeof raw.zoomEnabled === 'boolean' ? raw.zoomEnabled : DEFAULT_SETTINGS.zoomEnabled,
+        zoomLevel,
+        muteVideo: typeof raw.muteVideo === 'boolean' ? raw.muteVideo : DEFAULT_SETTINGS.muteVideo,
+        customNames: sanitizeCustomNames(raw.customNames),
+    }
+}
+
+function sanitizePinnedSubtitleBundle(input: unknown): PinnedSubtitleTemplateBundle | null {
+    const raw = (input && typeof input === 'object') ? (input as Record<string, unknown>) : null
+    if (!raw) return null
+    const effectId = toSafeString(raw.effectId)
+    if (!effectId) return null
+
+    return {
+        schemaVersion: PINNED_SUBTITLE_BUNDLE_SCHEMA_VERSION,
+        effectId,
+        displayName: toSafeString(raw.displayName) || effectId,
+        textTemplateRawJson: raw.textTemplateRawJson,
+        textMaterialRawJson: raw.textMaterialRawJson,
+        linkedMaterialAnimationsRawJson: Array.isArray(raw.linkedMaterialAnimationsRawJson) ? raw.linkedMaterialAnimationsRawJson : undefined,
+        linkedEffectsRawJson: Array.isArray(raw.linkedEffectsRawJson) ? raw.linkedEffectsRawJson : undefined,
+        savedAt: Number.isFinite(raw.savedAt as number) ? Number(raw.savedAt) : Date.now(),
+    }
+}
+
+function sanitizePinnedEffectBundle(input: unknown): PinnedEffectBundle | null {
+    const raw = (input && typeof input === 'object') ? (input as Record<string, unknown>) : null
+    if (!raw) return null
+    const effectId = toSafeString(raw.effectId)
+    const type = raw.type
+    if (!effectId) return null
+    if (type !== 'transition' && type !== 'video_effect' && type !== 'text_template') return null
+
+    const cachePath = toSafeString(raw.cachePath)
+    const hasTemplatePayload = !!raw.rawJson || !!raw.textMaterialRawJson
+    // transition/video cần cachePath; text_template cho phép fallback bằng raw payload.
+    if ((type === 'transition' || type === 'video_effect') && !cachePath) return null
+    if (type === 'text_template' && !cachePath && !hasTemplatePayload) return null
+
+    return {
+        schemaVersion: PINNED_EFFECT_BUNDLE_SCHEMA_VERSION,
+        effectId,
+        type,
+        displayName: toSafeString(raw.displayName) || effectId,
+        cachePath,
+        defaultDuration: Number.isFinite(raw.defaultDuration as number) ? Number(raw.defaultDuration) : undefined,
+        rawJson: raw.rawJson,
+        textMaterialRawJson: raw.textMaterialRawJson,
+        linkedMaterialAnimationsRawJson: Array.isArray(raw.linkedMaterialAnimationsRawJson) ? raw.linkedMaterialAnimationsRawJson : undefined,
+        linkedEffectsRawJson: Array.isArray(raw.linkedEffectsRawJson) ? raw.linkedEffectsRawJson : undefined,
+        savedAt: Number.isFinite(raw.savedAt as number) ? Number(raw.savedAt) : Date.now(),
+    }
+}
+
+export async function loadEffectsSettings(scopeKey?: string): Promise<CapCutEffectsSettings> {
     try {
         const store = await getStore()
-        const saved = await store.get<CapCutEffectsSettings>(STORE_KEY)
+        const scopedKey = buildEffectsSettingsStoreKey(scopeKey)
+        const saved = await store.get<CapCutEffectsSettings>(scopedKey)
         if (saved) {
-            // Merge với defaults để đảm bảo có đủ keys mới
-            return { ...DEFAULT_SETTINGS, ...saved }
+            // Luôn sanitize để tránh dữ liệu bẩn phá UI/pipeline.
+            return sanitizeEffectsSettings(saved)
+        }
+        // Backward compatible: nếu scope mới chưa có data thì fallback key cũ/global.
+        if (scopeKey) {
+            const legacy = await store.get<CapCutEffectsSettings>(STORE_KEY_BASE)
+            if (legacy) return sanitizeEffectsSettings(legacy)
         }
     } catch (err) {
         console.warn('[CapCutCache] Không đọc được settings:', err)
     }
-    return { ...DEFAULT_SETTINGS }
+    return sanitizeEffectsSettings(DEFAULT_SETTINGS)
 }
 
 /** Lưu settings */
-export async function saveEffectsSettings(settings: CapCutEffectsSettings): Promise<void> {
+export async function saveEffectsSettings(settings: CapCutEffectsSettings, scopeKey?: string): Promise<void> {
     try {
         const store = await getStore()
-        await store.set(STORE_KEY, settings)
+        const scopedKey = buildEffectsSettingsStoreKey(scopeKey)
+        const sanitized = sanitizeEffectsSettings(settings)
+        await store.set(scopedKey, sanitized)
         await store.save()
-        console.log('[CapCutCache] ✅ Đã lưu settings')
+        console.log('[CapCutCache] ✅ Đã lưu settings', scopeKey ? `(scope=${scopeKey})` : '(global)')
     } catch (err) {
         console.error('[CapCutCache] ❌ Lưu settings lỗi:', err)
     }
@@ -138,6 +261,8 @@ export async function saveEffectsSettings(settings: CapCutEffectsSettings): Prom
 const SCAN_CACHE_KEY = 'capcut_scan_cache'
 /** Key lưu các subtitle template bundle đã pin */
 const PINNED_SUBTITLE_BUNDLES_KEY = 'capcut_subtitle_template_bundles'
+/** Key lưu bundles cho mọi loại effect (transition/video/text_template) */
+const PINNED_EFFECT_BUNDLES_KEY = 'capcut_effect_bundles'
 /** Số draft gần nhất để quét (tránh quét hết gây chậm) */
 const MAX_DRAFTS_TO_SCAN = 10
 
@@ -172,9 +297,72 @@ export async function loadPinnedSubtitleTemplateBundles(): Promise<Record<string
     try {
         const store = await getStore()
         const data = await store.get<Record<string, PinnedSubtitleTemplateBundle>>(PINNED_SUBTITLE_BUNDLES_KEY)
-        return data ?? {}
+        if (!data || typeof data !== 'object') return {}
+        const sanitized: Record<string, PinnedSubtitleTemplateBundle> = {}
+        for (const [effectId, bundle] of Object.entries(data)) {
+            const safeBundle = sanitizePinnedSubtitleBundle(bundle)
+            if (!safeBundle) continue
+            sanitized[effectId] = safeBundle
+        }
+        return sanitized
     } catch {
         return {}
+    }
+}
+
+/** Đọc map effect bundles đã pin (dùng fallback cross-scan). */
+export async function loadPinnedEffectBundles(): Promise<Record<string, PinnedEffectBundle>> {
+    try {
+        const store = await getStore()
+        const data = await store.get<Record<string, PinnedEffectBundle>>(PINNED_EFFECT_BUNDLES_KEY)
+        if (!data || typeof data !== 'object') return {}
+        const sanitized: Record<string, PinnedEffectBundle> = {}
+        for (const [effectId, bundle] of Object.entries(data)) {
+            const safeBundle = sanitizePinnedEffectBundle(bundle)
+            if (!safeBundle) continue
+            sanitized[effectId] = safeBundle
+        }
+        return sanitized
+    } catch {
+        return {}
+    }
+}
+
+/**
+ * Pin 1 effect bundle để lần scan sau vẫn resolve được effect cũ.
+ * - transition/video_effect: cần effectId + cachePath.
+ * - text_template: ưu tiên giữ thêm raw json để export ổn định.
+ */
+export async function pinEffectBundle(effect: CachedEffect): Promise<void> {
+    if (!effect?.effectId || !effect?.type) return
+
+    // transition/video cần cachePath để export được. text_template có thể fallback qua raw json.
+    if ((effect.type === 'transition' || effect.type === 'video_effect') && !effect.cachePath) return
+    if (effect.type === 'text_template' && !effect.rawJson && !effect.textMaterialRawJson && !effect.cachePath) return
+
+    try {
+        const store = await getStore()
+        const bundles = await loadPinnedEffectBundles()
+        const candidate: PinnedEffectBundle = {
+            schemaVersion: PINNED_EFFECT_BUNDLE_SCHEMA_VERSION,
+            effectId: effect.effectId,
+            type: effect.type,
+            displayName: effect.displayName || effect.originalName || effect.effectId,
+            cachePath: effect.cachePath || '',
+            defaultDuration: effect.defaultDuration,
+            rawJson: effect.rawJson,
+            textMaterialRawJson: effect.textMaterialRawJson,
+            linkedMaterialAnimationsRawJson: effect.linkedMaterialAnimationsRawJson,
+            linkedEffectsRawJson: effect.linkedEffectsRawJson,
+            savedAt: Date.now(),
+        }
+        const safeCandidate = sanitizePinnedEffectBundle(candidate)
+        if (!safeCandidate) return
+        bundles[effect.effectId] = safeCandidate
+        await store.set(PINNED_EFFECT_BUNDLES_KEY, bundles)
+        await store.save()
+    } catch (err) {
+        console.warn('[CapCutCache] ⚠️ Pin effect bundle lỗi:', err)
     }
 }
 
@@ -189,7 +377,8 @@ export async function pinSubtitleTemplateBundle(effect: CachedEffect): Promise<v
     try {
         const store = await getStore()
         const bundles = await loadPinnedSubtitleTemplateBundles()
-        bundles[effect.effectId] = {
+        const candidate: PinnedSubtitleTemplateBundle = {
+            schemaVersion: PINNED_SUBTITLE_BUNDLE_SCHEMA_VERSION,
             effectId: effect.effectId,
             displayName: effect.displayName || effect.originalName || effect.effectId,
             textTemplateRawJson: effect.rawJson,
@@ -198,6 +387,9 @@ export async function pinSubtitleTemplateBundle(effect: CachedEffect): Promise<v
             linkedEffectsRawJson: effect.linkedEffectsRawJson,
             savedAt: Date.now(),
         }
+        const safeCandidate = sanitizePinnedSubtitleBundle(candidate)
+        if (!safeCandidate) return
+        bundles[effect.effectId] = safeCandidate
         await store.set(PINNED_SUBTITLE_BUNDLES_KEY, bundles)
         await store.save()
         console.log(`[CapCutCache] 📌 Đã pin subtitle bundle: ${effect.effectId} (${bundles[effect.effectId].displayName})`)
@@ -614,7 +806,26 @@ export async function getSelectedEffect(
     const found = allEffects.find(e => e.effectId === selectedId) || null
     if (found) return found
 
-    // Fallback cho text_template: đọc từ bundle đã pin trong local store.
+    // Fallback 1: đọc từ effect bundles đã pin cho mọi loại effect.
+    const pinnedEffects = await loadPinnedEffectBundles()
+    const pinnedEffect = pinnedEffects[selectedId]
+    if (pinnedEffect && pinnedEffect.type === type) {
+        return {
+            effectId: pinnedEffect.effectId,
+            resourceId: pinnedEffect.effectId,
+            originalName: pinnedEffect.displayName || pinnedEffect.effectId,
+            displayName: pinnedEffect.displayName || pinnedEffect.effectId,
+            cachePath: pinnedEffect.cachePath || '',
+            type: pinnedEffect.type,
+            defaultDuration: pinnedEffect.defaultDuration,
+            rawJson: pinnedEffect.rawJson,
+            textMaterialRawJson: pinnedEffect.textMaterialRawJson,
+            linkedMaterialAnimationsRawJson: pinnedEffect.linkedMaterialAnimationsRawJson,
+            linkedEffectsRawJson: pinnedEffect.linkedEffectsRawJson,
+        }
+    }
+
+    // Fallback 2 (legacy): text_template pin cũ.
     if (type === 'text_template') {
         const bundles = await loadPinnedSubtitleTemplateBundles()
         const pinned = bundles[selectedId]
