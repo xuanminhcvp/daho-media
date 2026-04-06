@@ -61,6 +61,30 @@ function secToUs(seconds: number): number {
     return Math.round(seconds * SEC_TO_US)
 }
 
+/**
+ * Đọc duration hiện tại của draft nguồn (microsecond -> second).
+ * Dùng làm fallback trong overwrite mode để tránh bị co ngắn timeline
+ * khi CapCut update thay đổi cách lưu/khôi phục track.
+ */
+async function readDraftDurationSec(targetDraftPath?: string): Promise<number> {
+    const draftPath = (targetDraftPath || '').trim()
+    if (!draftPath) return 0
+    try {
+        const { join } = await import('@tauri-apps/api/path')
+        const { exists, readTextFile } = await import('@tauri-apps/plugin-fs')
+        const infoPath = await join(draftPath, 'draft_info.json')
+        if (!(await exists(infoPath))) return 0
+        const raw = await readTextFile(infoPath)
+        const parsed = JSON.parse(raw)
+        const durationUs = Number(parsed?.duration || 0)
+        if (!Number.isFinite(durationUs) || durationUs <= 0) return 0
+        return durationUs / SEC_TO_US
+    } catch (err) {
+        console.warn('[CapCut] ⚠️ Không đọc được duration từ draft nguồn:', err)
+        return 0
+    }
+}
+
 /** Deep clone 1 object JSON */
 function deepClone<T>(obj: T): T {
     return JSON.parse(JSON.stringify(obj))
@@ -495,8 +519,13 @@ export async function generateCapCutDraft(
     const allCanvases: any[] = []
     const allMaterialColors: any[] = []
     const allPlaceholderInfos: any[] = []
+    const debugFootageSegments: any[] = []
 
     let maxEndTime = 0
+    // Timeline fallback từ pipeline (adapter) và draft nguồn cũ (overwrite mode).
+    const configuredTotalDurationSec = Math.max(0, Number(config.totalDurationSec || 0))
+    const sourceDraftDurationSec = await readDraftDurationSec(config.targetDraftPath)
+    const fallbackTimelineEndSec = Math.max(configuredTotalDurationSec, sourceDraftDurationSec)
 
     // ======================== XÁC ĐỊNH VOICE END TIME (source-of-truth) ========================
     // VO là source-of-truth cho tổng duration timeline
@@ -505,7 +534,15 @@ export async function generateCapCutDraft(
     if (voiceEndTime > 0) {
         maxEndTime = voiceEndTime
         console.log(`[CapCut] 🎤 Voice end time (source-of-truth): ${voiceEndTime.toFixed(3)}s`)
+    } else if (fallbackTimelineEndSec > 0) {
+        // Không có VO mới: dùng mốc fallback để giữ timing ổn định sau overwrite.
+        maxEndTime = fallbackTimelineEndSec
+        console.log(`[CapCut] ⏱️ Fallback timeline end: ${fallbackTimelineEndSec.toFixed(3)}s (config=${configuredTotalDurationSec.toFixed(3)}s, sourceDraft=${sourceDraftDurationSec.toFixed(3)}s)`)
     }
+
+    // Mốc timeline dùng để clamp các track media trong overwrite mode.
+    // Nếu không có VO mới, fallbackTimelineEndSec sẽ giúp media không bị co ngắn ngoài ý muốn.
+    const mediaTimelineEndSec = voiceEndTime > 0 ? voiceEndTime : fallbackTimelineEndSec
 
     // ===== VIDEO TRACK: Image clips (AI generated) =====
     if (imageClips && imageClips.length > 0) {
@@ -513,8 +550,8 @@ export async function generateCapCutDraft(
         for (let ci = 0; ci < imageClips.length; ci++) {
             const clip = imageClips[ci]
 
-            // ===== CLAMP: không để clip vượt quá VO =====
-            const clipEnd = voiceEndTime > 0 ? Math.min(clip.endTime, voiceEndTime) : clip.endTime
+            // ===== CLAMP: không để clip vượt quá mốc timeline hiện tại =====
+            const clipEnd = mediaTimelineEndSec > 0 ? Math.min(clip.endTime, mediaTimelineEndSec) : clip.endTime
             const clipStart = Math.max(0, clip.startTime)
             if (clipEnd <= clipStart) continue // skip clip lỗi
 
@@ -609,15 +646,30 @@ export async function generateCapCutDraft(
             segments.push(seg)
             maxEndTime = Math.max(maxEndTime, clipEnd)
         }
+
         allTracks.push(buildTrack('video', segments))
+
+        // DEBUG media timing: so sánh input clip timing và segment timing thực tế chuẩn bị ghi draft.
+        // Mục tiêu: nếu user thấy lệch ảnh theo câu, có thể đối chiếu ngay tại đây xem lệch từ pipeline
+        // hay lệch ở bước map sang CapCut segment.
+        const imageInputMaxEnd = Math.max(0, ...imageClips.map(c => Number(c.endTime || 0)))
+        const imageSegMaxEnd = Math.max(
+            0,
+            ...segments.map((s: any) =>
+                (Number(s?.target_timerange?.start || 0) + Number(s?.target_timerange?.duration || 0)) / SEC_TO_US
+            )
+        )
+        console.log(
+            `[CapCut][MediaTiming] imageClips=${imageClips.length}, segments=${segments.length}, inputMaxEnd=${imageInputMaxEnd.toFixed(3)}s, segMaxEnd=${imageSegMaxEnd.toFixed(3)}s`
+        )
     }
 
     // ===== VIDEO TRACK: Footage B-roll =====
     if (footageClips && footageClips.length > 0) {
         const segments: any[] = []
         for (const clip of footageClips) {
-            // ===== CLAMP: không để clip vượt quá VO =====
-            const clipEnd = voiceEndTime > 0 ? Math.min(clip.endTime, voiceEndTime) : clip.endTime
+            // ===== CLAMP: không để clip vượt quá mốc timeline hiện tại =====
+            const clipEnd = mediaTimelineEndSec > 0 ? Math.min(clip.endTime, mediaTimelineEndSec) : clip.endTime
             const clipStart = Math.max(0, clip.startTime)
             if (clipEnd <= clipStart) continue
 
@@ -634,6 +686,7 @@ export async function generateCapCutDraft(
             // Mute footage track
             if (muteVideo) seg.volume = 0.0
             segments.push(seg)
+            debugFootageSegments.push(seg)
             maxEndTime = Math.max(maxEndTime, clipEnd)
         }
         allTracks.push(buildTrack('video', segments))
@@ -999,7 +1052,8 @@ export async function generateCapCutDraft(
             }
 
             segments.push(textSeg)
-            maxEndTime = Math.max(maxEndTime, sub.endTime)
+            // Dùng subEnd đã clamp để maxEnd không vượt mốc timeline thực tế.
+            maxEndTime = Math.max(maxEndTime, subEnd)
         }
         allTracks.push(buildTrack('text', segments))
 
@@ -1098,34 +1152,38 @@ export async function generateCapCutDraft(
     }))
 
     // ======================== DEBUG: Kiểm tra JSON THỰC SỰ gửi vào Rust ========================
-    const textTrack = allTracks.find((t: any) => t.type === 'text')
-    if (textTrack && textTrack.segments.length > 0) {
-        const seg0 = textTrack.segments[0]
-        const seg1 = textTrack.segments[1]
-        console.log('[CapCut] 🔬 KIỂM TRA JSON TRƯỚC KHI INVOKE RUST:', JSON.stringify({
-            'seg0.material_id': seg0.material_id,
-            'seg0.extra_material_refs': seg0.extra_material_refs,
-            'seg0.extra_material_refs.length': seg0.extra_material_refs?.length || 0,
-            'seg1.extra_material_refs': seg1?.extra_material_refs,
-            'allMaterialAnimations.length': allMaterialAnimations.length,
-            'allTextTemplates.length': allTextTemplates.length,
-        }))
-
-        // Dump 3 segments đầu ra file để verify dữ liệu thực tế
-        try {
-            const { writeTextFile } = await import('@tauri-apps/plugin-fs')
-            const { join } = await import('@tauri-apps/api/path')
-            const homePath = await (await import('@tauri-apps/api/path')).homeDir()
-            const debugPath = await join(homePath, 'Desktop', 'capcut_debug_segments.json')
-            await writeTextFile(debugPath, JSON.stringify({
-                first3Segments: textTrack.segments.slice(0, 3),
-                first3Templates: allTextTemplates.slice(0, 3),
-                first3Animations: allMaterialAnimations.slice(0, 3),
-            }, null, 2))
-            console.log('[CapCut] 🔬 Đã dump debug segments ra:', debugPath)
-        } catch (e) {
-            console.warn('[CapCut] ⚠️ Không dump được debug file:', e)
-        }
+    // Dump debug riêng cho footage để kiểm tra lệch timeline/source.
+    try {
+        const { writeTextFile } = await import('@tauri-apps/plugin-fs')
+        const { join, homeDir } = await import('@tauri-apps/api/path')
+        const homePath = await homeDir()
+        const debugFootagePath = await join(homePath, 'Desktop', 'capcut_debug_footage_export.json')
+        await writeTextFile(debugFootagePath, JSON.stringify({
+            source: 'capcut-draft-service',
+            generatedAt: new Date().toISOString(),
+            footageClipsCount: footageClips?.length || 0,
+            footageSegmentsCount: debugFootageSegments.length,
+            footageClipsHead: (footageClips || []).slice(0, 60).map((c: any, idx: number) => ({
+                idx,
+                filePath: c.filePath,
+                timelineStartSec: Number((c.startTime || 0).toFixed(6)),
+                timelineEndSec: Number((c.endTime || 0).toFixed(6)),
+                timelineDurationSec: Number(((c.endTime || 0) - (c.startTime || 0)).toFixed(6)),
+                sourceStartSec: Number((c.sourceStart || 0).toFixed(6)),
+            })),
+            footageSegmentsHead: debugFootageSegments.slice(0, 60).map((s: any, idx: number) => ({
+                idx,
+                materialId: s.material_id,
+                timelineStartSec: Number((Number(s?.target_timerange?.start || 0) / SEC_TO_US).toFixed(6)),
+                timelineEndSec: Number(((Number(s?.target_timerange?.start || 0) + Number(s?.target_timerange?.duration || 0)) / SEC_TO_US).toFixed(6)),
+                timelineDurationSec: Number((Number(s?.target_timerange?.duration || 0) / SEC_TO_US).toFixed(6)),
+                sourceStartSec: Number((Number(s?.source_timerange?.start || 0) / SEC_TO_US).toFixed(6)),
+                sourceDurationSec: Number((Number(s?.source_timerange?.duration || 0) / SEC_TO_US).toFixed(6)),
+            })),
+        }, null, 2))
+        console.log('[CapCut] 🔬 Đã dump footage export debug ra:', debugFootagePath)
+    } catch (e) {
+        console.warn('[CapCut] ⚠️ Không dump được footage export debug file:', e)
     }
 
     // ======================== SAFETY PASS: CHUẨN HOÁ REF TRƯỚC KHI GHI DRAFT ========================

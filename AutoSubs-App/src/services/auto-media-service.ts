@@ -1543,6 +1543,39 @@ async function runFootagePipeline(
             trimEnd: s.trimEnd,
         }))
 
+        // Debug riêng cho footage input từ pipeline (trước khi qua CapCut adapter/service).
+        try {
+            const { writeTextFile } = await import('@tauri-apps/plugin-fs')
+            const { homeDir, join } = await import('@tauri-apps/api/path')
+            const home = await homeDir()
+            const debugPath = await join(home, 'Desktop', 'capcut_debug_footage_input.json')
+            await writeTextFile(
+                debugPath,
+                JSON.stringify(
+                    {
+                        source: 'auto-media-service/runFootagePipeline',
+                        generatedAt: new Date().toISOString(),
+                        suggestionsCount: suggestions.length,
+                        footageClipsCount: footageClips.length,
+                        footageClipsHead: footageClips.slice(0, 60).map((c, idx) => ({
+                            idx,
+                            filePath: c.filePath,
+                            timelineStartSec: Number(c.startTime.toFixed(6)),
+                            timelineEndSec: Number(c.endTime.toFixed(6)),
+                            timelineDurationSec: Number((c.endTime - c.startTime).toFixed(6)),
+                            trimStartSec: Number((c.trimStart || 0).toFixed(6)),
+                            trimEndSec: Number((c.trimEnd || 0).toFixed(6)),
+                        })),
+                    },
+                    null,
+                    2
+                )
+            )
+            console.log('[AutoMedia] 🔬 Đã dump footage input debug ra:', debugPath)
+        } catch (e) {
+            console.warn('[AutoMedia] ⚠️ Không dump được footage input debug:', e)
+        }
+
         const debugFootage = `footageItems: ${deps.footageItems.length} | suggestions: ${suggestions.length}\n${suggestions.slice(0, 5).map((s: any) => `"${s.footagePath?.split('/').pop()}" ${s.startTime?.toFixed(1)}-${s.endTime?.toFixed(1)}s trim=${s.trimStart?.toFixed(1)}-${s.trimEnd?.toFixed(1)}`).join('\n')}${suggestions.length > 5 ? `\n... +${suggestions.length - 5} nữa` : ''}`
         onStepUpdate('footage', 'done', `✅ Footage: ${footageClips.length} clips sẵn sàng`, undefined, debugFootage)
 

@@ -113,6 +113,12 @@ export interface CapCutDraftConfig {
     height: number
     /** FPS (mặc định 30 — CapCut default) */
     fps: number
+    /**
+     * Tổng thời lượng timeline theo giây (source-of-truth từ pipeline).
+     * Dùng làm fallback khi không có VO clip mới nhưng vẫn cần giữ timing ổn định
+     * cho logo/khung/effect và các layer media sau khi overwrite draft.
+     */
+    totalDurationSec?: number
 }
 
 /** Input tổng hợp từ pipeline vào CapCut Draft Service */

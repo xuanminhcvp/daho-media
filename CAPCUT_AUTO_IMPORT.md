@@ -680,7 +680,57 @@ capcut-effects.json (plugin-store)
   - Unit test overwrite merge pass:
     - `test_overwrite_merge_keeps_audio_text_and_meta_materials` (đảm bảo không mất audio/text/materials/meta khi request mới chỉ có video).
 
+## 16. Kỷ yếu fix lỗi: CapCut update 2026-04-06 (Draft scan + Timing)
+
+### 16.1 Quét draft luôn nhảy về draft đầu tiên
+- **Triệu chứng user thấy**:
+  - Bấm `Quét Draft` thì app tự chọn draft mới nhất (đúng).
+  - Nhưng sau đó user chọn tay draft khác (`0404`, `0404-sao chép`) thì UI bị reset về draft đầu tiên (sai).
+- **Nguyên nhân gốc**:
+  - State chọn draft bị ghi đè ngoài ý muốn sau khi scan.
+- **Fix đã áp dụng**:
+  - Tách rõ 2 luồng:
+    - `Quét Draft`: cho phép force chọn draft mới nhất.
+    - `Chọn thủ công`: luôn giữ lựa chọn của user, không tự reset.
+- **Kết quả**:
+  - User quét xong vẫn chọn tay đúng draft cần xử lý.
+
+### 16.2 Lệch timing khi overwrite draft sau khi CapCut nâng version
+- **Triệu chứng user thấy**:
+  - Import chạy được nhưng timing tổng thể bị lệch theo timeline ở một số case overwrite.
+- **Nguyên nhân gốc**:
+  - Thiếu mốc duration “an toàn” khi không có VO mới.
+  - Một số mốc end-time dùng giá trị chưa clamp.
+- **Fix đã áp dụng (service layer)**:
+  - Thêm `config.totalDurationSec` vào input CapCut để truyền duration suy ra từ timeline pipeline.
+  - Trong `capcut-draft-service`:
+    - Đọc duration draft nguồn (`readDraftDurationSec`) khi overwrite để làm fallback.
+    - Fallback theo timeline end khi không có VO mới.
+    - Sửa tính `maxEndTime` subtitle dùng `subEnd` đã clamp.
+- **Kết quả**:
+  - Draft ghi ra ổn định hơn, giảm lệch timing sau update CapCut.
+
+### 16.3 Ảnh đã chuẩn, debug tập trung footage và đối chiếu phút/giây
+- **Bài toán thực tế**:
+  - Tab API trước đó chủ yếu hiện log AI (`[Claude Stream] Footage Match ...`) nên khó biết “timing cuối cùng CapCut nhận là bao nhiêu”.
+- **Fix debug đã áp dụng**:
+  - Thêm log API mới: `CapCut Final Footage Timing`.
+  - Log hiển thị:
+    - `timelineStartSec`, `timelineEndSec`,
+    - `timelineStartHms`, `timelineEndHms` (`hh:mm:ss.mmm`),
+    - `sourceStartSec`, `sourceEndSec`,
+    - `sourceStartHms`, `sourceEndHms`.
+- **Cách verify chuẩn**:
+  1. `Clear API logs`
+  2. Chạy Auto Media
+  3. Vào tab `API` mở log `CapCut Final Footage Timing`
+  4. So `timeline*` với ruler CapCut, so `source*` với đoạn cắt footage gốc
+
+### 16.4 Dọn debug file theo yêu cầu vận hành
+- Đã bỏ các debug dump gây nhiễu (ảnh/map không cần thiết).
+- Giữ debug chính phục vụ pipeline footage và export timing để dễ khoanh lỗi nhanh.
+
 ---
 
 *Tài liệu được tổng hợp từ reverse-engineering + test thực tế trên CapCut Mac v8.3.0.*
-*Cập nhật: 04/2026 — Thêm: Text Template attach_info injection, Khắc phục Masking Deduplication Bug, Chống tràn bộ IPC bằng Rust Backend, Fix overwrite draft giữ VO/Sub và đồng bộ tracks-materials-meta.*
+*Cập nhật: 04/2026 — Thêm: Text Template attach_info injection, Khắc phục Masking Deduplication Bug, Chống tràn bộ IPC bằng Rust Backend, Fix overwrite draft giữ VO/Sub và đồng bộ tracks-materials-meta, Fix chọn draft thủ công + bổ sung CapCut Final Footage Timing debug.*

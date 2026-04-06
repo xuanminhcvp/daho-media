@@ -588,7 +588,10 @@ export function AutoMediaPanel({
      * Request gửi đi: không có HTTP, chỉ đọc local file system.
      * Response nhận về: mảng {name, path}.
      */
-    const loadCapCutDraftOptions = React.useCallback(async (overrideRoot?: string) => {
+    const loadCapCutDraftOptions = React.useCallback(async (
+        overrideRoot?: string,
+        options?: { forceSelectLatest?: boolean }
+    ) => {
         setIsLoadingCapcutDrafts(true)
         setCapcutDraftLoadError('')
         try {
@@ -600,15 +603,24 @@ export function AutoMediaPanel({
             setCapcutProjectsRootHint(discovery.projectsRoot)
             setIsCapcutDefaultDraftRootMissing(discovery.isDefaultDraftsRootMissing)
 
-            // Theo yêu cầu user: mỗi lần quét luôn tự chọn draft mới nhất (item đầu tiên sau sort giảm dần).
-            setCapcutDraftPath(drafts.length > 0 ? drafts[0].path : '')
+            // Quy tắc chọn draft:
+            // 1) Nếu user vừa bấm "Quét Draft" (forceSelectLatest=true): luôn về draft mới nhất (item đầu).
+            // 2) Các lần refresh khác: giữ draft đang chọn nếu còn trong list, tránh bị nhảy ngoài ý muốn.
+            const forceSelectLatest = Boolean(options?.forceSelectLatest)
+            setCapcutDraftPath((prevPath) => {
+                if (drafts.length === 0) return ''
+                if (forceSelectLatest) return drafts[0].path
+
+                const hasPrevInList = Boolean(prevPath) && drafts.some((d) => d.path === prevPath)
+                return hasPrevInList ? prevPath : drafts[0].path
+            })
         } catch (err) {
             setCapcutDraftLoadError(String(err))
             setCapcutDraftOptions([])
         } finally {
             setIsLoadingCapcutDrafts(false)
         }
-    }, [capcutDraftPath, capcutDraftsRootOverride])
+    }, [capcutDraftsRootOverride])
 
     /**
      * Chọn root draft CapCut thủ công khi app không tìm thấy root mặc định.
@@ -623,14 +635,14 @@ export function AutoMediaPanel({
         if (!selected) return
         const selectedPath = selected as string
         setCapcutDraftsRootOverride(selectedPath)
-        await loadCapCutDraftOptions(selectedPath)
+        await loadCapCutDraftOptions(selectedPath, { forceSelectLatest: true })
     }, [capcutProjectsRootHint, loadCapCutDraftOptions])
 
     // Khi mở panel ở chế độ CapCut thì tự load danh sách draft.
     React.useEffect(() => {
         if (!isOpen) return
         if (config.targetEngine !== 'capcut') return
-        loadCapCutDraftOptions()
+        loadCapCutDraftOptions(undefined, { forceSelectLatest: true })
     }, [isOpen, config.targetEngine, loadCapCutDraftOptions])
 
     /**
@@ -1427,7 +1439,7 @@ export function AutoMediaPanel({
                                         size="sm"
                                         className="h-8 gap-1.5 rounded-full border-input bg-background hover:bg-accent"
                                         onClick={() => {
-                                            void loadCapCutDraftOptions()
+                                            void loadCapCutDraftOptions(undefined, { forceSelectLatest: true })
                                         }}
                                         disabled={isLoadingCapcutDrafts}
                                     >
